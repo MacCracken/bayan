@@ -1,13 +1,49 @@
-# bayan test suite
-# Stdlib auto-included via cyrius.cyml
+# bayan test suite — canonical bayan_* API + back-compat alias parity.
+# Includes the full bundle (7 modules + _compat aliases) + stdlib prereqs,
+# exactly as a consumer pulls lib/bayan.cyr. (Aliases live in _compat.cyr,
+# which references every bayan_* symbol — so the whole bundle must be in
+# scope to exercise them.)
 
-fn main() {
-    alloc_init();
-    test_group("smoke");
-    assert(1, "true is true");
-    assert_eq(1 + 1, 2, "math works");
-    return assert_summary();
-}
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
 
-var exit_code = main();
-syscall(60, exit_code);
+include "src/base64.cyr"
+include "src/csv.cyr"
+include "src/u128.cyr"
+include "src/bigint.cyr"
+include "src/toml.cyr"
+include "src/cyml.cyr"
+include "src/json.cyr"
+include "src/_compat.cyr"
+
+alloc_init();
+
+test_group("base64 encode/decode (canonical)");
+assert_eq(streq(bayan_base64_encode("foo", 3), "Zm9v"), 1, "encode foo");
+assert_eq(streq(bayan_base64_encode("fo", 2), "Zm8="), 1, "encode fo (pad)");
+var d = bayan_base64_decode("Zm9v", 4);
+assert_eq(load64(d + 8), 3, "decode len 3");
+assert_eq(memeq(load64(d), "foo", 3), 1, "decode foo");
+
+test_group("base64 back-compat alias");
+assert_eq(streq(base64_encode("foo", 3), "Zm9v"), 1, "alias encode == canonical");
+var d2 = base64_decode("Zm9v", 4);
+assert_eq(memeq(load64(d2), "foo", 3), 1, "alias decode == canonical");
+
+test_group("u128 + alias parity");
+var a[16]; var b[16]; var c[16];
+bayan_u128_from_u64(&a, 5); bayan_u128_from_u64(&b, 7); bayan_u128_add(&c, &a, &b);
+assert_eq(bayan_u128_lo(&c), 12, "canonical 5+7=12");
+u128_from_u64(&a, 100); u128_from_u64(&b, 23); u128_add(&c, &a, &b);
+assert_eq(u128_lo(&c), 123, "alias 100+23=123");
+
+var r = assert_summary();

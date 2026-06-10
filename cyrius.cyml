@@ -1,16 +1,42 @@
 [package]
 name = "bayan"
-version = "0.1.0"
-description = "bayan — TODO"
+version = "${file:VERSION}"
+description = "bayan — data-format & big-integer distfile (json / toml / cyml / csv / base64 / bigint / u128) for the AGNOS-lineage Cyrius ecosystem; foldable into stdlib per the sandhi pattern"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.1.17"
+cyrius = "6.1.24"
 
 [build]
 entry = "src/main.cyr"
 test = "src/test.cyr"
 output = "bayan"
 
+# Stdlib modules the bayan sources reference. Auto-prepended for bayan's
+# own build/test; the dist bundle (cyrius distlib strips includes) relies
+# on the CONSUMER having these in scope before `include "lib/bayan.cyr"`.
+# NOTE: `result` is required (Result + `?`) but is NOT in cyrius's own
+# stdlib auto-prepend list — consumers of lib/bayan.cyr must include it.
 [deps]
-stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "bench"]
----
+stdlib = [
+    "string", "fmt", "alloc", "io", "vec", "str", "syscalls",
+    "assert", "bench", "result", "fnptr", "tagged",
+]
+
+# `[lib]` drives `cyrius distlib` — concatenates the listed modules into
+# `dist/bayan.cyr` for downstream / stdlib fold. Single-pass compiler:
+# each module may only reference symbols defined earlier. The 7 data
+# modules have no cross-deps among them (order free); `_compat.cyr`
+# (back-compat aliases forwarding the legacy json_*/u256_* names to the
+# canonical bayan_* API) MUST be last — its aliases reference every
+# bayan_* symbol.
+[lib]
+modules = [
+    "src/base64.cyr",
+    "src/csv.cyr",
+    "src/u128.cyr",
+    "src/bigint.cyr",
+    "src/toml.cyr",
+    "src/cyml.cyr",
+    "src/json.cyr",
+    "src/_compat.cyr",
+]

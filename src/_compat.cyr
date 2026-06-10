@@ -1,0 +1,155 @@
+# bayan back-compat aliases (v6.1.25 carve).
+# Forwards the legacy cyrius-stdlib names (json_* / toml_* / u256_* / ...)
+# to the canonical bayan_* API. Deprecated — for the downstream
+# migration window only; will be removed once consumers re-pin.
+# See CHANGELOG [bayan 1.0.0] / cyrius [6.1.25].
+
+fn json_pair_new_a(a, key, value): i64 { return bayan_json_pair_new_a(a, key, value); }
+fn json_pair_new(key, value): i64 { return bayan_json_pair_new(key, value); }
+fn json_key(p): i64 { return bayan_json_key(p); }
+fn json_value(p): i64 { return bayan_json_value(p); }
+fn json_parse(src): i64 { return bayan_json_parse(src); }
+fn json_get(pairs, key): i64 { return bayan_json_get(pairs, key); }
+fn json_get_int(pairs, key): i64 { return bayan_json_get_int(pairs, key); }
+fn json_build(pairs): i64 { return bayan_json_build(pairs); }
+fn json_parse_file(path): i64 { return bayan_json_parse_file(path); }
+fn json_parse_file_r(path): i64 { return bayan_json_parse_file_r(path); }
+fn json_last_error(): i64 { return bayan_json_last_error(); }
+fn json_last_error_pos(): i64 { return bayan_json_last_error_pos(); }
+fn json_v_null_a(a): i64 { return bayan_json_v_null_a(a); }
+fn json_v_null(): i64 { return bayan_json_v_null(); }
+fn json_v_bool_new_a(a, b): i64 { return bayan_json_v_bool_new_a(a, b); }
+fn json_v_bool_new(b): i64 { return bayan_json_v_bool_new(b); }
+fn json_v_int_new_a(a, n): i64 { return bayan_json_v_int_new_a(a, n); }
+fn json_v_int_new(n): i64 { return bayan_json_v_int_new(n); }
+fn json_v_float_new_a(a, f): i64 { return bayan_json_v_float_new_a(a, f); }
+fn json_v_float_new(f): i64 { return bayan_json_v_float_new(f); }
+fn json_v_str_new_a(a, s): i64 { return bayan_json_v_str_new_a(a, s); }
+fn json_v_str_new(s): i64 { return bayan_json_v_str_new(s); }
+fn json_v_arr_new_a(a): i64 { return bayan_json_v_arr_new_a(a); }
+fn json_v_arr_new(): i64 { return bayan_json_v_arr_new(); }
+fn json_v_obj_new_a(a): i64 { return bayan_json_v_obj_new_a(a); }
+fn json_v_obj_new(): i64 { return bayan_json_v_obj_new(); }
+fn json_v_arr_push_a(a, arr, val): i64 { return bayan_json_v_arr_push_a(a, arr, val); }
+fn json_v_arr_push(arr, val): i64 { return bayan_json_v_arr_push(arr, val); }
+fn json_v_obj_set(obj, key, val): i64 { return bayan_json_v_obj_set(obj, key, val); }
+fn json_v_tag(v): i64 { return bayan_json_v_tag(v); }
+fn json_v_is_null(v): i64 { return bayan_json_v_is_null(v); }
+fn json_v_is_bool(v): i64 { return bayan_json_v_is_bool(v); }
+fn json_v_is_int(v): i64 { return bayan_json_v_is_int(v); }
+fn json_v_is_float(v): i64 { return bayan_json_v_is_float(v); }
+fn json_v_is_str(v): i64 { return bayan_json_v_is_str(v); }
+fn json_v_is_arr(v): i64 { return bayan_json_v_is_arr(v); }
+fn json_v_is_obj(v): i64 { return bayan_json_v_is_obj(v); }
+fn json_v_bool(v): i64 { return bayan_json_v_bool(v); }
+fn json_v_int(v): i64 { return bayan_json_v_int(v); }
+fn json_v_float(v): i64 { return bayan_json_v_float(v); }
+fn json_v_str(v): i64 { return bayan_json_v_str(v); }
+fn json_v_arr_len(v): i64 { return bayan_json_v_arr_len(v); }
+fn json_v_arr_get(v, i): i64 { return bayan_json_v_arr_get(v, i); }
+fn json_v_obj_len(v): i64 { return bayan_json_v_obj_len(v); }
+fn json_v_obj_key(v, i): i64 { return bayan_json_v_obj_key(v, i); }
+fn json_v_obj_val(v, i): i64 { return bayan_json_v_obj_val(v, i); }
+fn json_v_obj_get(v, key): i64 { return bayan_json_v_obj_get(v, key); }
+fn json_v_parse(src): i64 { return bayan_json_v_parse(src); }
+fn json_v_parse_str(buf, len): i64 { return bayan_json_v_parse_str(buf, len); }
+fn json_v_build(v): i64 { return bayan_json_v_build(v); }
+fn json_v_build_pretty(v, indent): i64 { return bayan_json_v_build_pretty(v, indent); }
+fn json_stream_handler_new(ctx): i64 { return bayan_json_stream_handler_new(ctx); }
+fn json_stream_on(h, event_id, fp): i64 { return bayan_json_stream_on(h, event_id, fp); }
+fn json_stream_parse(buf, len, h): i64 { return bayan_json_stream_parse(buf, len, h); }
+fn json_stream_parse_str(src, h): i64 { return bayan_json_stream_parse_str(src, h); }
+fn json_v_pointer_cstr(v, ptr, plen): i64 { return bayan_json_v_pointer_cstr(v, ptr, plen); }
+fn json_v_pointer(v, ptr): i64 { return bayan_json_v_pointer(v, ptr); }
+fn toml_section_new_a(a, name, pairs): i64 { return bayan_toml_section_new_a(a, name, pairs); }
+fn toml_section_new(name, pairs): i64 { return bayan_toml_section_new(name, pairs); }
+fn toml_section_name(s) : i64 { return bayan_toml_section_name(s); }
+fn toml_section_pairs(s) : i64 { return bayan_toml_section_pairs(s); }
+fn toml_pair_new_a(a, key, value): i64 { return bayan_toml_pair_new_a(a, key, value); }
+fn toml_pair_new(key, value): i64 { return bayan_toml_pair_new(key, value); }
+fn toml_pair_key(p) : i64 { return bayan_toml_pair_key(p); }
+fn toml_pair_value(p) : i64 { return bayan_toml_pair_value(p); }
+fn toml_parse(src): i64 { return bayan_toml_parse(src); }
+fn toml_parse_file(path): i64 { return bayan_toml_parse_file(path); }
+fn toml_parse_file_r(path) : Result { return bayan_toml_parse_file_r(path); }
+fn toml_get(pairs, key): i64 { return bayan_toml_get(pairs, key); }
+fn toml_get_sections(sections, name): i64 { return bayan_toml_get_sections(sections, name); }
+fn cyml_entry_new_a(a, hp, hl, bp, bl): i64 { return bayan_cyml_entry_new_a(a, hp, hl, bp, bl); }
+fn cyml_entry_new(hp, hl, bp, bl): i64 { return bayan_cyml_entry_new(hp, hl, bp, bl); }
+fn cyml_entry_header(e) : i64 { return bayan_cyml_entry_header(e); }
+fn cyml_entry_header_len(e) : i64 { return bayan_cyml_entry_header_len(e); }
+fn cyml_entry_body(e) : i64 { return bayan_cyml_entry_body(e); }
+fn cyml_entry_body_len(e) : i64 { return bayan_cyml_entry_body_len(e); }
+fn cyml_doc_new_a(a): i64 { return bayan_cyml_doc_new_a(a); }
+fn cyml_doc_new(): i64 { return bayan_cyml_doc_new(); }
+fn cyml_doc_header(d) : i64 { return bayan_cyml_doc_header(d); }
+fn cyml_doc_header_len(d) : i64 { return bayan_cyml_doc_header_len(d); }
+fn cyml_doc_entries(d) : i64 { return bayan_cyml_doc_entries(d); }
+fn cyml_doc_entry_count(d) : i64 { return bayan_cyml_doc_entry_count(d); }
+fn cyml_doc_entry(d, n): i64 { return bayan_cyml_doc_entry(d, n); }
+fn cyml_parse(data, len): i64 { return bayan_cyml_parse(data, len); }
+fn cyml_expand_value(val): i64 { return bayan_cyml_expand_value(val); }
+fn cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len): i64 { return bayan_cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len); }
+fn cyml_parse_file_r(path): i64 { return bayan_cyml_parse_file_r(path); }
+fn csv_parse_line(line): i64 { return bayan_csv_parse_line(line); }
+fn csv_escape(field): i64 { return bayan_csv_escape(field); }
+fn csv_write_line(fields): i64 { return bayan_csv_write_line(fields); }
+fn base64_encode(buf, len): i64 { return bayan_base64_encode(buf, len); }
+fn base64_decode(encoded, enc_len): i64 { return bayan_base64_decode(encoded, enc_len); }
+fn base64url_encode(buf, len): i64 { return bayan_base64url_encode(buf, len); }
+fn base64url_decode(encoded, enc_len): i64 { return bayan_base64url_decode(encoded, enc_len); }
+fn u256_zero(): i64 { return bayan_u256_zero(); }
+fn u256_from(val): i64 { return bayan_u256_from(val); }
+fn u256_copy(dst, src): i64 { return bayan_u256_copy(dst, src); }
+fn u256_clone(a): i64 { return bayan_u256_clone(a); }
+fn u256_limb(a, i): i64 { return bayan_u256_limb(a, i); }
+fn u256_set_limb(a, i, v): i64 { return bayan_u256_set_limb(a, i, v); }
+fn u256_is_zero(a): i64 { return bayan_u256_is_zero(a); }
+fn u256_cmp(a, b): i64 { return bayan_u256_cmp(a, b); }
+fn u256_eq(a, b): i64 { return bayan_u256_eq(a, b); }
+fn u256_add(r, a, b): i64 { return bayan_u256_add(r, a, b); }
+fn u256_sub(r, a, b): i64 { return bayan_u256_sub(r, a, b); }
+fn u256_mul(r, a, b): i64 { return bayan_u256_mul(r, a, b); }
+fn u256_shl1(r, a): i64 { return bayan_u256_shl1(r, a); }
+fn u256_shr1(r, a): i64 { return bayan_u256_shr1(r, a); }
+fn u256_mod(r, a, p): i64 { return bayan_u256_mod(r, a, p); }
+fn u256_addmod(r, a, b, p): i64 { return bayan_u256_addmod(r, a, b, p); }
+fn u256_submod(r, a, b, p): i64 { return bayan_u256_submod(r, a, b, p); }
+fn u256_mulmod(r, a, b, p): i64 { return bayan_u256_mulmod(r, a, b, p); }
+fn u256_to_hex(a): i64 { return bayan_u256_to_hex(a); }
+fn u256_from_hex(s): i64 { return bayan_u256_from_hex(s); }
+fn u128_set(dst, lo, hi): i64 { return bayan_u128_set(dst, lo, hi); }
+fn u128_from_u64(dst, lo): i64 { return bayan_u128_from_u64(dst, lo); }
+fn u128_copy(dst, src): i64 { return bayan_u128_copy(dst, src); }
+fn u128_lo(ptr): i64 { return bayan_u128_lo(ptr); }
+fn u128_hi(ptr): i64 { return bayan_u128_hi(ptr); }
+fn u128_eq(a, b): i64 { return bayan_u128_eq(a, b); }
+fn u128_is_zero(ptr): i64 { return bayan_u128_is_zero(ptr); }
+fn u128_add(dst, a, b): i64 { return bayan_u128_add(dst, a, b); }
+fn u128_sub(dst, a, b): i64 { return bayan_u128_sub(dst, a, b); }
+fn u128_addeq(dst, src): i64 { return bayan_u128_addeq(dst, src); }
+fn u128_subeq(dst, src): i64 { return bayan_u128_subeq(dst, src); }
+fn u128_mul(dst, a, b): i64 { return bayan_u128_mul(dst, a, b); }
+fn u128_muleq(dst, src): i64 { return bayan_u128_muleq(dst, src); }
+fn u128_shl(dst, src, n): i64 { return bayan_u128_shl(dst, src, n); }
+fn u128_shr(dst, src, n): i64 { return bayan_u128_shr(dst, src, n); }
+fn u128_and(dst, a, b): i64 { return bayan_u128_and(dst, a, b); }
+fn u128_or(dst, a, b): i64 { return bayan_u128_or(dst, a, b); }
+fn u128_xor(dst, a, b): i64 { return bayan_u128_xor(dst, a, b); }
+fn u128_not(dst, src): i64 { return bayan_u128_not(dst, src); }
+fn u128_shleq(dst, n): i64 { return bayan_u128_shleq(dst, n); }
+fn u128_shreq(dst, n): i64 { return bayan_u128_shreq(dst, n); }
+fn u128_andeq(dst, src): i64 { return bayan_u128_andeq(dst, src); }
+fn u128_oreq(dst, src): i64 { return bayan_u128_oreq(dst, src); }
+fn u128_xoreq(dst, src): i64 { return bayan_u128_xoreq(dst, src); }
+fn u128_ugt(a, b): i64 { return bayan_u128_ugt(a, b); }
+fn u128_uge(a, b): i64 { return bayan_u128_uge(a, b); }
+fn u128_ult(a, b): i64 { return bayan_u128_ult(a, b); }
+fn u128_ule(a, b): i64 { return bayan_u128_ule(a, b); }
+fn u128_divmod(qdst, rdst, a, b): i64 { return bayan_u128_divmod(qdst, rdst, a, b); }
+fn u128_div(dst, a, b): i64 { return bayan_u128_div(dst, a, b); }
+fn u128_mod(dst, a, b): i64 { return bayan_u128_mod(dst, a, b); }
+fn u128_diveq(dst, src): i64 { return bayan_u128_diveq(dst, src); }
+fn u128_modeq(dst, src): i64 { return bayan_u128_modeq(dst, src); }
+fn u64_mulmod(a, b, m): i64 { return bayan_u64_mulmod(a, b, m); }
+fn u64_powmod(base, exp, m): i64 { return bayan_u64_powmod(base, exp, m); }
