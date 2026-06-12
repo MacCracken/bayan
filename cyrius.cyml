@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "bayan — data-format & big-integer distfile (json / toml / cyml / csv / base64 / bigint / u128) for the AGNOS-lineage Cyrius ecosystem; foldable into stdlib per the sandhi pattern"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.1.24"
+cyrius = "6.2.1"
 
 [build]
 entry = "src/main.cyr"
