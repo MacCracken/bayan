@@ -4,6 +4,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-06-19
+
+### Fixed
+
+- **u128: aarch64 portability (SIGILL).** `bayan_u128_divmod` and
+  `bayan_u64_mulmod` carried unguarded x86 `div`/`mul` inline asm — the raw x86
+  machine-code bytes emitted verbatim into the text section on non-x86 targets and
+  trapped (SIGILL) on aarch64. Guarded both x86 fast paths with
+  `#ifdef CYRIUS_ARCH_X86`: `divmod` falls through to its existing portable
+  shift-subtract loop, and `mulmod` gains a `#ifdef CYRIUS_ARCH_AARCH64` path that
+  computes the 128-bit product + remainder via the u128 pipeline
+  (`bayan_u128_mul` + `bayan_u128_mod`). x86 is byte-identical (the asm path is
+  unchanged). Surfaced by cyrius's VR-01 full-tcyr-on-arm64 gate.
+
 ## [1.0.1] — 2026-06-12
 
 ### Changed
