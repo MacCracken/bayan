@@ -27,6 +27,28 @@ include "src/_compat.cyr"
 
 alloc_init();
 
+# Streaming-parser callback state + handlers (used by the "json streaming
+# parser" group below). Defined up front: a function pointer is taken with the
+# address-of operator `&fn` (see bayan_json_stream_on calls below), and the
+# single-pass compiler needs each callback defined before that registration.
+var _strm_obj = 0; var _strm_arr = 0; var _strm_key = 0; var _strm_str = 0;
+var _strm_int = 0; var _strm_bool = 0; var _strm_null = 0; var _strm_err = 0;
+var _strm_last_bool = 0 - 1; var _strm_acc = 0;
+fn _strm_reset() {
+    _strm_obj = 0; _strm_arr = 0; _strm_key = 0; _strm_str = 0;
+    _strm_int = 0; _strm_bool = 0; _strm_null = 0; _strm_err = 0;
+    _strm_last_bool = 0 - 1; _strm_acc = 0;
+    return 0;
+}
+fn _strm_cb_obj(ctx)     { _strm_obj  = _strm_obj + 1;  return 0; }
+fn _strm_cb_arr(ctx)     { _strm_arr  = _strm_arr + 1;  return 0; }
+fn _strm_cb_key(ctx, k)  { _strm_key  = _strm_key + 1;  return 0; }
+fn _strm_cb_str(ctx, s)  { _strm_str  = _strm_str + 1;  return 0; }
+fn _strm_cb_int(ctx, n)  { _strm_int  = _strm_int + 1; _strm_acc = _strm_acc + n; return 0; }
+fn _strm_cb_bool(ctx, b) { _strm_bool = _strm_bool + 1; _strm_last_bool = b; return 0; }
+fn _strm_cb_null(ctx)    { _strm_null = _strm_null + 1; return 0; }
+fn _strm_cb_err(ctx, m, p) { _strm_err = _strm_err + 1; return 0; }
+
 test_group("base64 encode/decode (canonical)");
 assert_eq(streq(bayan_base64_encode("foo", 3), "Zm9v"), 1, "encode foo");
 assert_eq(streq(bayan_base64_encode("fo", 2), "Zm8="), 1, "encode fo (pad)");
@@ -91,22 +113,56 @@ var pst[40];
 var st = "42 oops";
 assert_eq(bayan_json_v_parse_ctx(&pst, st, strlen(st)), 0, "trailing content rejected");
 
-test_group("json streaming parser — reentrant driver (v1.0.3)");
-# A handler with no callbacks still drives a full walk, advancing the per-call
-# cursor through every _js_* helper. The return value proves the cursor landed
-# exactly at end-of-input — a mis-advance would trip the trailing-content check.
-# This covers the streaming cursor-threading without needing fnptr callbacks.
+test_group("json streaming parser — reentrant callbacks (v1.0.3)");
+# Register real callbacks (fnptr via `&fn`) and assert per-event dispatch — this
+# exercises the fncallN(fp, ...) path through every reentrant _js_* helper, not
+# just the driver's return value.
 var sh = bayan_json_stream_handler_new(0);
-var sjs = "{\"a\": [1, 2, 3], \"b\": {\"c\": true}, \"d\": \"x\\ny\"}";
+assert_eq(bayan_json_stream_on(sh, JS_EV_OBJECT_START, &_strm_cb_obj), 0, "register obj_start");
+bayan_json_stream_on(sh, JS_EV_ARRAY_START, &_strm_cb_arr);
+bayan_json_stream_on(sh, JS_EV_KEY,         &_strm_cb_key);
+bayan_json_stream_on(sh, JS_EV_STRING,      &_strm_cb_str);
+bayan_json_stream_on(sh, JS_EV_INT,         &_strm_cb_int);
+bayan_json_stream_on(sh, JS_EV_BOOL,        &_strm_cb_bool);
+bayan_json_stream_on(sh, JS_EV_NULL,        &_strm_cb_null);
+bayan_json_stream_on(sh, JS_EV_ERROR,       &_strm_cb_err);
+assert_eq(bayan_json_stream_on(sh, JS_EV_COUNT, &_strm_cb_int), 0 - 1, "out-of-range event_id rejected");
+
+# Nested doc: root {a,b,d,e} + nested {c}; values exercise int/bool/null/string.
+_strm_reset();
+var sjs = "{\"a\": [1, 2, 3], \"b\": {\"c\": true}, \"d\": \"x\\ny\", \"e\": null}";
 assert_eq(bayan_json_stream_parse(sjs, strlen(sjs), sh), 0, "stream-parse nested doc ok");
-var sjs2 = "[true, false, null, -12.5e2]";
-assert_eq(bayan_json_stream_parse(sjs2, strlen(sjs2), sh), 0, "stream-parse scalars/array ok");
-# Malformed input -> -1, with the error mirrored into the legacy last-error slots.
+assert_eq(_strm_obj, 2, "2 object starts (root + nested)");
+assert_eq(_strm_arr, 1, "1 array start");
+assert_eq(_strm_key, 5, "5 keys (a,b,d,e,c)");
+assert_eq(_strm_int, 3, "3 int events");
+assert_eq(_strm_acc, 6, "int values summed via callback dispatch (1+2+3)");
+assert_eq(_strm_bool, 1, "1 bool event");
+assert_eq(_strm_last_bool, 1, "bool value = true");
+assert_eq(_strm_null, 1, "1 null event");
+assert_eq(_strm_str, 1, "1 string value (\"x\\ny\")");
+
+# Float values fire on_float, never on_int (exercises _js_parse_number's path).
+_strm_reset();
+var sflt = "[1, 2.5, -3.0e2]";
+assert_eq(bayan_json_stream_parse(sflt, strlen(sflt), sh), 0, "stream-parse mixed numbers ok");
+assert_eq(_strm_int, 1, "1 int (the bare 1)");
+assert_eq(_strm_acc, 1, "int accumulator = 1 (floats not summed as ints)");
+
+# Malformed input fires on_error and returns -1, with the error mirrored into
+# the legacy last-error slots.
+_strm_reset();
 var sbad = "{\"k\": }";
-assert_eq(bayan_json_stream_parse(sbad, strlen(sbad), sh), 0 - 1, "stream-parse malformed -> -1");
-assert_eq(streq(bayan_json_last_error(), ""), 0, "stream error mirrored to last_error");
-# A subsequent success clears the legacy slots (per-call err of 0 is mirrored).
-assert_eq(bayan_json_stream_parse(sjs2, strlen(sjs2), sh), 0, "re-parse ok after error");
+assert_eq(bayan_json_stream_parse(sbad, strlen(sbad), sh), 0 - 1, "malformed -> -1");
+assert_eq(_strm_err, 1, "on_error callback fired");
+assert_eq(streq(bayan_json_last_error(), ""), 0, "error mirrored to last_error");
+
+# Convenience Str entry; a subsequent success clears the legacy last-error slots.
+_strm_reset();
+assert_eq(bayan_json_stream_parse_str(str_from("[10, 20]"), sh), 0, "parse_str ok after error");
+assert_eq(_strm_int, 2, "2 ints from parse_str");
+assert_eq(_strm_acc, 30, "parse_str int sum = 30");
 assert_eq(streq(bayan_json_last_error(), ""), 1, "last_error cleared after success");
+assert_eq(bayan_json_stream_parse_str(0, sh), 0 - 1, "null Str returns -1");
 
 var r = assert_summary();

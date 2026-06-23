@@ -33,7 +33,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from that state; `bayan_json_parse_state_size()` returns the bytes to reserve
   (stack `var ps[40]` or heap).
 - `tests/bayan.tcyr` — JSON value-parser group (nested object/array, ctx path,
-  per-call error reporting, trailing-content rejection); suite 8 → 25 asserts.
+  per-call error reporting, trailing-content rejection) and streaming-parser
+  group (real `&fn` callbacks asserting per-event dispatch through the reentrant
+  `_js_*` path: object/array/key/string/int/float/bool/null/error counts, the
+  error mirror, and the `_parse_str` convenience entry); suite 8 → 48 asserts.
 
 ### Changed
 

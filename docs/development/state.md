@@ -36,7 +36,8 @@ public functions prefixed `bayan_`:
 
 - `tests/bayan.tcyr` — base64 encode/decode + u128 arithmetic + alias parity +
   json value-parser reentrancy (nested parse, ctx path, per-call error
-  reporting, trailing-content rejection). 25 asserts, green on 6.2.37.
+  reporting, trailing-content rejection) + json streaming-parser callbacks
+  (real `&fn` handlers asserting per-event dispatch). 48 asserts, green on 6.2.37.
 - `src/main.cyr` — full-bundle compile smoke (exits 42).
 - Deep per-module coverage lives in cyrius's `.tcyr` suite (json/toml/csv/
   base64/bigint/u128/cyml).
