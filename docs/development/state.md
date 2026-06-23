@@ -5,11 +5,12 @@
 
 ## Version
 
-**1.0.0** — initial carve out of cyrius stdlib (2026-06-10, cyrius v6.1.25).
+**1.0.3** — json value + streaming parsers made reentrant/thread-safe
+(2026-06-23, cyrius v6.2.37). Carved from cyrius stdlib at 1.0.0 (2026-06-10).
 
 ## Toolchain
 
-- **Cyrius pin**: `6.1.24` (in `cyrius.cyml [package].cyrius`)
+- **Cyrius pin**: `6.2.37` (in `cyrius.cyml [package].cyrius`)
 
 ## Source
 
@@ -18,7 +19,7 @@ public functions prefixed `bayan_`:
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
-| `src/json.cyr`   | 1434 | 57 | `bayan_json_*` |
+| `src/json.cyr`   | 1549 | 62 | `bayan_json_*` |
 | `src/u128.cyr`   | 504  | 35 | `bayan_u128_*` / `bayan_u64_*` |
 | `src/cyml.cyr`   | 422  | 17 | `bayan_cyml_*` |
 | `src/bigint.cyr` | 365  | 20 | `bayan_u256_*` |
@@ -27,13 +28,15 @@ public functions prefixed `bayan_`:
 | `src/csv.cyr`    | 97   | 3  | `bayan_csv_*` |
 
 - `src/_compat.cyr` — 149 back-compat aliases (legacy names → `bayan_*`).
-- `dist/bayan.cyr` — 3,500-line bundle (149 canonical + 149 alias + 46
-  internal helper fns), regenerated via `cyrius distlib`. This is the
-  artifact folded into `cyrius/lib/bayan.cyr`.
+- `dist/bayan.cyr` — ~3,640-line bundle (canonical + alias + internal helper
+  fns), regenerated via `cyrius distlib`. This is the artifact folded into
+  `cyrius/lib/bayan.cyr`.
 
 ## Tests
 
-- `tests/bayan.tcyr` — base64 encode/decode + u128 arithmetic + alias parity.
+- `tests/bayan.tcyr` — base64 encode/decode + u128 arithmetic + alias parity +
+  json value-parser reentrancy (nested parse, ctx path, per-call error
+  reporting, trailing-content rejection). 25 asserts, green on 6.2.37.
 - `src/main.cyr` — full-bundle compile smoke (exits 42).
 - Deep per-module coverage lives in cyrius's `.tcyr` suite (json/toml/csv/
   base64/bigint/u128/cyml).

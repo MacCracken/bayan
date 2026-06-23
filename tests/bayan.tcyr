@@ -46,4 +46,67 @@ assert_eq(bayan_u128_lo(&c), 12, "canonical 5+7=12");
 u128_from_u64(&a, 100); u128_from_u64(&b, 23); u128_add(&c, &a, &b);
 assert_eq(u128_lo(&c), 123, "alias 100+23=123");
 
+test_group("json value parser — reentrant per-call state (v1.0.3)");
+# Nested object/array exercises recursive descent crossing sub-parser call
+# boundaries — the cursor-threading regression for the thread-safety fix.
+var js = "{\"name\": \"bayan\", \"ver\": 103, \"tags\": [\"json\", \"u128\"], \"meta\": {\"ok\": true}}";
+var doc = bayan_json_v_parse_str(js, strlen(js));
+assert_eq(doc != 0, 1, "parse nested object");
+assert_eq(bayan_json_v_is_obj(doc), 1, "root is object");
+assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_obj_get(doc, "name"))), "bayan"), 1, "name == bayan");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(doc, "ver")), 103, "ver == 103");
+var tags = bayan_json_v_obj_get(doc, "tags");
+assert_eq(bayan_json_v_arr_len(tags), 2, "tags has 2 elements");
+assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_arr_get(tags, 1))), "u128"), 1, "tags[1] == u128");
+var meta = bayan_json_v_obj_get(doc, "meta");
+assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(meta, "ok")), 1, "meta.ok == true");
+
+# Reentrant ctx path: caller-owned stack state, touches no module globals.
+var ps[40];
+var d2 = bayan_json_v_parse_ctx(&ps, js, strlen(js));
+assert_eq(d2 != 0, 1, "ctx parse ok");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d2, "ver")), 103, "ctx ver == 103");
+assert_eq(streq(bayan_json_state_error(&ps), ""), 1, "ctx clean on success");
+assert_eq(bayan_json_parse_state_size(), 40, "state size == 40");
+
+# Two independent states stay independent (sequential proxy for the
+# concurrency the fix enables — no shared cursor between them).
+var psa[40]; var psb[40];
+var sa = "[1, 2, 3]"; var sb = "{\"x\": 9}";
+var da = bayan_json_v_parse_ctx(&psa, sa, strlen(sa));
+var db = bayan_json_v_parse_ctx(&psb, sb, strlen(sb));
+assert_eq(bayan_json_v_arr_len(da), 3, "state A array len 3");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(db, "x")), 9, "state B x == 9");
+
+# Error reporting lives in the per-call state (not the globals).
+var pse[40];
+var se = "{\"k\": }";
+var bad = bayan_json_v_parse_ctx(&pse, se, strlen(se));
+assert_eq(bad, 0, "malformed object rejected");
+assert_eq(streq(bayan_json_state_error(&pse), ""), 0, "error message recorded");
+assert_eq(bayan_json_state_error_pos(&pse) >= 0, 1, "error pos recorded");
+
+# Trailing content after a complete value is rejected.
+var pst[40];
+var st = "42 oops";
+assert_eq(bayan_json_v_parse_ctx(&pst, st, strlen(st)), 0, "trailing content rejected");
+
+test_group("json streaming parser — reentrant driver (v1.0.3)");
+# A handler with no callbacks still drives a full walk, advancing the per-call
+# cursor through every _js_* helper. The return value proves the cursor landed
+# exactly at end-of-input — a mis-advance would trip the trailing-content check.
+# This covers the streaming cursor-threading without needing fnptr callbacks.
+var sh = bayan_json_stream_handler_new(0);
+var sjs = "{\"a\": [1, 2, 3], \"b\": {\"c\": true}, \"d\": \"x\\ny\"}";
+assert_eq(bayan_json_stream_parse(sjs, strlen(sjs), sh), 0, "stream-parse nested doc ok");
+var sjs2 = "[true, false, null, -12.5e2]";
+assert_eq(bayan_json_stream_parse(sjs2, strlen(sjs2), sh), 0, "stream-parse scalars/array ok");
+# Malformed input -> -1, with the error mirrored into the legacy last-error slots.
+var sbad = "{\"k\": }";
+assert_eq(bayan_json_stream_parse(sbad, strlen(sbad), sh), 0 - 1, "stream-parse malformed -> -1");
+assert_eq(streq(bayan_json_last_error(), ""), 0, "stream error mirrored to last_error");
+# A subsequent success clears the legacy slots (per-call err of 0 is mirrored).
+assert_eq(bayan_json_stream_parse(sjs2, strlen(sjs2), sh), 0, "re-parse ok after error");
+assert_eq(streq(bayan_json_last_error(), ""), 1, "last_error cleared after success");
+
 var r = assert_summary();

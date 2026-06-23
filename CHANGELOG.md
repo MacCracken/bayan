@@ -4,6 +4,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-06-23
+
+### Fixed
+
+- **json: value + streaming parsers are now reentrant (thread-safe).** The
+  recursive-descent value parser (`bayan_json_v_parse*`) and the event-streaming
+  parser (`bayan_json_stream_parse*`) kept their lexer cursor in three process
+  globals (`_jp_buf` / `_jp_len` / `_jp_pos`) plus shared error slots, so two
+  concurrent parses clobbered each other's cursor mid-descent — wrong/garbage
+  value trees or out-of-bounds loads. Replaced the global cursor with a per-call
+  40-byte parser-state struct (`{buf, len, pos, err_msg, err_pos}`) threaded as
+  the first argument through every parser helper. `bayan_json_v_parse_str` /
+  `bayan_json_v_parse` / `bayan_json_stream_parse` keep their signatures and now
+  stack-allocate their own state (so existing single-threaded callers are
+  unchanged **and** concurrent), mirroring the per-call error into the legacy
+  `bayan_json_last_error()` slots only as a back-compat courtesy. Node allocation
+  is unchanged — the filed race was the cursor, not the node arena. Reported by
+  thoth (parallel MCP tool-result parsing). See
+  `docs/development/issues/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md`.
+
+### Added
+
+- **Reentrant parse API.** `bayan_json_v_parse_ctx(ps, buf, len)` and
+  `bayan_json_v_parse_ctx_str(ps, src)` parse into a caller-owned state buffer
+  and touch no module globals — the path concurrent consumers use.
+  `bayan_json_state_error(ps)` / `bayan_json_state_error_pos(ps)` read the error
+  from that state; `bayan_json_parse_state_size()` returns the bytes to reserve
+  (stack `var ps[40]` or heap).
+- `tests/bayan.tcyr` — JSON value-parser group (nested object/array, ctx path,
+  per-call error reporting, trailing-content rejection); suite 8 → 25 asserts.
+
+### Changed
+
+- `cyrius` pin bumped 6.2.1 → 6.2.37 (closes the manifest/toolchain drift). No
+  unrelated source changes; `.tcyr` suite green on 6.2.37.
+
 ## [1.0.2] — 2026-06-19
 
 ### Fixed
