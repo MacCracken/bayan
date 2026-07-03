@@ -165,4 +165,25 @@ assert_eq(_strm_acc, 30, "parse_str int sum = 30");
 assert_eq(streq(bayan_json_last_error(), ""), 1, "last_error cleared after success");
 assert_eq(bayan_json_stream_parse_str(0, sh), 0 - 1, "null Str returns -1");
 
+test_group("toml: triple-quoted strings — \"\"\" (basic) + ''' (literal)");
+# Regression guard for the """-drops-body bug: a """...""" value used to fall
+# through to the single-line `"` branch and parse to "" (body silently lost).
+# Both triple forms are captured verbatim (bayan does not expand \escapes).
+# One optional leading newline is skipped; one trailing newline is trimmed.
+var tdoc = "title = \"cfg\"\nmk = \"\"\"\ncargo build \\\n  --release\n\"\"\"\nlit = '''\nraw$stuff\n'''\nafter = \"tail\"\nq = \"\"\"a\"b\"c\"\"\"\ne = \"\"\n";
+var tsecs = bayan_toml_parse(str_from(tdoc));
+assert_eq(vec_len(tsecs) >= 1, 1, "toml: parsed a section");
+var tp = bayan_toml_section_pairs(vec_get(tsecs, 0));
+var mk = bayan_toml_get(tp, "mk");
+assert_eq(mk != 0, 1, "toml: \"\"\" key present");
+assert_eq(str_len(mk) > 0, 1, "toml: \"\"\" body not dropped (the fix)");
+assert_eq(str_eq_cstr(mk, "cargo build \\\n  --release"), 1, "toml: \"\"\" body verbatim, backslash preserved");
+assert_eq(str_eq_cstr(bayan_toml_get(tp, "lit"), "raw$stuff"), 1, "toml: ''' body verbatim (regression)");
+assert_eq(str_eq_cstr(bayan_toml_get(tp, "title"), "cfg"), 1, "toml: single-line \" before a triple");
+assert_eq(str_eq_cstr(bayan_toml_get(tp, "after"), "tail"), 1, "toml: key after a triple parses");
+assert_eq(str_eq_cstr(bayan_toml_get(tp, "q"), "a\"b\"c"), 1, "toml: embedded \" inside \"\"\" preserved");
+var ev = bayan_toml_get(tp, "e");
+assert_eq(ev != 0, 1, "toml: empty-string key present");
+assert_eq(str_len(ev), 0, "toml: \"\" stays empty single-line, not mis-read as triple");
+
 var r = assert_summary();

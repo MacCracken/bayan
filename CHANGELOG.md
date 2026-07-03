@@ -4,6 +4,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-07-03
+
+### Fixed
+
+- **toml: `"""…"""` multi-line strings are no longer silently dropped.** The
+  TOML value parser only recognized `'''` (triple **single**-quote) as a
+  multi-line delimiter; a `"""` (triple **double**-quote) value fell through to
+  the single-line `"…"` branch, where the opening `"` immediately closed against
+  the second `"` and the entire body was parsed as an empty string — no error,
+  just silent data loss. This broke every consumer whose TOML used `"""`,
+  notably takumi building zugot recipes: 436 of 563 recipes use `"""` for their
+  `make`/`configure`/`install` build steps, so those steps parsed empty and
+  takumi produced zero-payload `.ark` packages with no diagnostic. Fixed by
+  parameterizing the multi-line parser/end-finder by delimiter char
+  (`_toml_parse_multiline_q` / `_toml_multiline_end_q`, `q` = 34 `"` or 39 `'`)
+  and adding a `"""` branch to the value dispatch **before** the single-line
+  `"` case. Both triple forms are captured **verbatim** (bayan does not expand
+  `\`-escapes anywhere; a `\` at a line end is preserved, so shell build steps
+  with backslash line-continuations round-trip intact). The original `'''`
+  entry points are kept as thin back-compat wrappers. Covered by a new
+  `tests/bayan.tcyr` group (verbatim `"""`, `'''` regression, dispatch
+  ordering, embedded quotes, empty `""`) plus an adversarial edge-probe pass
+  (EOF/no-close bounds, 4-/6-quote counts, mixed delimiters, real zugot
+  recipes) — all green.
+
 ## [1.0.3] — 2026-06-23
 
 ### Fixed

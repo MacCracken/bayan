@@ -111,17 +111,24 @@ fn _toml_str_end(buf, pos, end): i64 {
     return pos;
 }
 
-# Parse a triple-quoted string: '''...''' — returns Str
-fn _toml_parse_multiline(buf, pos, end): i64 {
-    # Skip opening '''
+# Parse a triple-quoted multi-line string delimited by `q` — 39 (`'''`,
+# literal) or 34 (`"""`, basic). bayan captures the body VERBATIM for both
+# forms (matching its single-line string parser, which also preserves raw
+# bytes and does not expand \escapes); the two forms differ only in their
+# delimiter char. Per TOML, one optional newline immediately after the opening
+# delimiter is skipped and one trailing newline before the closer is trimmed.
+# Returns Str. (Historically only `'''` was handled — a `"""` value fell
+# through to the single-line `"` parser and parsed to an empty string, silently
+# dropping the body. Parameterizing by `q` fixes that data loss.)
+fn _toml_parse_multiline_q(buf, pos, end, q): i64 {
+    # Skip opening delimiter
     pos = pos + 3;
-    # Skip optional newline after opening '''
+    # Skip optional newline after opening delimiter
     if (pos < end && load8(buf + pos) == 10) { pos = pos + 1; }
     var start = pos;
     while (pos + 2 < end) {
-        if (load8(buf + pos) == 39 && load8(buf + pos + 1) == 39 && load8(buf + pos + 2) == 39) {
-            # Found closing '''
-            # Trim trailing newline if present
+        if (load8(buf + pos) == q && load8(buf + pos + 1) == q && load8(buf + pos + 2) == q) {
+            # Found closing delimiter. Trim trailing newline if present.
             var slen = pos - start;
             if (slen > 0 && load8(buf + start + slen - 1) == 10) { slen = slen - 1; }
             return str_new(buf + start, slen);
@@ -131,18 +138,22 @@ fn _toml_parse_multiline(buf, pos, end): i64 {
     return str_new(buf + start, end - start);
 }
 
-# Get end position after triple-quoted string
-fn _toml_multiline_end(buf, pos, end): i64 {
+# Get end position after a triple-quoted string delimited by `q` (39 or 34).
+fn _toml_multiline_end_q(buf, pos, end, q): i64 {
     pos = pos + 3;
     if (pos < end && load8(buf + pos) == 10) { pos = pos + 1; }
     while (pos + 2 < end) {
-        if (load8(buf + pos) == 39 && load8(buf + pos + 1) == 39 && load8(buf + pos + 2) == 39) {
+        if (load8(buf + pos) == q && load8(buf + pos + 1) == q && load8(buf + pos + 2) == q) {
             return pos + 3;
         }
         pos = pos + 1;
     }
     return end;
 }
+
+# Back-compat wrappers for the original `'''`-only entry points.
+fn _toml_parse_multiline(buf, pos, end): i64 { return _toml_parse_multiline_q(buf, pos, end, 39); }
+fn _toml_multiline_end(buf, pos, end): i64 { return _toml_multiline_end_q(buf, pos, end, 39); }
 
 # Parse a TOML file into a vec of sections.
 # Each section has a name (from [[name]]) and a pairs vec.
@@ -223,13 +234,23 @@ fn bayan_toml_parse(src): i64 {
                 var value = str_from("");
                 if (pos < slen) {
                     var vc = load8(data + pos);
-                    # Triple-quoted string '''...'''
+                    # Triple-quoted literal string '''...'''
                     var is_tri = vc == 39 && pos + 2 < slen;
                     if (is_tri == 1) { is_tri = load8(data + pos + 1) == 39; }
                     if (is_tri == 1) { is_tri = load8(data + pos + 2) == 39; }
+                    # Triple-quoted basic string """...""" — MUST be checked
+                    # before the single-line `"` branch below, or the first `"`
+                    # of `"""` would be read as an empty `"..."` (body dropped).
+                    var is_tri_d = vc == 34 && pos + 2 < slen;
+                    if (is_tri_d == 1) { is_tri_d = load8(data + pos + 1) == 34; }
+                    if (is_tri_d == 1) { is_tri_d = load8(data + pos + 2) == 34; }
                     if (is_tri == 1) {
-                        value = _toml_parse_multiline(data, pos, slen);
-                        pos = _toml_multiline_end(data, pos, slen);
+                        value = _toml_parse_multiline_q(data, pos, slen, 39);
+                        pos = _toml_multiline_end_q(data, pos, slen, 39);
+                    }
+                    elif (is_tri_d == 1) {
+                        value = _toml_parse_multiline_q(data, pos, slen, 34);
+                        pos = _toml_multiline_end_q(data, pos, slen, 34);
                     }
                     # Double-quoted string "..."
                     elif (vc == 34) {
