@@ -4,6 +4,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-07-06
+
+### Added
+
+- **toml: array VALUE element access.** `bayan_toml_parse` has always captured
+  an array value (`key = [a, b, c]`) verbatim as one raw bracketed `Str` but
+  gave callers no way to reach its elements short of hand-rolling a comma
+  splitter. Four new helpers decompose that raw value on demand:
+  `bayan_toml_array_parse` (and its allocator-threading `_a` variant) returns a
+  vec of top-level element `Str`s; `bayan_toml_is_array` reports whether a value
+  is a `[...]` array; `bayan_toml_get_array` is the `get` + `parse` convenience
+  (returns `0` for an absent key, else a possibly-empty vec). Elements are
+  whitespace-trimmed; a single layer of matching quotes (`"` basic / `'`
+  literal) is stripped with the body captured verbatim (no `\`-escape decoding,
+  matching the scalar string parser); nested-array elements are returned whole
+  for recursive re-parsing; trailing commas yield no phantom element; and `#`
+  comments (leading full-line or trailing inline, outside strings) are skipped.
+  Element `Str`s share the value's buffer (no copy), like the rest of the
+  parser. Legacy `toml_*` aliases added in `_compat.cyr`.
+
+### Fixed
+
+- **toml: array-value capture is now quote-aware for `'…'` and skips `#`
+  comments.** The multi-line array-capture scanner in `bayan_toml_parse` only
+  tracked `"` basic-string state and had no comment handling, so a literal
+  string element containing `]` (e.g. `key = ['a]', 'b']`) closed the outer
+  bracket early and truncated the captured value, and a `]` inside a `#` comment
+  line of a multi-line array did the same. The scanner now tracks whichever
+  quote char opened the string (`"` or `'`) and skips `#`-to-end-of-line
+  comments, so both forms round-trip intact. Exercised by the new
+  `tests/bayan.tcyr` array group.
+
 ## [1.0.4] — 2026-07-03
 
 ### Fixed

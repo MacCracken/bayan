@@ -74,6 +74,10 @@ fn toml_parse_file(path): i64 { return bayan_toml_parse_file(path); }
 fn toml_parse_file_r(path) : Result { return bayan_toml_parse_file_r(path); }
 fn toml_get(pairs, key): i64 { return bayan_toml_get(pairs, key); }
 fn toml_get_sections(sections, name): i64 { return bayan_toml_get_sections(sections, name); }
+fn toml_array_parse_a(a, value): i64 { return bayan_toml_array_parse_a(a, value); }
+fn toml_array_parse(value): i64 { return bayan_toml_array_parse(value); }
+fn toml_is_array(value): i64 { return bayan_toml_is_array(value); }
+fn toml_get_array(pairs, key): i64 { return bayan_toml_get_array(pairs, key); }
 fn cyml_entry_new_a(a, hp, hl, bp, bl): i64 { return bayan_cyml_entry_new_a(a, hp, hl, bp, bl); }
 fn cyml_entry_new(hp, hl, bp, bl): i64 { return bayan_cyml_entry_new(hp, hl, bp, bl); }
 fn cyml_entry_header(e) : i64 { return bayan_cyml_entry_header(e); }

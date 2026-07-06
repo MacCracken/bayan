@@ -186,4 +186,76 @@ var ev = bayan_toml_get(tp, "e");
 assert_eq(ev != 0, 1, "toml: empty-string key present");
 assert_eq(str_len(ev), 0, "toml: \"\" stays empty single-line, not mis-read as triple");
 
+test_group("toml: array VALUE element access (v1.1.0)");
+# bayan_toml_parse stores an array value verbatim (raw `[...]`); these helpers
+# decompose it into top-level elements. Covers: bare ints, quoted-string quote
+# stripping, `'`-literal strings containing `]` (needs the quote-aware capture),
+# nested-array whole capture + recursive re-parse, empty array, trailing comma,
+# and a multi-line array with inline `#` comments.
+var adoc = "nums = [1, 2, 3]\nstrs = [\"a\", \"b\", \"c\"]\nlit = ['x]y', 'z']\nnested = [[1, 2], [3, 4]]\nempty = []\ntrail = [10, 20, ]\nname = \"bayan\"\nml = [\n  100,  # first\n  200,\n]\n";
+var asecs = bayan_toml_parse(str_from(adoc));
+var ap = bayan_toml_section_pairs(vec_get(asecs, 0));
+
+# is_array discriminates a `[...]` value from a plain scalar.
+assert_eq(bayan_toml_is_array(bayan_toml_get(ap, "nums")), 1, "toml: nums is array");
+assert_eq(bayan_toml_is_array(bayan_toml_get(ap, "name")), 0, "toml: name (scalar) is not array");
+
+# Bare integer elements: comma-split + whitespace-trimmed.
+var nums = bayan_toml_array_parse(bayan_toml_get(ap, "nums"));
+assert_eq(vec_len(nums), 3, "toml: nums has 3 elements");
+assert_eq(str_eq_cstr(vec_get(nums, 0), "1"), 1, "toml: nums[0] == 1");
+assert_eq(str_eq_cstr(vec_get(nums, 2), "3"), 1, "toml: nums[2] == 3");
+
+# Quoted string elements: one quote layer stripped, body verbatim.
+var strs = bayan_toml_get_array(ap, "strs");
+assert_eq(vec_len(strs), 3, "toml: strs has 3 elements");
+assert_eq(str_eq_cstr(vec_get(strs, 1), "b"), 1, "toml: strs[1] == b (quotes stripped)");
+
+# Literal ('...') strings containing ']' — quote-aware capture, not truncated.
+var lit = bayan_toml_get_array(ap, "lit");
+assert_eq(vec_len(lit), 2, "toml: lit has 2 elements");
+assert_eq(str_eq_cstr(vec_get(lit, 0), "x]y"), 1, "toml: lit[0] == x]y (']' inside '' preserved)");
+assert_eq(str_eq_cstr(vec_get(lit, 1), "z"), 1, "toml: lit[1] == z");
+
+# Nested arrays returned whole; re-parse one recursively.
+var nested = bayan_toml_get_array(ap, "nested");
+assert_eq(vec_len(nested), 2, "toml: nested has 2 elements");
+assert_eq(str_eq_cstr(vec_get(nested, 0), "[1, 2]"), 1, "toml: nested[0] whole == [1, 2]");
+var inner = bayan_toml_array_parse(vec_get(nested, 1));
+assert_eq(vec_len(inner), 2, "toml: nested[1] re-parses to 2 elements");
+assert_eq(str_eq_cstr(vec_get(inner, 1), "4"), 1, "toml: nested[1][1] == 4");
+
+# Empty array -> zero elements.
+assert_eq(vec_len(bayan_toml_get_array(ap, "empty")), 0, "toml: empty array has 0 elements");
+
+# Trailing comma -> no phantom empty element.
+var trail = bayan_toml_get_array(ap, "trail");
+assert_eq(vec_len(trail), 2, "toml: trailing comma yields 2 (no empty tail)");
+assert_eq(str_eq_cstr(vec_get(trail, 1), "20"), 1, "toml: trail[1] == 20");
+
+# Multi-line array with inline comments: comments skipped, values intact.
+var ml = bayan_toml_get_array(ap, "ml");
+assert_eq(vec_len(ml), 2, "toml: multi-line array has 2 elements");
+assert_eq(str_eq_cstr(vec_get(ml, 0), "100"), 1, "toml: ml[0] == 100 (inline comment stripped)");
+assert_eq(str_eq_cstr(vec_get(ml, 1), "200"), 1, "toml: ml[1] == 200");
+
+# Nested array element with an INLINE comment on the first line is captured
+# WHOLE (regression: a mid-span `#` must skip only to end-of-line, not consume
+# the rest of the element span — else the nested `]` and trailing content are
+# silently dropped and the re-parse loses elements).
+var nc = bayan_toml_array_parse(str_from("[ [1, # c\n 2] , 9 ]"));
+assert_eq(vec_len(nc), 2, "toml: nested+inline-comment splits into 2 top-level elements");
+assert_eq(str_eq_cstr(vec_get(nc, 1), "9"), 1, "toml: nc[1] == 9");
+var nc0 = bayan_toml_array_parse(vec_get(nc, 0));
+assert_eq(vec_len(nc0), 2, "toml: nc[0] re-parses to 2 (nested ] not dropped by mid-span comment)");
+assert_eq(str_eq_cstr(vec_get(nc0, 1), "2"), 1, "toml: nc[0][1] == 2 (content after inline comment kept)");
+
+# Absent key -> get_array returns 0; a non-array scalar -> empty vec.
+assert_eq(bayan_toml_get_array(ap, "nope"), 0, "toml: get_array absent key -> 0");
+assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get(ap, "name"))), 0, "toml: array_parse of scalar -> empty vec");
+
+# Back-compat alias parity.
+assert_eq(vec_len(toml_array_parse(bayan_toml_get(ap, "nums"))), 3, "toml: alias toml_array_parse parity");
+assert_eq(toml_is_array(bayan_toml_get(ap, "nums")), 1, "toml: alias toml_is_array parity");
+
 var r = assert_summary();
