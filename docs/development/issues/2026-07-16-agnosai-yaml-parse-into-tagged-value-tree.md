@@ -1,7 +1,7 @@
 # bayan — YAML parse into the existing tagged value tree (feature request)
 
-**Status**: 🔴 **Open** — accepted onto the roadmap
-([roadmap.md](../roadmap.md), "YAML parsing — `bayan_yaml_*`").
+**Status**: ✅ **Resolved in bayan 1.2.0** (cyrius pin 6.4.64). Shipped as
+asked — see the Resolution section below.
 **Date**: 2026-07-16
 **From**: agnosai (the CrewAI-parity agent-orchestration Rust→Cyrius port) —
 listed as an upstream filing in its port plan
@@ -49,3 +49,40 @@ hand-rolls a ~200-line subset in `mneme/src/core_frontmatter.cyr` in the
 interim — see the roadmap item for the combined scope (including the
 `bayan_yaml_frontmatter_split` helper). Two consumers, one filing: this lands
 once, both migrate.
+
+## Resolution (bayan 1.2.0)
+
+Implemented as asked — `src/yaml.cyr` (874 lines, 12 public fns):
+
+- **`bayan_yaml_parse(src)`** / `bayan_yaml_parse_str(buf, len)` /
+  reentrant `bayan_yaml_parse_ctx(ps, buf, len)` + `_ctx_str` → the existing
+  `JTAG_*`-tagged `bayan_json_v_*` value tree. Every `bayan_json_v_*`
+  accessor traverses YAML output unchanged — the one-loader-one-shape
+  property this filing asked for. Errors via `bayan_yaml_state_error*(ps)`
+  (per-call) or the `bayan_yaml_last_error*()` mirror.
+- **Subset** (documented in the module header): block mappings (plain/quoted
+  keys) nested by indentation, block sequences incl. compact `- key: value`
+  items, single-line flow sequences, quote-aware `#` comments, scalars
+  (null/`~`/bool, strict-JSON-grammar numbers via the json scanner, verbatim
+  quoted strings), one `---`/`...` marker pair, BOM skip. **Out-of-subset
+  rejects loudly** — anchors/aliases/tags (value and key position), block
+  scalars, flow mappings incl. implicit `[a: b]`, multi-doc, marker-line
+  content, tabs in indent, empty flow elements, malformed quotes.
+- **Both lessons applied from day one** as asked: per-call parser state
+  (shared with json — reserve via `bayan_json_parse_state_size()`) and the
+  shared 128 recursion cap covering block AND flow nesting.
+- **`bayan_yaml_frontmatter_split(src)`** (+`_a`) for the mneme shape:
+  `---`-fenced frontmatter → `{yaml, body}` pair (`...` closes too; CRLF
+  tolerated; no/unclosed fence → `{0, whole input}`).
+- Pre-release hardening: a 36-agent adversarial review found 6 parser bugs
+  (marker-line content absorbed, lax number typing, mid-word quotes
+  suppressing comments, implicit flow mappings key-splitting, phantom nulls
+  from empty flow elements, glued quoted scalars) — all fixed and pinned.
+  Suite 101 → 249 asserts, green on cyrius 6.4.64. `dist/bayan.cyr`
+  regenerated (~4,750 lines); `yaml.cyr` sits after `json.cyr` in
+  `[lib].modules` (single-pass order).
+
+**Consumer next steps:** agnosai re-pins bayan ≥ 1.2.0 (or picks up the next
+cyrius `lib/bayan.cyr` refold) and points its `definitions` loader at
+`bayan_yaml_parse`; mneme replaces `core_frontmatter.cyr` with
+`bayan_yaml_frontmatter_split` + `bayan_yaml_parse`.

@@ -1,7 +1,7 @@
 [package]
 name = "bayan"
 version = "${file:VERSION}"
-description = "bayan — data-format & big-integer distfile (json / toml / cyml / csv / base64 / bigint / u128) for the AGNOS-lineage Cyrius ecosystem; foldable into stdlib per the sandhi pattern"
+description = "bayan — data-format & big-integer distfile (json / yaml / toml / cyml / csv / base64 / bigint / u128) for the AGNOS-lineage Cyrius ecosystem; foldable into stdlib per the sandhi pattern"
 license = "GPL-3.0-only"
 language = "cyrius"
 cyrius = "6.4.64"
@@ -24,11 +24,12 @@ stdlib = [
 
 # `[lib]` drives `cyrius distlib` — concatenates the listed modules into
 # `dist/bayan.cyr` for downstream / stdlib fold. Single-pass compiler:
-# each module may only reference symbols defined earlier. The 7 data
-# modules have no cross-deps among them (order free); `_compat.cyr`
-# (back-compat aliases forwarding the legacy json_*/u256_* names to the
-# canonical bayan_* API) MUST be last — its aliases reference every
-# bayan_* symbol.
+# each module may only reference symbols defined earlier. The first 7 data
+# modules have no cross-deps among them (order free); `yaml.cyr` MUST come
+# after `json.cyr` (it parses into the shared json_v value tree and reuses
+# the json parser state/number scanner); `_compat.cyr` (back-compat aliases
+# forwarding the legacy json_*/u256_* names to the canonical bayan_* API)
+# MUST be last — its aliases reference every bayan_* symbol.
 [lib]
 modules = [
     "src/base64.cyr",
@@ -38,5 +39,69 @@ modules = [
     "src/toml.cyr",
     "src/cyml.cyr",
     "src/json.cyr",
+    "src/yaml.cyr",
     "src/_compat.cyr",
+]
+
+# === Per-format sublibs (the sigil/sandhi pattern) ===
+#
+# `cyrius distlib <name>` -> dist/bayan-<name>.cyr (+ .deps). Each is the
+# self-contained closure of one format's entry points, for consumers that
+# want one parser without the full bundle's global footprint as it grows.
+# The 7 carved modules have no cross-deps, so most closures are one module;
+# yaml is the exception — it parses into json's value tree and reuses its
+# parser state/number scanner, so its closure carries json.cyr first
+# (single-pass order). Sublibs expose CANONICAL bayan_* names only:
+# _compat.cyr aliases reference every bayan_* symbol and can only ride the
+# full bundle.
+
+# json — value parser (tagged tree), streaming parser, serializer.
+[lib.json]
+modules = [
+    "src/json.cyr",
+]
+
+# yaml — YAML subset -> the shared json_v tagged tree + frontmatter split.
+# Carries json.cyr: the tree constructors, per-call parser state, and the
+# number scanner live there.
+[lib.yaml]
+modules = [
+    "src/json.cyr",
+    "src/yaml.cyr",
+]
+
+# toml — TOML parser incl. array-value element access.
+[lib.toml]
+modules = [
+    "src/toml.cyr",
+]
+
+# cyml — cyrius manifest format (header/entries + ${...} expansion).
+[lib.cyml]
+modules = [
+    "src/cyml.cyr",
+]
+
+# csv — CSV parser.
+[lib.csv]
+modules = [
+    "src/csv.cyr",
+]
+
+# base64 — encode/decode.
+[lib.base64]
+modules = [
+    "src/base64.cyr",
+]
+
+# u128 — 128-bit arithmetic (+ the bayan_u64_* helpers).
+[lib.u128]
+modules = [
+    "src/u128.cyr",
+]
+
+# bigint — u256 arithmetic.
+[lib.bigint]
+modules = [
+    "src/bigint.cyr",
 ]

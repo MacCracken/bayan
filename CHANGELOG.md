@@ -4,6 +4,56 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-07-16
+
+### Added
+
+- **Per-format sublibs** (the sigil/sandhi `[lib.<name>]` pattern) —
+  `cyrius distlib <name>` → `dist/bayan-<name>.cyr` (+ `.deps` stdlib-leaf
+  sidecar) for json / yaml / toml / cyml / csv / base64 / u128 / bigint, so
+  a consumer that wants one parser doesn't pull the whole bundle as it
+  grows. Each is the compile-verified self-contained closure of its
+  format's entry points; the 7 carved modules have no cross-deps, so most
+  closures are one module — yaml's carries `json.cyr` (shared value tree,
+  parser state, number scanner; 2,458 lines vs the full bundle's ~4,750).
+  Sublibs expose canonical `bayan_*` names only: `_compat.cyr` aliases
+  reference every `bayan_*` symbol and ride only the full `dist/bayan.cyr`.
+
+- **yaml: new module — YAML subset parser into the shared tagged value tree**
+  (`src/yaml.cyr`). `bayan_yaml_parse` / `_parse_str` / `_parse_ctx` /
+  `_parse_ctx_str` parse a pragmatic YAML subset into the SAME
+  `JTAG_*`-tagged `bayan_json_v_*` node graph the JSON value parser produces,
+  so one consumer traverses one node shape across both formats (the
+  serde-data-model property the Rust originals have). Filed by **agnosai**
+  (definition files) and driven equally by **mneme** (Markdown frontmatter) —
+  see `docs/development/issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md`.
+  In the subset: block mappings (plain/quoted keys) nested by indentation,
+  block sequences (incl. compact `- key: value` items and sequences at the
+  parent key's indent), single-line flow sequences, `#` comments
+  (quote-aware; mid-word quotes like `O'Brien` are literal), scalars typed as
+  null/`~`/bool, strict-JSON-grammar numbers (via the json module's scanner;
+  `01`/`1e` fall back to strings), and verbatim quoted strings (one layer
+  stripped, no `\`-escape decoding — the toml convention). One leading `---`
+  and one `...` marker; leading UTF-8 BOM skipped. **Everything out of
+  subset fails loudly** — anchors/aliases/tags (value AND key position),
+  block scalars, flow mappings (incl. implicit `[a: b]` entries), multi-doc
+  streams, content on marker lines, tabs in indentation, empty flow elements,
+  malformed/unterminated quotes — never a silent mis-parse. Reentrant from
+  day one (shares the json per-call parser state; errors via
+  `bayan_yaml_state_error*` or the `bayan_yaml_last_error*` mirror) and
+  depth-capped from day one (shared 128 cap, block + flow). Strings share
+  the source buffer (no copy). Hardened by a 36-agent adversarial review
+  pass pre-release (6 parser bugs found and fixed, all pinned by tests).
+- **yaml: Markdown frontmatter split.** `bayan_yaml_frontmatter_split(src)`
+  (+ `_a` variant) splits `---` -fenced YAML frontmatter from a Markdown
+  body (`...` also closes; CRLF tolerated; no/unclosed fence → `{0, whole
+  input}`, mirroring mneme's interim parser). Accessors
+  `bayan_yaml_fm_yaml` / `bayan_yaml_fm_body`.
+- `tests/bayan.tcyr` — yaml group: scalar typing, quoting, comments,
+  nesting, block/flow sequences, compact items, markers, frontmatter,
+  reentrancy, err_pos, depth caps (block + flow), and a loud-rejection
+  battery for every out-of-subset form; suite 101 → 249 asserts.
+
 ## [1.1.1] — 2026-07-16
 
 ### Changed

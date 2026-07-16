@@ -51,7 +51,14 @@ parser reuses the same tokenize → AST approach — modest effort, high reuse.
   behind a flag; downstream consumer (mneme) green; folds byte-identical into
   `cyrius/lib/bayan.cyr` per the sandhi pattern.
 
-### YAML parsing — `bayan_yaml_*` (planned)
+### YAML parsing — `bayan_yaml_*` — ✅ shipped in 1.2.0 (2026-07-16)
+
+Shipped as scoped below: `bayan_yaml_parse*` → the shared `bayan_json_v_*`
+tagged value tree, plus `bayan_yaml_frontmatter_split`; per-call state and
+the 128 depth cap from day one; every out-of-subset form rejects loudly
+(hardened by a pre-release adversarial review — 6 parser bugs fixed and
+pinned). Remaining: the two consumers (agnosai definitions, mneme
+frontmatter) migrate on their next bayan re-pin / cyrius refold.
 
 Add YAML as another data-format parser alongside `json` / `toml` / `cyml` /
 `csv`. Same tokenize → key/value approach as the existing block parsers —

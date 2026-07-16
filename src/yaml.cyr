@@ -1,0 +1,874 @@
+# bayan — YAML subset parser -> the shared tagged value tree.
+#
+# Parses a pragmatic YAML subset into the SAME `JTAG_*`-tagged 24-byte
+# `bayan_json_v_*` value cells the JSON value parser produces, so one
+# consumer traverses one node shape regardless of input format (the
+# serde-data-model property the Rust originals have). Filed by agnosai
+# (definition files) and driven equally by mneme (Markdown frontmatter):
+# docs/development/issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md
+#
+# In the subset:
+#   - block mappings (`key: value`), nested by indentation (spaces only);
+#     plain or quoted keys
+#   - block sequences (`- item`), incl. compact `- key: value` items and
+#     sequences at the same indent as their parent mapping key
+#   - flow sequences `[a, b, c]` (single-line, on the key line, nestable,
+#     trailing comma ok)
+#   - scalars: null / ~ / true / false, STRICT-JSON-grammar numbers
+#     (INT/FLOAT; leading-zero `01` or digitless-exponent `1e` tokens fall
+#     back to plain strings), single- or double-quoted strings (one quote
+#     layer stripped, body VERBATIM — no \-escape decoding, matching the
+#     toml module's convention), plain strings
+#   - `#` comments (full-line or trailing, quote-aware) and blank lines.
+#     A quote char opens a quoted region only at a token boundary (content
+#     start, or after space / tab / `[` / `,`) — mid-word quotes (O'Brien,
+#     5" nail) are literal text, in comment stripping and key splitting both
+#   - one leading `---` document-start and one `...` document-end marker
+#     (each on its own line)
+#   - a single-line top-level scalar or flow-sequence document; an empty
+#     document is JTAG_NULL; a leading UTF-8 BOM is skipped
+#
+# REJECTED LOUDLY (parse error, never a silent mis-parse):
+#   - anchors/aliases (`&a` / `*a`), tags (`!` / `!!type`) — in value AND
+#     key position
+#   - block scalars (`|` / `>`); plain values led by `- ` or `? ` indicators
+#   - flow mappings (`{k: v}`) and implicit flow-mapping entries (`[a: b]`)
+#   - a second `---` (multi-document streams), content ON a `---`/`...`
+#     marker line, content (or a second `...`) after `...`
+#   - a flow sequence on its own line below the key (must follow the key)
+#   - empty flow-sequence elements (`[,]` / `[a,,b]`; trailing comma is ok)
+#   - tabs in indentation; unterminated flow sequences; unterminated or
+#     malformed quoted scalars (content past the close quote)
+#
+# Out of subset entirely (not detected): lone-CR (classic Mac) line endings.
+#
+# Reentrancy + bounds: keys off the json module's per-call parser state
+# (`_JP_STATE_SIZE` = 48 bytes — the same struct, so a caller reserves via
+# bayan_json_parse_state_size()) and shares its recursion cap
+# (`_JP_MAX_DEPTH` = 128, "nesting too deep") — both lessons applied from
+# day one (thoth cursor issue 2026-06-23, agnosai depth-cap issue
+# 2026-07-16). err_pos is a byte offset into the source buffer.
+#
+# Strings share the source buffer (no copy) like the toml parser — the
+# source must outlive the returned tree. Node allocation flows through
+# default_alloc(), matching the JSON value parser.
+#
+# NOTE (single-pass bundle order): this module references json.cyr internals
+# (_jp_state_init / _jp_set_err / _jp_parse_number / constructors), so it
+# must appear AFTER src/json.cyr in `[lib].modules` and in include lists.
+
+# === Legacy last-error slots (mirror of the json module's convention) ===
+
+var _yaml_err_msg = 0;
+var _yaml_err_pos = 0;
+
+# Return the last yaml parse error message (cstr) — set on bayan_yaml_parse*
+# failure via the globals-compat entries. Concurrent callers use the ctx path
+# and bayan_yaml_state_error() instead.
+fn bayan_yaml_last_error(): i64 {
+    if (_yaml_err_msg == 0) { return ""; }
+    return _yaml_err_msg;
+}
+
+# Return the last yaml parse error byte offset.
+fn bayan_yaml_last_error_pos(): i64 { return _yaml_err_pos; }
+
+# Read the parse error from a caller-owned parser state (race-free). Thin
+# forwarders over the shared state accessors.
+fn bayan_yaml_state_error(ps): i64 { return bayan_json_state_error(ps); }
+
+# Byte offset companion of bayan_yaml_state_error.
+fn bayan_yaml_state_error_pos(ps): i64 { return bayan_json_state_error_pos(ps); }
+
+# === Small helpers ===
+
+# True if the token (ptr,len) equals the C string `s`.
+fn _yp_tok_is(ptr, len, s): i64 {
+    if (strlen(s) != len) { return 0; }
+    return memeq(ptr, s, len);
+}
+
+# Trim ASCII space/tab from both ends of (ptr,len); returns new ptr via
+# out-of-band: packs nothing — instead callers use _yp_trim_start/_yp_trim_len
+# on their own. Kept as two passes to stay expression-free.
+fn _yp_trim_start(ptr, len): i64 {
+    var i = 0;
+    while (i < len) {
+        var c = load8(ptr + i);
+        if (c == 32 || c == 9) { i = i + 1; }
+        else { return i; }
+    }
+    return i;
+}
+
+# Length of (ptr,len) after trimming trailing space/tab.
+fn _yp_trim_end(ptr, len): i64 {
+    var n = len;
+    while (n > 0) {
+        var c = load8(ptr + n - 1);
+        if (c == 32 || c == 9) { n = n - 1; }
+        else { return n; }
+    }
+    return n;
+}
+
+# True if a quote char at index j of the content starting at `start` sits at
+# a token boundary — content start, or after space / tab / `[` / `,`. Only
+# there does it OPEN a quoted region; mid-word quotes (O'Brien, 5" nail) are
+# literal text. Shared by the comment stripper and the key splitter so both
+# agree on what is quoted.
+fn _yp_quote_opens_at(ptr, start, j): i64 {
+    if (j == start) { return 1; }
+    var pc = load8(ptr + j - 1);
+    if (pc == 32 || pc == 9 || pc == 91 || pc == 44) { return 1; }
+    return 0;
+}
+
+# === Line records ===
+#
+# The scanner turns the input into a vec of 32-byte line records:
+#   +0   off     i64   byte offset of the line's content start (for err_pos)
+#   +8   ptr     cstr  first content byte (past indentation)
+#   +16  len     i64   content length (comment-stripped, end-trimmed)
+#   +24  indent  i64   leading-space count (the line's column)
+# Blank lines, comment-only lines, and document markers never produce records.
+
+# Scan (buf,len) into line records. Returns the vec, or 0 with the error set
+# in ps (tab indentation, multi-document, content after `...`).
+fn _yp_scan_lines(ps, buf, len): i64 {
+    var lines = vec_new();
+    var pos = 0;
+    # skip a leading UTF-8 BOM so it can't be absorbed into the first key
+    if (len >= 3 && load8(buf) == 239 && load8(buf + 1) == 187 && load8(buf + 2) == 191) {
+        pos = 3;
+    }
+    var saw_doc_start = 0;
+    var saw_content = 0;
+    var ended = 0;
+    while (pos < len) {
+        # -- line extent [pos, eol), next line at nxt --
+        var eol = pos;
+        while (eol < len && load8(buf + eol) != 10) { eol = eol + 1; }
+        var nxt = eol + 1;
+        if (eol > pos && load8(buf + eol - 1) == 13) { eol = eol - 1; }   # strip \r
+        # -- indentation: spaces only --
+        var i = pos;
+        while (i < eol && load8(buf + i) == 32) { i = i + 1; }
+        if (i < eol && load8(buf + i) == 9) {
+            _jp_set_err(ps, "tab in yaml indentation", i);
+            return 0;
+        }
+        var indent = i - pos;
+        # -- quote-aware comment strip: a `#` at content start, or preceded
+        #    by space/tab, outside quotes, cuts the line --
+        var q = 0;
+        var cend = eol;
+        var j = i;
+        while (j < eol) {
+            var c = load8(buf + j);
+            if (q == 0) {
+                if (c == 35) {
+                    var at_start = 0;
+                    if (j == i) { at_start = 1; }
+                    else {
+                        var pc = load8(buf + j - 1);
+                        if (pc == 32 || pc == 9) { at_start = 1; }
+                    }
+                    if (at_start == 1) { cend = j; j = eol; }
+                }
+                if (j < eol) {
+                    var c1 = load8(buf + j);
+                    if (c1 == 34 || c1 == 39) {
+                        if (_yp_quote_opens_at(buf, i, j) == 1) { q = c1; }
+                    }
+                }
+            }
+            else {
+                if (c == q) { q = 0; }
+            }
+            j = j + 1;
+        }
+        var clen = _yp_trim_end(buf + i, cend - i);
+        if (clen > 0) {
+            # -- document markers (a marker line must carry NOTHING else:
+            #    "--- foo" would otherwise be silently folded into the tree) --
+            var handled = 0;
+            if (clen >= 4) {
+                var m3 = load8(buf + i + 3);
+                if (m3 == 32 || m3 == 9) {
+                    if (_yp_tok_is(buf + i, 3, "---") == 1) {
+                        _jp_set_err(ps, "content on '---' marker line not supported", i);
+                        return 0;
+                    }
+                    if (_yp_tok_is(buf + i, 3, "...") == 1) {
+                        _jp_set_err(ps, "content on '...' marker line not supported", i);
+                        return 0;
+                    }
+                }
+            }
+            if (_yp_tok_is(buf + i, clen, "---") == 1) {
+                if (saw_content == 0 && saw_doc_start == 0) { saw_doc_start = 1; handled = 1; }
+                else {
+                    _jp_set_err(ps, "multi-document yaml not supported", i);
+                    return 0;
+                }
+            }
+            if (handled == 0) {
+                if (_yp_tok_is(buf + i, clen, "...") == 1) {
+                    if (ended == 1) {
+                        _jp_set_err(ps, "content after '...' document end", i);
+                        return 0;
+                    }
+                    ended = 1;
+                    handled = 1;
+                }
+            }
+            if (handled == 0) {
+                if (ended == 1) {
+                    _jp_set_err(ps, "content after '...' document end", i);
+                    return 0;
+                }
+                saw_content = 1;
+                var rec = alloc(32);
+                store64(rec,      i);
+                store64(rec + 8,  buf + i);
+                store64(rec + 16, clen);
+                store64(rec + 24, indent);
+                vec_push(lines, rec);
+            }
+        }
+        pos = nxt;
+    }
+    return lines;
+}
+
+# === Scalar typing ===
+
+# True if (ptr,len) is EXACTLY a strict-JSON-grammar number:
+#   -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+# The shared _jp_parse_number scanner is laxer (digitless exponents, leading
+# zeros), so this gate keeps the module's "JSON-syntax numbers" contract:
+# "01", "1.", "1e", "1e+" all fall back to plain strings.
+fn _yp_is_json_number(ptr, len): i64 {
+    var i = 0;
+    if (i < len && load8(ptr + i) == 45) { i = i + 1; }        # -
+    if (i >= len) { return 0; }
+    var c = load8(ptr + i);
+    if (c == 48) { i = i + 1; }                                # 0
+    else {
+        if (c < 49 || c > 57) { return 0; }                    # [1-9]
+        while (i < len) {
+            var d = load8(ptr + i);
+            if (d >= 48 && d <= 57) { i = i + 1; }
+            else { break; }
+        }
+    }
+    if (i < len && load8(ptr + i) == 46) {                     # .[0-9]+
+        i = i + 1;
+        if (i >= len) { return 0; }
+        var f = load8(ptr + i);
+        if (f < 48 || f > 57) { return 0; }
+        while (i < len) {
+            var d2 = load8(ptr + i);
+            if (d2 >= 48 && d2 <= 57) { i = i + 1; }
+            else { break; }
+        }
+    }
+    if (i < len) {                                             # [eE][+-]?[0-9]+
+        var e = load8(ptr + i);
+        if (e == 101 || e == 69) {
+            i = i + 1;
+            if (i < len) {
+                var sg = load8(ptr + i);
+                if (sg == 43 || sg == 45) { i = i + 1; }
+            }
+            if (i >= len) { return 0; }
+            var x = load8(ptr + i);
+            if (x < 48 || x > 57) { return 0; }
+            while (i < len) {
+                var d3 = load8(ptr + i);
+                if (d3 >= 48 && d3 <= 57) { i = i + 1; }
+                else { break; }
+            }
+        }
+    }
+    if (i == len) { return 1; }
+    return 0;
+}
+
+# Try (ptr,len) as a number. Returns an INT/FLOAT node, or 0 if the token is
+# not entirely a strict-JSON number (caller falls through to string). The
+# actual conversion reuses the json module's scanner so YAML and JSON type
+# accepted numbers identically.
+fn _yp_try_number(ptr, len): i64 {
+    if (_yp_is_json_number(ptr, len) == 0) { return 0; }
+    var nps[48];
+    _jp_state_init(&nps, ptr, len);
+    var v = _jp_parse_number(&nps);
+    if (v == 0) { return 0; }
+    if (load64(&nps + 16) != len) { return 0; }   # cannot happen post-gate; belt+braces
+    return v;
+}
+
+# Reject out-of-subset value forms by leading byte: anchors/aliases, tags,
+# block scalars, flow mappings. Returns -1 with the error set, else 0.
+fn _yp_reject_check(ps, ptr, len, off): i64 {
+    if (len == 0) { return 0; }
+    var c = load8(ptr);
+    if (c == 38 || c == 42) {   # & *
+        _jp_set_err(ps, "yaml anchors/aliases not supported", off);
+        return 0 - 1;
+    }
+    if (c == 33) {              # !
+        _jp_set_err(ps, "yaml tags not supported", off);
+        return 0 - 1;
+    }
+    if (c == 124 || c == 62) {  # | >
+        _jp_set_err(ps, "yaml block scalars not supported", off);
+        return 0 - 1;
+    }
+    if (c == 123) {             # {
+        _jp_set_err(ps, "yaml flow mappings not supported", off);
+        return 0 - 1;
+    }
+    if (c == 45 && len >= 2) {  # `- ` — a sequence indicator is not a scalar
+        var n1 = load8(ptr + 1);
+        if (n1 == 32 || n1 == 9) {
+            _jp_set_err(ps, "unexpected '-' sequence indicator in scalar", off);
+            return 0 - 1;
+        }
+    }
+    if (c == 63) {              # `?` / `? ` — complex mapping keys
+        var is_ck = 0;
+        if (len == 1) { is_ck = 1; }
+        else {
+            var n2 = load8(ptr + 1);
+            if (n2 == 32 || n2 == 9) { is_ck = 1; }
+        }
+        if (is_ck == 1) {
+            _jp_set_err(ps, "yaml complex keys ('?') not supported", off);
+            return 0 - 1;
+        }
+    }
+    return 0;
+}
+
+# Type a PLAIN (unquoted, non-flow) scalar token: null/~/true/false, number,
+# else a string sharing the source buffer. (ptr,len) is already trimmed.
+fn _yp_plain_scalar(ptr, len): i64 {
+    if (len == 0)                          { return bayan_json_v_null(); }
+    if (_yp_tok_is(ptr, len, "null") == 1) { return bayan_json_v_null(); }
+    if (_yp_tok_is(ptr, len, "~") == 1)    { return bayan_json_v_null(); }
+    if (_yp_tok_is(ptr, len, "true") == 1) { return bayan_json_v_bool_new(1); }
+    if (_yp_tok_is(ptr, len, "false") == 1){ return bayan_json_v_bool_new(0); }
+    var num = _yp_try_number(ptr, len);
+    if (num != 0) { return num; }
+    return bayan_json_v_str_new(str_new(ptr, len));
+}
+
+# Parse a quoted scalar: (ptr,len) starts with `"` or `'`. Single-line; the
+# last byte must be the matching close quote. Body captured VERBATIM (one
+# layer stripped, no escape decoding — the toml convention).
+fn _yp_quoted(ps, ptr, len, off): i64 {
+    var q = load8(ptr);
+    if (len < 2) {
+        _jp_set_err(ps, "unterminated quoted scalar", off);
+        return 0;
+    }
+    # the FIRST close quote must also be the last byte — `"a" "b"` and
+    # `"a"b"` are malformed, not silently glued strings
+    var k = 1;
+    while (k < len && load8(ptr + k) != q) { k = k + 1; }
+    if (k >= len) {
+        _jp_set_err(ps, "unterminated quoted scalar", off);
+        return 0;
+    }
+    if (k != len - 1) {
+        _jp_set_err(ps, "malformed quoted scalar", off);
+        return 0;
+    }
+    return bayan_json_v_str_new(str_new(ptr + 1, len - 2));
+}
+
+# === Flow sequences ===
+
+# Parse a flow sequence from (ptr,len) starting at *cur (which must index a
+# `[`). Advances *cur past the closing `]`. Depth-capped via ps. Elements:
+# nested flow sequences, quoted scalars, plain scalars (up to `,` / `]`).
+fn _yp_parse_flow_seq(ps, ptr, len, cur, off): i64 {
+    var depth = load64(ps + 40);
+    if (depth >= _JP_MAX_DEPTH) {
+        _jp_set_err(ps, "nesting too deep", off + load64(cur));
+        return 0;
+    }
+    store64(ps + 40, depth + 1);
+    var arr = bayan_json_v_arr_new();
+    var ix = load64(cur) + 1;   # past '['
+    while (1 == 1) {
+        while (ix < len) {      # skip inter-element whitespace
+            var c = load8(ptr + ix);
+            if (c == 32 || c == 9) { ix = ix + 1; }
+            else { break; }
+        }
+        if (ix >= len) {
+            _jp_set_err(ps, "unterminated flow sequence", off + ix);
+            return 0;
+        }
+        var c = load8(ptr + ix);
+        if (c == 93) {          # ]
+            store64(cur, ix + 1);
+            store64(ps + 40, load64(ps + 40) - 1);
+            return arr;
+        }
+        # -- element --
+        var item = 0;
+        if (c == 91) {          # [ nested
+            store64(cur, ix);
+            item = _yp_parse_flow_seq(ps, ptr, len, cur, off);
+            if (item == 0) { return 0; }
+            ix = load64(cur);
+        }
+        else {
+            if (c == 34 || c == 39) {   # quoted element
+                var close = ix + 1;
+                while (close < len && load8(ptr + close) != c) { close = close + 1; }
+                if (close >= len) {
+                    _jp_set_err(ps, "unterminated quoted scalar", off + ix);
+                    return 0;
+                }
+                item = bayan_json_v_str_new(str_new(ptr + ix + 1, close - ix - 1));
+                ix = close + 1;
+            }
+            else {
+                if (_yp_reject_check(ps, ptr + ix, len - ix, off + ix) != 0) { return 0; }
+                var e = ix;     # plain element: up to , or ]
+                while (e < len) {
+                    var ec = load8(ptr + e);
+                    if (ec == 44 || ec == 93) { break; }
+                    e = e + 1;
+                }
+                var tlen = _yp_trim_end(ptr + ix, e - ix);
+                if (tlen == 0) {    # `[,]` / `[a,,b]` — no phantom nulls
+                    _jp_set_err(ps, "empty flow-sequence element", off + ix);
+                    return 0;
+                }
+                # `[a: b]` is an implicit flow-mapping entry, not a string
+                if (_yp_find_colon(ptr + ix, tlen) >= 0) {
+                    _jp_set_err(ps, "yaml flow mappings not supported", off + ix);
+                    return 0;
+                }
+                item = _yp_plain_scalar(ptr + ix, tlen);
+                ix = e;
+            }
+        }
+        bayan_json_v_arr_push(arr, item);
+        while (ix < len) {      # skip ws to separator/close
+            var sc = load8(ptr + ix);
+            if (sc == 32 || sc == 9) { ix = ix + 1; }
+            else { break; }
+        }
+        if (ix >= len) {
+            _jp_set_err(ps, "unterminated flow sequence", off + ix);
+            return 0;
+        }
+        var sep = load8(ptr + ix);
+        if (sep == 44) { ix = ix + 1; }     # , (trailing comma ok — loop re-checks ])
+        else {
+            if (sep != 93) {
+                _jp_set_err(ps, "expected ',' or ']' in flow sequence", off + ix);
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+# === Line-value dispatch ===
+
+# Parse a whole-line value token (ptr,len) at source offset `off`: flow
+# sequence, quoted scalar, or (reject-checked) plain scalar.
+fn _yp_line_value(ps, ptr, len, off): i64 {
+    if (len == 0) { return bayan_json_v_null(); }
+    var c = load8(ptr);
+    if (c == 91) {              # [ flow sequence — must consume the token
+        var cx[8];
+        store64(&cx, 0);
+        var v = _yp_parse_flow_seq(ps, ptr, len, &cx, off);
+        if (v == 0) { return 0; }
+        var ix = load64(&cx);
+        while (ix < len) {
+            var tc = load8(ptr + ix);
+            if (tc == 32 || tc == 9) { ix = ix + 1; }
+            else { break; }
+        }
+        if (ix != len) {
+            _jp_set_err(ps, "content after flow sequence", off + ix);
+            return 0;
+        }
+        return v;
+    }
+    if (c == 34 || c == 39) { return _yp_quoted(ps, ptr, len, off); }
+    if (_yp_reject_check(ps, ptr, len, off) != 0) { return 0; }
+    return _yp_plain_scalar(ptr, len);
+}
+
+# === Block structure ===
+
+# Find the mapping colon in (ptr,len): a `:` outside quotes whose successor
+# is space/tab or end-of-line. Returns its index or -1. (A plain `url:
+# http://x` value is safe — the FIRST qualifying colon ends the key.)
+fn _yp_find_colon(ptr, len): i64 {
+    var q = 0;
+    var i = 0;
+    while (i < len) {
+        var c = load8(ptr + i);
+        if (q == 0) {
+            var opens = 0;
+            if (c == 34 || c == 39) { opens = _yp_quote_opens_at(ptr, 0, i); }
+            if (opens == 1) { q = c; }
+            else {
+                if (c == 58) {
+                    if (i + 1 >= len) { return i; }
+                    var nc = load8(ptr + i + 1);
+                    if (nc == 32 || nc == 9) { return i; }
+                }
+            }
+        }
+        else {
+            if (c == q) { q = 0; }
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# True if line content (ptr,len) is a block-sequence entry: `-` alone or `- x`.
+fn _yp_is_seq_line(ptr, len): i64 {
+    if (len == 0) { return 0; }
+    if (load8(ptr) != 45) { return 0; }
+    if (len == 1) { return 1; }
+    var c = load8(ptr + 1);
+    if (c == 32 || c == 9) { return 1; }
+    return 0;
+}
+
+# yc — parse context over the scanned lines (stack struct, 24 bytes):
+#   +0 lines vec   +8 idx   +16 nlines
+fn _yc_cur(yc): i64 {
+    var idx = load64(yc + 8);
+    if (idx >= load64(yc + 16)) { return 0; }
+    return vec_get(load64(yc), idx);
+}
+
+# Advance the line cursor.
+fn _yc_advance(yc): i64 {
+    store64(yc + 8, load64(yc + 8) + 1);
+    return 0;
+}
+
+# Parse the block starting at the current line, which must sit at exactly
+# `indent`. Dispatches sequence vs mapping; depth-capped via ps (+40).
+fn _yp_parse_block(ps, yc, indent): i64 {
+    var depth = load64(ps + 40);
+    var rec = _yc_cur(yc);
+    if (rec == 0) { return bayan_json_v_null(); }
+    if (depth >= _JP_MAX_DEPTH) {
+        _jp_set_err(ps, "nesting too deep", load64(rec));
+        return 0;
+    }
+    store64(ps + 40, depth + 1);
+    var v = 0;
+    if (_yp_is_seq_line(load64(rec + 8), load64(rec + 16)) == 1) {
+        v = _yp_parse_sequence(ps, yc, indent);
+    }
+    else {
+        v = _yp_parse_mapping(ps, yc, indent);
+    }
+    store64(ps + 40, load64(ps + 40) - 1);
+    return v;
+}
+
+# Parse consecutive mapping entries at exactly `indent` into a JTAG_OBJ.
+# A dedented line ends the mapping (parent's problem); a deeper line is an
+# error; a `- ` entry at this indent inside a mapping is an error.
+fn _yp_parse_mapping(ps, yc, indent): i64 {
+    var obj = bayan_json_v_obj_new();
+    while (1 == 1) {
+        var rec = _yc_cur(yc);
+        if (rec == 0) { return obj; }
+        var ri = load64(rec + 24);
+        if (ri < indent) { return obj; }
+        var roff = load64(rec);
+        var rptr = load64(rec + 8);
+        var rlen = load64(rec + 16);
+        if (ri > indent) {
+            _jp_set_err(ps, "unexpected indentation", roff);
+            return 0;
+        }
+        if (_yp_is_seq_line(rptr, rlen) == 1) {
+            _jp_set_err(ps, "unexpected sequence entry in mapping", roff);
+            return 0;
+        }
+        if (load8(rptr) == 91) {    # a bare `[...]` line can't open a mapping
+            _jp_set_err(ps, "flow sequence must follow its key on the same line", roff);
+            return 0;
+        }
+        var ci = _yp_find_colon(rptr, rlen);
+        if (ci < 0) {
+            _jp_set_err(ps, "expected ':' in mapping entry", roff);
+            return 0;
+        }
+        # -- key: trimmed; one quote layer stripped if fully quoted --
+        var klen = _yp_trim_end(rptr, ci);
+        var kptr = rptr;
+        if (klen == 0) {
+            _jp_set_err(ps, "empty mapping key", roff);
+            return 0;
+        }
+        var kq = load8(kptr);
+        if (kq == 34 || kq == 39) {
+            if (klen >= 2 && load8(kptr + klen - 1) == kq) {
+                kptr = kptr + 1;
+                klen = klen - 2;
+            }
+        }
+        else {
+            # anchors/tags/indicators are as out-of-subset in KEY position
+            # as in value position — reject, don't stringify
+            if (_yp_reject_check(ps, kptr, klen, roff) != 0) { return 0; }
+        }
+        # -- rest of line after the colon --
+        var vstart = ci + 1;
+        var voff = _yp_trim_start(rptr + vstart, rlen - vstart);
+        var vptr = rptr + vstart + voff;
+        var vlen = _yp_trim_end(vptr, rlen - vstart - voff);
+        _yc_advance(yc);
+        var val = 0;
+        if (vlen > 0) {
+            val = _yp_line_value(ps, vptr, vlen, roff + (vptr - rptr));
+        }
+        else {
+            # `key:` with nothing after — nested block (deeper, or a sequence
+            # at the same indent), else null
+            var nrec = _yc_cur(yc);
+            if (nrec == 0) { val = bayan_json_v_null(); }
+            else {
+                var nin = load64(nrec + 24);
+                if (nin > indent) { val = _yp_parse_block(ps, yc, nin); }
+                else {
+                    if (nin == indent && _yp_is_seq_line(load64(nrec + 8), load64(nrec + 16)) == 1) {
+                        val = _yp_parse_block(ps, yc, indent);
+                    }
+                    else { val = bayan_json_v_null(); }
+                }
+            }
+        }
+        if (val == 0) { return 0; }
+        bayan_json_v_obj_set(obj, str_new(kptr, klen), val);
+    }
+    return 0;
+}
+
+# Parse consecutive `- ` entries at exactly `indent` into a JTAG_ARR.
+# Supports scalar/flow items, `-` alone + deeper block, and compact
+# `- key: value` / `- - x` items (the item re-anchors at the rest column).
+fn _yp_parse_sequence(ps, yc, indent): i64 {
+    var arr = bayan_json_v_arr_new();
+    while (1 == 1) {
+        var rec = _yc_cur(yc);
+        if (rec == 0) { return arr; }
+        var ri = load64(rec + 24);
+        if (ri < indent) { return arr; }
+        var roff = load64(rec);
+        var rptr = load64(rec + 8);
+        var rlen = load64(rec + 16);
+        if (ri > indent) {
+            _jp_set_err(ps, "unexpected indentation", roff);
+            return 0;
+        }
+        if (_yp_is_seq_line(rptr, rlen) == 0) { return arr; }   # back to parent mapping
+        var item = 0;
+        if (rlen == 1) {
+            # bare `-` — item is a deeper block, else null
+            _yc_advance(yc);
+            var nrec = _yc_cur(yc);
+            item = bayan_json_v_null();
+            if (nrec != 0) {
+                if (load64(nrec + 24) > indent) {
+                    item = _yp_parse_block(ps, yc, load64(nrec + 24));
+                }
+            }
+        }
+        else {
+            # `- rest` — rest starts past the dash + spaces
+            var j = 1 + _yp_trim_start(rptr + 1, rlen - 1);
+            var restp = rptr + j;
+            var restl = rlen - j;
+            var restcol = ri + j;
+            var restoff = roff + j;
+            var compact = 0;
+            if (load8(restp) != 91) {                       # flow item is never compact
+                if (_yp_is_seq_line(restp, restl) == 1) { compact = 1; }
+                else {
+                    if (_yp_find_colon(restp, restl) >= 0) { compact = 1; }
+                }
+            }
+            if (compact == 1) {
+                # re-anchor the record at the rest column and parse the whole
+                # nested block (its continuation lines sit at restcol)
+                store64(rec,      restoff);
+                store64(rec + 8,  restp);
+                store64(rec + 16, restl);
+                store64(rec + 24, restcol);
+                item = _yp_parse_block(ps, yc, restcol);
+            }
+            else {
+                _yc_advance(yc);
+                item = _yp_line_value(ps, restp, restl, restoff);
+            }
+        }
+        if (item == 0) { return 0; }
+        bayan_json_v_arr_push(arr, item);
+    }
+    return 0;
+}
+
+# === Public parse entries ===
+
+# Reentrant parse — caller owns ps (bayan_json_parse_state_size() bytes; the
+# yaml parser shares the json parser-state struct). Returns json_v* or 0 with
+# the error in bayan_yaml_state_error(ps)/_pos(ps). Touches no globals.
+fn bayan_yaml_parse_ctx(ps, buf, len): i64 {
+    _jp_state_init(ps, buf, len);
+    var lines = _yp_scan_lines(ps, buf, len);
+    if (lines == 0) { return 0; }
+    var n = vec_len(lines);
+    if (n == 0) { return bayan_json_v_null(); }   # empty document
+    var yc[24];
+    store64(&yc,      lines);
+    store64(&yc + 8,  0);
+    store64(&yc + 16, n);
+    var first = vec_get(lines, 0);
+    var base = load64(first + 24);
+    var fptr = load64(first + 8);
+    var flen = load64(first + 16);
+    # top-level flow-sequence document: `[...]` on the first line is a value
+    # line, never a mapping (a ': ' inside the brackets must not key-split it)
+    if (load8(fptr) == 91) {
+        if (n == 1) { return _yp_line_value(ps, fptr, flen, load64(first)); }
+        _jp_set_err(ps, "unexpected line", load64(vec_get(lines, 1)));
+        return 0;
+    }
+    # top-level scalar document: a single line that is neither a mapping
+    # entry nor a sequence entry
+    if (_yp_is_seq_line(fptr, flen) == 0) {
+        if (_yp_find_colon(fptr, flen) < 0) {
+            if (n == 1) { return _yp_line_value(ps, fptr, flen, load64(first)); }
+            _jp_set_err(ps, "expected mapping or sequence entry", load64(first));
+            return 0;
+        }
+    }
+    var v = _yp_parse_block(ps, &yc, base);
+    if (v == 0) { return 0; }
+    if (load64(&yc + 8) < n) {
+        var left = _yc_cur(&yc);
+        _jp_set_err(ps, "unexpected line", load64(left));
+        return 0;
+    }
+    return v;
+}
+
+# Reentrant parse — Str convenience over bayan_yaml_parse_ctx.
+fn bayan_yaml_parse_ctx_str(ps, src): i64 {
+    if (src == 0) {
+        _jp_state_init(ps, 0, 0);
+        _jp_set_err(ps, "null source", 0);
+        return 0;
+    }
+    return bayan_yaml_parse_ctx(ps, str_data(src), str_len(src));
+}
+
+# Public parse entry — explicit cstr+len. Globals-compat wrapper over the
+# reentrant path (stack-local state per call, so the parse itself is
+# thread-safe); mirrors the per-call error into bayan_yaml_last_error()/_pos().
+fn bayan_yaml_parse_str(buf, len): i64 {
+    var ps[48];
+    var v = bayan_yaml_parse_ctx(&ps, buf, len);
+    _yaml_err_msg = load64(&ps + 24);
+    _yaml_err_pos = load64(&ps + 32);
+    return v;
+}
+
+# Public parse entry — Str. Returns json_v* or 0.
+fn bayan_yaml_parse(src): i64 {
+    if (src == 0) { _yaml_err_msg = "null source"; _yaml_err_pos = 0; return 0; }
+    return bayan_yaml_parse_str(str_data(src), str_len(src));
+}
+
+# === Frontmatter split ===
+#
+# Split a Markdown document with optional YAML frontmatter:
+#   ---            <- first line, exactly
+#   <yaml...>
+#   ---  (or ...)  <- closing fence line, exactly
+#   <body...>
+# Returns a 16-byte pair { yaml: Str|0 @ +0, body: Str @ +8 }. Without a
+# well-formed frontmatter block (no leading `---`, or no closing fence),
+# yaml is 0 and body is the whole input — mirroring the mneme interim
+# parser's behavior. Both Strs share the source buffer (no copy).
+
+# True if line [ls, le) (exclusive, \r already excluded) is exactly `---`
+# or `...`.
+fn _yfm_is_fence(buf, ls, le): i64 {
+    if (le - ls != 3) { return 0; }
+    var c = load8(buf + ls);
+    if (c != 45 && c != 46) { return 0; }
+    if (load8(buf + ls + 1) != c) { return 0; }
+    if (load8(buf + ls + 2) != c) { return 0; }
+    return 1;
+}
+
+# Allocator-threading variant of bayan_yaml_frontmatter_split.
+fn bayan_yaml_frontmatter_split_a(a, src): i64 {
+    var p = alloc_via(a, 16);
+    var buf = str_data(src);
+    var len = str_len(src);
+    store64(p, 0);
+    store64(p + 8, src);
+    # -- first line must be exactly --- --
+    var e0 = 0;
+    while (e0 < len && load8(buf + e0) != 10) { e0 = e0 + 1; }
+    var t0 = e0;
+    if (t0 > 0 && load8(buf + t0 - 1) == 13) { t0 = t0 - 1; }
+    if (_yfm_is_fence(buf, 0, t0) == 0) { return p; }
+    if (load8(buf) != 45) { return p; }            # `...` can't OPEN a block
+    if (e0 >= len) { return p; }                   # `---` with no newline: no block
+    # -- find the closing fence line --
+    var ls = e0 + 1;
+    while (ls <= len) {
+        var le = ls;
+        while (le < len && load8(buf + le) != 10) { le = le + 1; }
+        var te = le;
+        if (te > ls && load8(buf + te - 1) == 13) { te = te - 1; }
+        if (_yfm_is_fence(buf, ls, te) == 1) {
+            var bstart = le + 1;
+            if (bstart > len) { bstart = len; }
+            store64(p, str_new_a(a, buf + e0 + 1, ls - e0 - 1));
+            store64(p + 8, str_new_a(a, buf + bstart, len - bstart));
+            return p;
+        }
+        ls = le + 1;
+    }
+    return p;                                      # no closing fence
+}
+
+# Split Markdown into { yaml frontmatter | 0, body }. See above.
+fn bayan_yaml_frontmatter_split(src): i64 {
+    return bayan_yaml_frontmatter_split_a(default_alloc(), src);
+}
+
+# Frontmatter-pair accessor: the yaml Str (0 when no frontmatter was found).
+fn bayan_yaml_fm_yaml(p): i64 { return load64(p); }
+
+# Frontmatter-pair accessor: the body Str (whole input when no frontmatter).
+fn bayan_yaml_fm_body(p): i64 { return load64(p + 8); }

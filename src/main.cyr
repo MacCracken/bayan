@@ -1,4 +1,4 @@
-# bayan — smoke entry. Includes the stdlib prereqs + the full bundle (7 data
+# bayan — smoke entry. Includes the stdlib prereqs + the full bundle (8 data
 # modules + the back-compat alias module) so `cyrius build` proves they parse,
 # link, and assemble together exactly as a downstream consumer would use
 # `lib/bayan.cyr`. Then exercises a few canonical bayan_* calls plus an alias.
@@ -28,6 +28,7 @@ include "src/bigint.cyr"
 include "src/toml.cyr"
 include "src/cyml.cyr"
 include "src/json.cyr"
+include "src/yaml.cyr"
 include "src/_compat.cyr"
 
 fn main(): i64 {
@@ -51,6 +52,12 @@ fn main(): i64 {
     u128_from_u64(&b, 7);
     u128_add(&c, &a, &b);
     if (u128_lo(&c) != 12) { return 4; }
+
+    # yaml parses into the shared json_v tagged tree
+    var ydoc = "k: 42\n";
+    var yv = bayan_yaml_parse_str(ydoc, strlen(ydoc));
+    if (bayan_json_v_is_obj(yv) != 1) { return 5; }
+    if (bayan_json_v_int(bayan_json_v_obj_get(yv, "k")) != 42) { return 6; }
 
     return 42;
 }

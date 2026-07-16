@@ -1,5 +1,5 @@
 # bayan test suite — canonical bayan_* API + back-compat alias parity.
-# Includes the full bundle (7 modules + _compat aliases) + stdlib prereqs,
+# Includes the full bundle (8 modules + _compat aliases) + stdlib prereqs,
 # exactly as a consumer pulls lib/bayan.cyr. (Aliases live in _compat.cyr,
 # which references every bayan_* symbol — so the whole bundle must be in
 # scope to exercise them.)
@@ -23,6 +23,7 @@ include "src/bigint.cyr"
 include "src/toml.cyr"
 include "src/cyml.cyr"
 include "src/json.cyr"
+include "src/yaml.cyr"
 include "src/_compat.cyr"
 
 alloc_init();
@@ -307,5 +308,360 @@ assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get(ap, "name"))), 0, "toml:
 # Back-compat alias parity.
 assert_eq(vec_len(toml_array_parse(bayan_toml_get(ap, "nums"))), 3, "toml: alias toml_array_parse parity");
 assert_eq(toml_is_array(bayan_toml_get(ap, "nums")), 1, "toml: alias toml_is_array parity");
+
+test_group("yaml: parse into the shared tagged value tree (v1.2.0)");
+# bayan_yaml_parse* produces the SAME JTAG_* node graph as the JSON value
+# parser, so every bayan_json_v_* accessor below traverses YAML output.
+# Subset boundary: out-of-subset YAML must fail LOUDLY, never mis-parse. See
+# docs/development/issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md.
+
+# -- scalar typing: str / int / float / bool / null / ~ --
+var y1 = "title: My Note\ncount: 42\npi: 3.14\nok: true\noff: false\nnothing: null\ntilde: ~\n";
+var yv1 = bayan_yaml_parse_str(y1, strlen(y1));
+assert_eq(bayan_json_v_is_obj(yv1), 1, "yaml: mapping -> JTAG_OBJ");
+assert_eq(bayan_json_v_obj_len(yv1), 7, "yaml: 7 entries");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv1, "title")), "My Note"), 1, "yaml: str value");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv1, "count")), 42, "yaml: int value");
+assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get(yv1, "pi")), 1, "yaml: float value");
+assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(yv1, "ok")), 1, "yaml: true");
+assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(yv1, "off")), 0, "yaml: false");
+assert_eq(bayan_json_v_is_null(bayan_json_v_obj_get(yv1, "nothing")), 1, "yaml: null");
+assert_eq(bayan_json_v_is_null(bayan_json_v_obj_get(yv1, "tilde")), 1, "yaml: ~ -> null");
+
+# -- quoted scalars: one layer stripped, verbatim body; quote-aware comments --
+var y2 = "a: \"x # not a comment\"\nb: 'single'\nc: \"\"\nu: http://x/y\n";
+var yv2 = bayan_yaml_parse_str(y2, strlen(y2));
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv2, "a")), "x # not a comment"), 1, "yaml: # inside quotes kept");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv2, "b")), "single"), 1, "yaml: single-quoted");
+assert_eq(str_len(bayan_json_v_str(bayan_json_v_obj_get(yv2, "c"))), 0, "yaml: empty quoted string");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv2, "u")), "http://x/y"), 1, "yaml: plain url (colon w/o space is not a key split)");
+
+# -- comments, blank lines, CRLF --
+var y3 = "# leading comment\n\nk: 1 # trailing\r\nj: 2\r\n";
+var yv3 = bayan_yaml_parse_str(y3, strlen(y3));
+assert_eq(bayan_json_v_obj_len(yv3), 2, "yaml: comments/blanks skipped, CRLF ok");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv3, "k")), 1, "yaml: trailing comment stripped");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv3, "j")), 2, "yaml: CRLF line parses");
+
+# -- nested mappings by indentation --
+var y4 = "outer:\n  inner:\n    deep: 3\n  flat: v\ntop: 1\n";
+var yv4 = bayan_yaml_parse_str(y4, strlen(y4));
+var y4o = bayan_json_v_obj_get(yv4, "outer");
+assert_eq(bayan_json_v_is_obj(y4o), 1, "yaml: nested mapping is OBJ");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_json_v_obj_get(y4o, "inner"), "deep")), 3, "yaml: 2-deep nesting");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(y4o, "flat")), "v"), 1, "yaml: sibling after deeper block");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv4, "top")), 1, "yaml: dedent back to top");
+
+# -- block sequences: indented AND at parent indent --
+var y5 = "items:\n  - one\n  - 2\nsame:\n- a\n- b\n";
+var yv5 = bayan_yaml_parse_str(y5, strlen(y5));
+var y5i = bayan_json_v_obj_get(yv5, "items");
+assert_eq(bayan_json_v_arr_len(y5i), 2, "yaml: indented block seq len");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(y5i, 0)), "one"), 1, "yaml: seq[0]");
+assert_eq(bayan_json_v_int(bayan_json_v_arr_get(y5i, 1)), 2, "yaml: seq[1] typed int");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yv5, "same")), 2, "yaml: seq at same indent as key");
+
+# -- sequence of mappings (compact `- key: v` + continuation) — the agnosai
+#    definition-file shape --
+var y6 = "agents:\n  - name: researcher\n    role: digs\n  - name: writer\n";
+var yv6 = bayan_yaml_parse_str(y6, strlen(y6));
+var y6a = bayan_json_v_obj_get(yv6, "agents");
+assert_eq(bayan_json_v_arr_len(y6a), 2, "yaml: 2 agent mappings");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_json_v_arr_get(y6a, 0), "name")), "researcher"), 1, "yaml: agents[0].name");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_json_v_arr_get(y6a, 0), "role")), "digs"), 1, "yaml: agents[0].role (continuation line)");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_json_v_arr_get(y6a, 1), "name")), "writer"), 1, "yaml: agents[1].name");
+
+# -- bare `-` + deeper block; `-` alone -> null item --
+var y7 = "xs:\n  -\n  - v\n";
+var yv7 = bayan_yaml_parse_str(y7, strlen(y7));
+var y7x = bayan_json_v_obj_get(yv7, "xs");
+assert_eq(bayan_json_v_is_null(bayan_json_v_arr_get(y7x, 0)), 1, "yaml: bare - is null item");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(y7x, 1)), "v"), 1, "yaml: item after bare -");
+
+# -- flow sequences: typing, nesting, empty, trailing comma --
+var y8 = "tags: [rust, programming]\nnums: [1, 2.5, true, null]\nempty: []\ntrail: [a, b,]\nnest: [[1, 2], [3]]\n";
+var yv8 = bayan_yaml_parse_str(y8, strlen(y8));
+var y8t = bayan_json_v_obj_get(yv8, "tags");
+assert_eq(bayan_json_v_arr_len(y8t), 2, "yaml: flow seq len");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(y8t, 0)), "rust"), 1, "yaml: flow[0]");
+var y8n = bayan_json_v_obj_get(yv8, "nums");
+assert_eq(bayan_json_v_int(bayan_json_v_arr_get(y8n, 0)), 1, "yaml: flow int");
+assert_eq(bayan_json_v_is_float(bayan_json_v_arr_get(y8n, 1)), 1, "yaml: flow float");
+assert_eq(bayan_json_v_bool(bayan_json_v_arr_get(y8n, 2)), 1, "yaml: flow bool");
+assert_eq(bayan_json_v_is_null(bayan_json_v_arr_get(y8n, 3)), 1, "yaml: flow null");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yv8, "empty")), 0, "yaml: [] empty");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yv8, "trail")), 2, "yaml: trailing comma no phantom");
+var y8nest = bayan_json_v_obj_get(yv8, "nest");
+assert_eq(bayan_json_v_arr_len(y8nest), 2, "yaml: nested flow outer len");
+assert_eq(bayan_json_v_int(bayan_json_v_arr_get(bayan_json_v_arr_get(y8nest, 0), 1)), 2, "yaml: nested flow [0][1]");
+
+# -- top-level sequence / scalar / empty documents --
+var y9 = "- a\n- b\n";
+var yv9 = bayan_yaml_parse_str(y9, strlen(y9));
+assert_eq(bayan_json_v_is_arr(yv9), 1, "yaml: top-level sequence doc");
+assert_eq(bayan_json_v_arr_len(yv9), 2, "yaml: top-level seq len");
+var y10 = "hello\n";
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_yaml_parse_str(y10, strlen(y10))), "hello"), 1, "yaml: top-level scalar doc");
+var y11 = "# only a comment\n\n";
+assert_eq(bayan_json_v_is_null(bayan_yaml_parse_str(y11, strlen(y11))), 1, "yaml: empty doc -> JTAG_NULL");
+
+# -- document markers: one leading ---, one trailing ... --
+var y12 = "---\nk: 1\n...\n";
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_yaml_parse_str(y12, strlen(y12)), "k")), 1, "yaml: --- and ... markers accepted");
+
+# -- out-of-subset input fails LOUDLY (never a silent mis-parse) --
+var yr1 = "k: &anchor v\n";
+assert_eq(bayan_yaml_parse_str(yr1, strlen(yr1)), 0, "yaml: anchor rejected");
+assert_eq(streq(bayan_yaml_last_error(), "yaml anchors/aliases not supported"), 1, "yaml: anchor error msg");
+var yr2 = "k: *alias\n";
+assert_eq(bayan_yaml_parse_str(yr2, strlen(yr2)), 0, "yaml: alias rejected");
+var yr3 = "k: !!str v\n";
+assert_eq(bayan_yaml_parse_str(yr3, strlen(yr3)), 0, "yaml: tag rejected");
+assert_eq(streq(bayan_yaml_last_error(), "yaml tags not supported"), 1, "yaml: tag error msg");
+var yr4 = "k: |\n  block\n";
+assert_eq(bayan_yaml_parse_str(yr4, strlen(yr4)), 0, "yaml: block scalar rejected");
+var yr5 = "k: {a: 1}\n";
+assert_eq(bayan_yaml_parse_str(yr5, strlen(yr5)), 0, "yaml: flow mapping rejected");
+assert_eq(streq(bayan_yaml_last_error(), "yaml flow mappings not supported"), 1, "yaml: flow mapping error msg");
+var yr6 = "\tk: 1\n";
+assert_eq(bayan_yaml_parse_str(yr6, strlen(yr6)), 0, "yaml: tab indentation rejected");
+var yr7 = "---\na: 1\n---\nb: 2\n";
+assert_eq(bayan_yaml_parse_str(yr7, strlen(yr7)), 0, "yaml: second --- rejected");
+assert_eq(streq(bayan_yaml_last_error(), "multi-document yaml not supported"), 1, "yaml: multi-doc error msg");
+var yr8 = "a: 1\n    stray: 2\n";
+assert_eq(bayan_yaml_parse_str(yr8, strlen(yr8)), 0, "yaml: stray deeper line rejected");
+var yr9 = "k: \"unterminated\n";
+assert_eq(bayan_yaml_parse_str(yr9, strlen(yr9)), 0, "yaml: unterminated quote rejected");
+# (a SINGLE colon-less line is a valid top-level scalar doc — asserted above —
+# so the missing-colon error needs a second line to prove we're in a mapping)
+var yr10 = "a: 1\nk v\n";
+assert_eq(bayan_yaml_parse_str(yr10, strlen(yr10)), 0, "yaml: missing colon rejected");
+assert_eq(streq(bayan_yaml_last_error(), "expected ':' in mapping entry"), 1, "yaml: colon error msg");
+var yr11 = "k: [1, 2\n";
+assert_eq(bayan_yaml_parse_str(yr11, strlen(yr11)), 0, "yaml: unterminated flow seq rejected");
+
+# -- recursion-depth cap shared with the json parsers (128) --
+fn _mk_yflow(n): i64 {
+    var buf = alloc(n * 2 + 4 + 1);
+    store8(buf, 107); store8(buf + 1, 58); store8(buf + 2, 32);   # "k: "
+    var i = 0;
+    while (i < n)     { store8(buf + 3 + i, 91); i = i + 1; }
+    store8(buf + 3 + n, 49);                                       # "1"
+    i = 0;
+    while (i < n)     { store8(buf + 4 + n + i, 93); i = i + 1; }
+    store8(buf + 4 + n * 2, 0);
+    return buf;
+}
+var yd_deep = _mk_yflow(200);
+assert_eq(bayan_yaml_parse_str(yd_deep, strlen(yd_deep)), 0, "yaml: 200-deep flow rejected");
+assert_eq(streq(bayan_yaml_last_error(), "nesting too deep"), 1, "yaml: depth error msg");
+var yd_ok = _mk_yflow(100);
+assert_eq(bayan_yaml_parse_str(yd_ok, strlen(yd_ok)) != 0, 1, "yaml: 100-deep flow parses");
+
+# -- reentrant ctx path: per-call error reporting --
+var yps[48];
+assert_eq(bayan_yaml_parse_ctx(&yps, yr10, strlen(yr10)), 0, "yaml ctx: bad doc returns 0");
+assert_eq(streq(bayan_yaml_state_error(&yps), "expected ':' in mapping entry"), 1, "yaml ctx: per-call error");
+var yps2[48];
+assert_eq(bayan_yaml_parse_ctx(&yps2, y1, strlen(y1)) != 0, 1, "yaml ctx: good doc parses");
+assert_eq(streq(bayan_yaml_state_error(&yps2), ""), 1, "yaml ctx: no error on success");
+
+# -- frontmatter split (the mneme shape) --
+var yfm = "---\ntitle: T\ntags: [x, y]\n---\nBody line\n";
+var yfp = bayan_yaml_frontmatter_split(str_from(yfm));
+assert_eq(bayan_yaml_fm_yaml(yfp) != 0, 1, "yaml fm: frontmatter found");
+assert_eq(str_eq_cstr(bayan_yaml_fm_body(yfp), "Body line\n"), 1, "yaml fm: body");
+var yfv = bayan_yaml_parse(bayan_yaml_fm_yaml(yfp));
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yfv, "title")), "T"), 1, "yaml fm: title parses");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yfv, "tags")), 2, "yaml fm: tags parse");
+var yfm2 = "no frontmatter here\n";
+var yfp2 = bayan_yaml_frontmatter_split(str_from(yfm2));
+assert_eq(bayan_yaml_fm_yaml(yfp2), 0, "yaml fm: none -> yaml 0");
+assert_eq(str_eq_cstr(bayan_yaml_fm_body(yfp2), "no frontmatter here\n"), 1, "yaml fm: none -> body is whole input");
+var yfm3 = "---\nk: v\n";
+var yfp3 = bayan_yaml_frontmatter_split(str_from(yfm3));
+assert_eq(bayan_yaml_fm_yaml(yfp3), 0, "yaml fm: unclosed fence -> yaml 0");
+
+# ---- adversarial-review regressions (pre-1.2.0 review findings) ----
+
+# marker lines must carry nothing else — "--- foo" was silently absorbed
+var ya1 = "--- foo\n";
+assert_eq(bayan_yaml_parse_str(ya1, strlen(ya1)), 0, "yaml: '--- foo' rejected");
+assert_eq(streq(bayan_yaml_last_error(), "content on '---' marker line not supported"), 1, "yaml: marker-content error msg");
+var ya2 = "--- key: value\n";
+assert_eq(bayan_yaml_parse_str(ya2, strlen(ya2)), 0, "yaml: '--- key: value' rejected");
+var ya3 = "... tail\n";
+assert_eq(bayan_yaml_parse_str(ya3, strlen(ya3)), 0, "yaml: '... tail' rejected");
+
+# empty flow elements were phantom nulls
+var ya4 = "k: [,]\n";
+assert_eq(bayan_yaml_parse_str(ya4, strlen(ya4)), 0, "yaml: [,] rejected");
+assert_eq(streq(bayan_yaml_last_error(), "empty flow-sequence element"), 1, "yaml: empty-element error msg");
+var ya5 = "k: [a,,b]\n";
+assert_eq(bayan_yaml_parse_str(ya5, strlen(ya5)), 0, "yaml: [a,,b] rejected");
+
+# strict-JSON number gate — lax scanner tokens fall back to STR
+var ya6 = "a: 1e\nb: 01\nc: 1.\nd: 1e+\ne: -x\n";
+var yav6 = bayan_yaml_parse_str(ya6, strlen(ya6));
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "a")), "1e"), 1, "yaml: '1e' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "b")), "01"), 1, "yaml: '01' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "c")), "1."), 1, "yaml: '1.' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "d")), "1e+"), 1, "yaml: '1e+' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "e")), "-x"), 1, "yaml: '-x' is STR");
+var ya7 = "a: 1e5\nb: -3\nc: 0\nd: -0.5e-2\n";
+var yav7 = bayan_yaml_parse_str(ya7, strlen(ya7));
+assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get(yav7, "a")), 1, "yaml: 1e5 is FLOAT");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yav7, "b")), 0 - 3, "yaml: -3 is INT");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yav7, "c")), 0, "yaml: 0 is INT");
+assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get(yav7, "d")), 1, "yaml: -0.5e-2 is FLOAT");
+
+# mid-word quotes are literal — comments must still strip, keys still split
+var ya8 = "name: O'Brien # c\nsize: 5\" nail # c\n";
+var yav8 = bayan_yaml_parse_str(ya8, strlen(ya8));
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav8, "name")), "O'Brien"), 1, "yaml: comment stripped past mid-word apostrophe");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav8, "size")), "5\" nail"), 1, "yaml: comment stripped past inch-mark");
+var ya9 = "t: [it's, x] # c\n";
+var yav9 = bayan_yaml_parse_str(ya9, strlen(ya9));
+var ya9t = bayan_json_v_obj_get(yav9, "t");
+assert_eq(bayan_json_v_arr_len(ya9t), 2, "yaml: flow with mid-word quote parses");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(ya9t, 0)), "it's"), 1, "yaml: flow element keeps literal quote");
+var ya10 = "don't: 1\n";
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_yaml_parse_str(ya10, strlen(ya10)), "don't")), 1, "yaml: plain key with mid-word quote splits");
+
+# implicit flow mappings are loud, in every position
+var ya11 = "[a: b]\n";
+assert_eq(bayan_yaml_parse_str(ya11, strlen(ya11)), 0, "yaml: top-level [a: b] rejected");
+assert_eq(streq(bayan_yaml_last_error(), "yaml flow mappings not supported"), 1, "yaml: implicit flow-mapping error msg");
+var ya12 = "k: [a: b]\n";
+assert_eq(bayan_yaml_parse_str(ya12, strlen(ya12)), 0, "yaml: value [a: b] rejected");
+var ya13 = "[1, 2]\n";
+assert_eq(bayan_json_v_arr_len(bayan_yaml_parse_str(ya13, strlen(ya13))), 2, "yaml: top-level flow doc parses");
+
+# anchors/tags in KEY position are as loud as in value position
+var ya14 = "&x: 1\n";
+assert_eq(bayan_yaml_parse_str(ya14, strlen(ya14)), 0, "yaml: anchor key rejected");
+assert_eq(streq(bayan_yaml_last_error(), "yaml anchors/aliases not supported"), 1, "yaml: anchor-key error msg");
+var ya15 = "!!t: 1\n";
+assert_eq(bayan_yaml_parse_str(ya15, strlen(ya15)), 0, "yaml: tag key rejected");
+
+# indicator-led plain values are loud
+var ya16 = "k: - x\n";
+assert_eq(bayan_yaml_parse_str(ya16, strlen(ya16)), 0, "yaml: 'k: - x' rejected");
+assert_eq(streq(bayan_yaml_last_error(), "unexpected '-' sequence indicator in scalar"), 1, "yaml: dash-value error msg");
+var ya17 = "? k\n";
+assert_eq(bayan_yaml_parse_str(ya17, strlen(ya17)), 0, "yaml: complex key rejected");
+assert_eq(streq(bayan_yaml_last_error(), "yaml complex keys ('?') not supported"), 1, "yaml: complex-key error msg");
+
+# malformed quoted scalars are loud, not glued
+var ya18 = "k: \"a\" \"b\"\n";
+assert_eq(bayan_yaml_parse_str(ya18, strlen(ya18)), 0, "yaml: glued quoted scalars rejected");
+assert_eq(streq(bayan_yaml_last_error(), "malformed quoted scalar"), 1, "yaml: malformed-quote error msg");
+
+# a flow sequence on its own line below the key is loud
+var ya19 = "k:\n  [1, 2]\n";
+assert_eq(bayan_yaml_parse_str(ya19, strlen(ya19)), 0, "yaml: flow on next line rejected");
+assert_eq(streq(bayan_yaml_last_error(), "flow sequence must follow its key on the same line"), 1, "yaml: flow-line error msg");
+
+# leading UTF-8 BOM is skipped, not absorbed into the first key
+var ya20 = alloc(12);
+store8(ya20, 239); store8(ya20 + 1, 187); store8(ya20 + 2, 191);
+store8(ya20 + 3, 107); store8(ya20 + 4, 58); store8(ya20 + 5, 32);
+store8(ya20 + 6, 49); store8(ya20 + 7, 10); store8(ya20 + 8, 0);
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_yaml_parse_str(ya20, strlen(ya20)), "k")), 1, "yaml: BOM skipped");
+
+# ---- coverage-gap closures ----
+
+# block-structure recursion shares the 128 cap (only flow was tested)
+fn _mk_ymap(n): i64 {
+    # n nested mappings: line i = 2i spaces + "a:", final line 2n spaces + "b: 1"
+    var buf = alloc(n * (n + 1) + n * 4 + 2 * n + 8);
+    var o = 0;
+    var i = 0;
+    while (i < n) {
+        var s = 0;
+        while (s < i * 2) { store8(buf + o, 32); o = o + 1; s = s + 1; }
+        store8(buf + o, 97); store8(buf + o + 1, 58); store8(buf + o + 2, 10);
+        o = o + 3;
+        i = i + 1;
+    }
+    var s2 = 0;
+    while (s2 < n * 2) { store8(buf + o, 32); o = o + 1; s2 = s2 + 1; }
+    store8(buf + o, 98); store8(buf + o + 1, 58); store8(buf + o + 2, 32);
+    store8(buf + o + 3, 49); store8(buf + o + 4, 10); store8(buf + o + 5, 0);
+    return buf;
+}
+var ymd = _mk_ymap(200);
+assert_eq(bayan_yaml_parse_str(ymd, strlen(ymd)), 0, "yaml: 200-deep block rejected");
+assert_eq(streq(bayan_yaml_last_error(), "nesting too deep"), 1, "yaml: block depth error msg");
+var ymo = _mk_ymap(100);
+assert_eq(bayan_yaml_parse_str(ymo, strlen(ymo)) != 0, 1, "yaml: 100-deep block parses");
+
+# err_pos is a byte offset into the source
+assert_eq(bayan_yaml_parse_str(yr10, strlen(yr10)), 0, "yaml: err_pos fixture rejected");
+assert_eq(bayan_yaml_last_error_pos(), 5, "yaml: err_pos points at offending line");
+var ypsp[48];
+assert_eq(bayan_yaml_parse_ctx(&ypsp, yr10, strlen(yr10)), 0, "yaml ctx: err_pos fixture rejected");
+assert_eq(bayan_yaml_state_error_pos(&ypsp), 5, "yaml ctx: per-call err_pos");
+
+# '...' enforcement: content after end, '...' before content, double '...'
+var ye1 = "...\nk: 1\n";
+assert_eq(bayan_yaml_parse_str(ye1, strlen(ye1)), 0, "yaml: content after leading ... rejected");
+assert_eq(streq(bayan_yaml_last_error(), "content after '...' document end"), 1, "yaml: doc-end error msg");
+var ye2 = "---\nk: 1\n...\n...\n";
+assert_eq(bayan_yaml_parse_str(ye2, strlen(ye2)), 0, "yaml: second ... rejected");
+
+# Str entries: ctx_str success + null-source paths
+var ypss[48];
+assert_eq(bayan_yaml_parse_ctx_str(&ypss, str_from(y1)) != 0, 1, "yaml: parse_ctx_str parses");
+assert_eq(bayan_yaml_parse(0), 0, "yaml: parse(0) -> 0");
+assert_eq(streq(bayan_yaml_last_error(), "null source"), 1, "yaml: null-source error msg");
+var ypsn[48];
+assert_eq(bayan_yaml_parse_ctx_str(&ypsn, 0), 0, "yaml: parse_ctx_str(0) -> 0");
+assert_eq(streq(bayan_yaml_state_error(&ypsn), "null source"), 1, "yaml ctx: null-source error msg");
+
+# nested compact sequences '- - x'
+var yn1 = "m:\n  - - a\n    - b\n";
+var ynv1 = bayan_yaml_parse_str(yn1, strlen(yn1));
+var ynm = bayan_json_v_obj_get(ynv1, "m");
+assert_eq(bayan_json_v_arr_len(ynm), 1, "yaml: seq-in-seq outer len");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_arr_get(ynm, 0)), 2, "yaml: seq-in-seq inner len");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(bayan_json_v_arr_get(ynm, 0), 1)), "b"), 1, "yaml: seq-in-seq [0][1]");
+
+# quoted keys (incl. the pinned empty-quoted-key behavior)
+var yq1 = "\"my key\": 1\n'other': 2\n'': 9\n";
+var yqv1 = bayan_yaml_parse_str(yq1, strlen(yq1));
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yqv1, "my key")), 1, "yaml: double-quoted key");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yqv1, "other")), 2, "yaml: single-quoted key");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yqv1, "")), 9, "yaml: quoted empty key (pinned)");
+
+# frontmatter edges: CRLF fences, fence-as-last-line, '...' closing fence
+var yfc = "---\r\ntitle: T\r\n---\r\nB\r\n";
+var yfcp = bayan_yaml_frontmatter_split(str_from(yfc));
+assert_eq(bayan_yaml_fm_yaml(yfcp) != 0, 1, "yaml fm: CRLF fences split");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_yaml_parse(bayan_yaml_fm_yaml(yfcp)), "title")), "T"), 1, "yaml fm: CRLF yaml parses");
+assert_eq(str_eq_cstr(bayan_yaml_fm_body(yfcp), "B\r\n"), 1, "yaml fm: CRLF body");
+var yfl = "---\nk: v\n---";
+var yflp = bayan_yaml_frontmatter_split(str_from(yfl));
+assert_eq(bayan_yaml_fm_yaml(yflp) != 0, 1, "yaml fm: fence-as-last-line split");
+assert_eq(str_len(bayan_yaml_fm_body(yflp)), 0, "yaml fm: empty body after final fence");
+var yfd = "---\nk: v\n...\nB\n";
+var yfdp = bayan_yaml_frontmatter_split(str_from(yfd));
+assert_eq(str_eq_cstr(bayan_yaml_fm_body(yfdp), "B\n"), 1, "yaml fm: ... closes the fence");
+var yfo = "...\nx\n";
+assert_eq(bayan_yaml_fm_yaml(bayan_yaml_frontmatter_split(str_from(yfo))), 0, "yaml fm: ... cannot open a block");
+
+# remaining loud structural errors
+var ys1 = "k: [1] junk\n";
+assert_eq(bayan_yaml_parse_str(ys1, strlen(ys1)), 0, "yaml: content after flow rejected");
+assert_eq(streq(bayan_yaml_last_error(), "content after flow sequence"), 1, "yaml: after-flow error msg");
+var ys2 = "a: 1\n- x\n";
+assert_eq(bayan_yaml_parse_str(ys2, strlen(ys2)), 0, "yaml: seq entry in mapping rejected");
+assert_eq(streq(bayan_yaml_last_error(), "unexpected sequence entry in mapping"), 1, "yaml: seq-in-mapping error msg");
+var ys3 = "- a\nk: v\n";
+assert_eq(bayan_yaml_parse_str(ys3, strlen(ys3)), 0, "yaml: trailing mapping line after seq doc rejected");
+assert_eq(streq(bayan_yaml_last_error(), "unexpected line"), 1, "yaml: unexpected-line error msg");
+var ys4 = "foo\nbar\n";
+assert_eq(bayan_yaml_parse_str(ys4, strlen(ys4)), 0, "yaml: multi-line plain doc rejected");
+assert_eq(streq(bayan_yaml_last_error(), "expected mapping or sequence entry"), 1, "yaml: plain-doc error msg");
 
 var r = assert_summary();

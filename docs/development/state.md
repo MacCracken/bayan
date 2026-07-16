@@ -5,10 +5,12 @@
 
 ## Version
 
-**1.1.1** — json recursion-depth cap at 128 in both parsers (serde_json
-wire-parity; parser state 40 → 48 bytes, agnosai's blocker #2) + toolchain
-bumped to cyrius v6.4.64 with a full `lib/` re-sync (2026-07-16). Carved
-from cyrius stdlib at 1.0.0 (2026-06-10).
+**1.2.0** — new `yaml` module: YAML-subset parser into the shared
+`bayan_json_v_*` tagged value tree (`bayan_yaml_parse*`) + Markdown
+frontmatter split (`bayan_yaml_frontmatter_split`); filed by agnosai,
+driven equally by mneme (2026-07-16). Before that, 1.1.1 added the json
+recursion-depth cap (128, serde_json wire-parity) and the cyrius 6.4.64
+toolchain bump. Carved from cyrius stdlib at 1.0.0 (2026-06-10).
 
 ## Toolchain
 
@@ -17,12 +19,15 @@ from cyrius stdlib at 1.0.0 (2026-06-10).
 
 ## Source
 
-Seven data/big-integer modules carved byte-identical from cyrius stdlib,
-public functions prefixed `bayan_`:
+Seven data/big-integer modules carved byte-identical from cyrius stdlib
+(public functions prefixed `bayan_`), plus the greenfield `yaml` module
+(1.2.0, written in-repo — parses into json's value tree, so it must sit
+after `json.cyr` in bundle order):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
 | `src/json.cyr`   | 1584 | 62 | `bayan_json_*` |
+| `src/yaml.cyr`   | 874  | 12 | `bayan_yaml_*` |
 | `src/u128.cyr`   | 526  | 35 | `bayan_u128_*` / `bayan_u64_*` |
 | `src/cyml.cyr`   | 420  | 17 | `bayan_cyml_*` |
 | `src/bigint.cyr` | 365  | 20 | `bayan_u256_*` |
@@ -30,10 +35,17 @@ public functions prefixed `bayan_`:
 | `src/base64.cyr` | 177  | 4  | `bayan_base64_*` |
 | `src/csv.cyr`    | 97   | 3  | `bayan_csv_*` |
 
-- `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`).
-- `dist/bayan.cyr` — ~3,900-line bundle (canonical + alias + internal helper
+- `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
+  yaml is new API, no aliases).
+- `dist/bayan.cyr` — ~4,750-line bundle (canonical + alias + internal helper
   fns), regenerated via `cyrius distlib`. This is the artifact folded into
   `cyrius/lib/bayan.cyr`.
+- `dist/bayan-<format>.cyr` — per-format sublibs (the sigil/sandhi
+  `[lib.<name>]` pattern): json / yaml / toml / cyml / csv / base64 / u128 /
+  bigint, each `cyrius distlib <name>`-generated, compile-verified
+  self-contained, with a `.deps` stdlib-leaf sidecar (u128 needs none).
+  yaml's closure carries json.cyr (shared value tree / parser state).
+  Canonical `bayan_*` names only — `_compat` aliases ride the full bundle.
 
 ## Tests
 
@@ -44,7 +56,11 @@ public functions prefixed `bayan_`:
   cap (200-deep rejected on both parsers, 100-deep parses, 128/129 boundary,
   alias parity) + toml triple-quoted strings + toml array-value element access
   (bare/quoted/literal-`'`/nested/empty/trailing-comma/multi-line-comment/
-  nested-inline-comment + alias parity). 101 asserts, green on 6.4.64.
+  nested-inline-comment + alias parity) + yaml (scalar typing, quoting,
+  comments, nested mappings, block/flow/compact sequences, doc markers,
+  frontmatter split, reentrancy, err_pos, block+flow depth caps, and a
+  loud-rejection battery for every out-of-subset form). 249 asserts, green
+  on 6.4.64.
 - `src/main.cyr` — full-bundle compile smoke (exits 42).
 - Deep per-module coverage lives in cyrius's `.tcyr` suite (json/toml/csv/
   base64/bigint/u128/cyml).
