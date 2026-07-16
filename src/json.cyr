@@ -560,15 +560,26 @@ fn bayan_json_v_obj_get(v, key): i64 {
 #   +16  pos      i64    current byte offset   (advanced through the descent)
 #   +24  err_msg  cstr   parse-error message, or 0
 #   +32  err_pos  i64    byte offset of the parse error
-var _JP_STATE_SIZE = 40;
+#   +40  depth    i64    open-container count  (bounds recursion, cap _JP_MAX_DEPTH)
+var _JP_STATE_SIZE = 48;
 
-# Initialise a parser state over (buf, len). pos = 0, error cleared.
+# Recursion-depth cap shared by both descents (value + streaming). 128 matches
+# serde_json's default, so Rust→Cyrius ports keep wire parity: a deeper
+# document fails the parse with "nesting too deep" through the normal per-call
+# error path instead of overflowing the caller's stack (a hostile `[[[[…` body
+# costs 2 bytes per level, so any untrusted input can otherwise out-recurse any
+# thread stack). See
+# docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md.
+var _JP_MAX_DEPTH = 128;
+
+# Initialise a parser state over (buf, len). pos = 0, error cleared, depth 0.
 fn _jp_state_init(ps, buf, len): i64 {
     store64(ps,      buf);
     store64(ps + 8,  len);
     store64(ps + 16, 0);
     store64(ps + 24, 0);
     store64(ps + 32, 0);
+    store64(ps + 40, 0);
     return 0;
 }
 
@@ -836,8 +847,18 @@ fn _jp_parse_value(ps): i64 {
     var pos = load64(ps + 16);
     if (pos >= len) { _jp_set_err(ps, "unexpected EOF", pos); return 0; }
     var c = load8(buf + pos);
-    if (c == 123) { return _jp_parse_object(ps); }
-    if (c == 91)  { return _jp_parse_array(ps); }
+    if (c == 123 || c == 91) {
+        # Containers recurse — bound the descent before entering (scalars can't
+        # recurse, so only these two branches touch the depth counter).
+        var depth = load64(ps + 40);
+        if (depth >= _JP_MAX_DEPTH) { _jp_set_err(ps, "nesting too deep", pos); return 0; }
+        store64(ps + 40, depth + 1);
+        var v = 0;
+        if (c == 123) { v = _jp_parse_object(ps); }
+        else          { v = _jp_parse_array(ps); }
+        store64(ps + 40, depth);
+        return v;
+    }
     if (c == 34)  {
         var s = _jp_parse_string(ps);
         if (s == 0) { return 0; }
@@ -934,7 +955,7 @@ fn _jp_parse_object(ps): i64 {
 # === Reentrant parse entry (v1.0.3, thread-safe) ===
 #
 # bayan_json_v_parse_ctx threads all parser state through `ps` (a caller-owned
-# _JP_STATE_SIZE-byte buffer — stack `var ps[40]` or heap `alloc(...)`). It
+# _JP_STATE_SIZE-byte buffer — stack `var ps[48]` or heap `alloc(...)`). It
 # touches NO module globals, so concurrent threads each parsing into their own
 # `ps` cannot corrupt one another's cursor. On failure it returns 0 and records
 # the error in `ps`; read it with bayan_json_state_error()/_pos().
@@ -989,7 +1010,7 @@ fn bayan_json_v_parse(src): i64 {
 # callers that need race-free error reporting should call bayan_json_v_parse_ctx
 # directly and read bayan_json_state_error()/_pos().
 fn bayan_json_v_parse_str(buf, len): i64 {
-    var ps[40];
+    var ps[48];
     var v = bayan_json_v_parse_ctx(&ps, buf, len);
     _json_err_msg = load64(&ps + 24);
     _json_err_pos = load64(&ps + 32);
@@ -1343,8 +1364,18 @@ fn _js_parse_value(ps, h): i64 {
     var pos = load64(ps + 16);
     if (pos >= len) { _js_emit_error(ps, h, "unexpected EOF"); return 0 - 1; }
     var c = load8(buf + pos);
-    if (c == 123) { return _js_parse_object(ps, h); }
-    if (c == 91)  { return _js_parse_array(ps, h); }
+    if (c == 123 || c == 91) {
+        # Same depth bound as _jp_parse_value — the streaming descent recurses
+        # through _js_parse_array/_js_parse_object identically.
+        var depth = load64(ps + 40);
+        if (depth >= _JP_MAX_DEPTH) { _js_emit_error(ps, h, "nesting too deep"); return 0 - 1; }
+        store64(ps + 40, depth + 1);
+        var rc = 0;
+        if (c == 123) { rc = _js_parse_object(ps, h); }
+        else          { rc = _js_parse_array(ps, h); }
+        store64(ps + 40, depth);
+        return rc;
+    }
     if (c == 34)  {
         var s = _jp_parse_string(ps);
         if (s == 0) { _js_relay_err(ps, h); return 0 - 1; }
@@ -1394,7 +1425,7 @@ fn _js_parse_value(ps, h): i64 {
 # and bayan_json_last_error_pos(); the JS_EV_ERROR callback (if registered)
 # already fired.
 fn bayan_json_stream_parse(buf, len, h): i64 {
-    var ps[40];
+    var ps[48];
     _jp_state_init(&ps, buf, len);
     var rc = 0;
     if (_js_parse_value(&ps, h) != 0) {

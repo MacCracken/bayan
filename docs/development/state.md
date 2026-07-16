@@ -21,7 +21,7 @@ public functions prefixed `bayan_`:
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
-| `src/json.cyr`   | 1549 | 62 | `bayan_json_*` |
+| `src/json.cyr`   | 1584 | 62 | `bayan_json_*` |
 | `src/u128.cyr`   | 504  | 35 | `bayan_u128_*` / `bayan_u64_*` |
 | `src/cyml.cyr`   | 422  | 17 | `bayan_cyml_*` |
 | `src/bigint.cyr` | 365  | 20 | `bayan_u256_*` |
@@ -30,7 +30,7 @@ public functions prefixed `bayan_`:
 | `src/csv.cyr`    | 97   | 3  | `bayan_csv_*` |
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`).
-- `dist/bayan.cyr` — ~3,870-line bundle (canonical + alias + internal helper
+- `dist/bayan.cyr` — ~3,900-line bundle (canonical + alias + internal helper
   fns), regenerated via `cyrius distlib`. This is the artifact folded into
   `cyrius/lib/bayan.cyr`.
 
@@ -39,10 +39,11 @@ public functions prefixed `bayan_`:
 - `tests/bayan.tcyr` — base64 encode/decode + u128 arithmetic + alias parity +
   json value-parser reentrancy (nested parse, ctx path, per-call error
   reporting, trailing-content rejection) + json streaming-parser callbacks
-  (real `&fn` handlers asserting per-event dispatch) + toml triple-quoted
-  strings + toml array-value element access (bare/quoted/literal-`'`/nested/
-  empty/trailing-comma/multi-line-comment/nested-inline-comment + alias
-  parity). 86 asserts, green on 6.4.10.
+  (real `&fn` handlers asserting per-event dispatch) + json recursion-depth
+  cap (200-deep rejected on both parsers, 100-deep parses, 128/129 boundary,
+  alias parity) + toml triple-quoted strings + toml array-value element access
+  (bare/quoted/literal-`'`/nested/empty/trailing-comma/multi-line-comment/
+  nested-inline-comment + alias parity). 101 asserts, green on 6.4.10.
 - `src/main.cyr` — full-bundle compile smoke (exits 42).
 - Deep per-module coverage lives in cyrius's `.tcyr` suite (json/toml/csv/
   base64/bigint/u128/cyml).
