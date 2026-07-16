@@ -11,6 +11,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sandhi/yukti/patra/vani/mabda/sankoch had drifted behind their pins). Full
   suite green on 6.4.64: 86/86 asserts + full-bundle compile smoke.
 
+### Fixed
+
+- **json: parsers now cap recursion depth at 128 (serde_json parity).** Neither
+  the value parser (`_jp_parse_value`) nor the streaming parser
+  (`_js_parse_value`) bounded its descent, so a deeply nested document
+  (`[[[[…` — 2 bytes per level) recursed once per level until the calling
+  thread's stack was exhausted — an untrusted-input DoS, and a **parity
+  regression** vs the Rust originals, which inherit serde_json's default
+  128-level limit. The per-call parser state grew one slot
+  (`_JP_STATE_SIZE` 40 → 48, `depth@+40`, zeroed in `_jp_state_init`); both
+  descents increment it on entering an array/object branch, decrement on exit,
+  and past 128 (`_JP_MAX_DEPTH`) fail through the existing per-call error path
+  with `"nesting too deep"` — exactly like any other parse error (value path:
+  `bayan_json_state_error()` / mirrored `bayan_json_last_error()`; stream
+  path: `JS_EV_ERROR` + the same mirror). 128 open containers still parse;
+  the 129th fails. `bayan_json_parse_state_size()` already reports the state
+  size, so callers reserving via it are transparent; the documented stack
+  pattern is now `var ps[48]`. Reported by agnosai (untrusted HTTP bodies on
+  its server surface — blocker #2). See
+  `docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md`.
+  Covered by a new `tests/bayan.tcyr` group (200-deep rejected on both
+  parsers, 100-deep parses, exact 128/129 boundary, legacy-entry mirror,
+  `_compat` alias parity); suite 86 → 101 asserts.
+
 ## [1.1.0] — 2026-07-06
 
 ### Added

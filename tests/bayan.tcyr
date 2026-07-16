@@ -84,16 +84,16 @@ var meta = bayan_json_v_obj_get(doc, "meta");
 assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(meta, "ok")), 1, "meta.ok == true");
 
 # Reentrant ctx path: caller-owned stack state, touches no module globals.
-var ps[40];
+var ps[48];
 var d2 = bayan_json_v_parse_ctx(&ps, js, strlen(js));
 assert_eq(d2 != 0, 1, "ctx parse ok");
 assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d2, "ver")), 103, "ctx ver == 103");
 assert_eq(streq(bayan_json_state_error(&ps), ""), 1, "ctx clean on success");
-assert_eq(bayan_json_parse_state_size(), 40, "state size == 40");
+assert_eq(bayan_json_parse_state_size(), 48, "state size == 48");
 
 # Two independent states stay independent (sequential proxy for the
 # concurrency the fix enables — no shared cursor between them).
-var psa[40]; var psb[40];
+var psa[48]; var psb[48];
 var sa = "[1, 2, 3]"; var sb = "{\"x\": 9}";
 var da = bayan_json_v_parse_ctx(&psa, sa, strlen(sa));
 var db = bayan_json_v_parse_ctx(&psb, sb, strlen(sb));
@@ -101,7 +101,7 @@ assert_eq(bayan_json_v_arr_len(da), 3, "state A array len 3");
 assert_eq(bayan_json_v_int(bayan_json_v_obj_get(db, "x")), 9, "state B x == 9");
 
 # Error reporting lives in the per-call state (not the globals).
-var pse[40];
+var pse[48];
 var se = "{\"k\": }";
 var bad = bayan_json_v_parse_ctx(&pse, se, strlen(se));
 assert_eq(bad, 0, "malformed object rejected");
@@ -109,7 +109,7 @@ assert_eq(streq(bayan_json_state_error(&pse), ""), 0, "error message recorded");
 assert_eq(bayan_json_state_error_pos(&pse) >= 0, 1, "error pos recorded");
 
 # Trailing content after a complete value is rejected.
-var pst[40];
+var pst[48];
 var st = "42 oops";
 assert_eq(bayan_json_v_parse_ctx(&pst, st, strlen(st)), 0, "trailing content rejected");
 
@@ -164,6 +164,56 @@ assert_eq(_strm_int, 2, "2 ints from parse_str");
 assert_eq(_strm_acc, 30, "parse_str int sum = 30");
 assert_eq(streq(bayan_json_last_error(), ""), 1, "last_error cleared after success");
 assert_eq(bayan_json_stream_parse_str(0, sh), 0 - 1, "null Str returns -1");
+
+# Build an n-deep nested-array doc: n `[` then n `]` (NUL-terminated cstr).
+fn _mk_nested(n): i64 {
+    var buf = alloc(n * 2 + 1);
+    var i = 0;
+    while (i < n)     { store8(buf + i, 91); i = i + 1; }
+    while (i < n * 2) { store8(buf + i, 93); i = i + 1; }
+    store8(buf + n * 2, 0);
+    return buf;
+}
+
+test_group("json recursion-depth cap — 128, serde_json parity");
+# Deep untrusted input must fail the parse through the normal error path, not
+# out-recurse the thread stack. Cap is 128 (serde_json's default) so Rust →
+# Cyrius ports keep wire parity. See
+# docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md.
+var jd_deep = _mk_nested(200);
+var jd_ok   = _mk_nested(100);
+var psd[48];
+assert_eq(bayan_json_v_parse_ctx(&psd, jd_deep, strlen(jd_deep)), 0, "value: 200-deep rejected");
+assert_eq(streq(bayan_json_state_error(&psd), "nesting too deep"), 1, "value: depth error recorded");
+var psk[48];
+var jd_v = bayan_json_v_parse_ctx(&psk, jd_ok, strlen(jd_ok));
+assert_eq(jd_v != 0, 1, "value: 100-deep parses");
+assert_eq(streq(bayan_json_state_error(&psk), ""), 1, "value: no error at 100-deep");
+
+# Exact boundary: 128 open containers parse; the 129th fails.
+var psl[48]; var psm[48];
+var jd_at   = _mk_nested(128);
+var jd_over = _mk_nested(129);
+assert_eq(bayan_json_v_parse_ctx(&psl, jd_at, strlen(jd_at)) != 0, 1, "value: 128-deep (at cap) parses");
+assert_eq(bayan_json_v_parse_ctx(&psm, jd_over, strlen(jd_over)), 0, "value: 129-deep (past cap) rejected");
+
+# Legacy value entry inherits the cap; error mirrors into last_error.
+assert_eq(bayan_json_v_parse_str(jd_deep, strlen(jd_deep)), 0, "v_parse_str: 200-deep rejected");
+assert_eq(streq(bayan_json_last_error(), "nesting too deep"), 1, "v_parse_str: depth error mirrored");
+
+# Streaming parser: same bound; fails via on_error + mirrored last_error.
+_strm_reset();
+assert_eq(bayan_json_stream_parse(jd_deep, strlen(jd_deep), sh), 0 - 1, "stream: 200-deep rejected");
+assert_eq(_strm_err, 1, "stream: on_error fired for depth");
+assert_eq(streq(bayan_json_last_error(), "nesting too deep"), 1, "stream: depth error mirrored");
+_strm_reset();
+assert_eq(bayan_json_stream_parse(jd_ok, strlen(jd_ok), sh), 0, "stream: 100-deep parses");
+assert_eq(_strm_arr, 100, "stream: 100 array-start events");
+
+# _compat aliases forward to the capped parsers (alias parity).
+assert_eq(json_v_parse_str(jd_deep, strlen(jd_deep)), 0, "alias json_v_parse_str: rejected");
+_strm_reset();
+assert_eq(json_stream_parse(jd_deep, strlen(jd_deep), sh), 0 - 1, "alias json_stream_parse: rejected");
 
 test_group("toml: triple-quoted strings — \"\"\" (basic) + ''' (literal)");
 # Regression guard for the """-drops-body bug: a """...""" value used to fall
