@@ -4,6 +4,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Toolchain: cyrius pin bumped 6.4.10 → 6.4.64.** `cyrius lib sync --full`
+  re-synced the vendored `lib/` snapshot (99 files — sakshi/niyama/sigil/
+  sandhi/yukti/patra/vani/mabda/sankoch had drifted behind their pins). Full
+  suite green on 6.4.64: 86/86 asserts + full-bundle compile smoke.
+
 ## [1.1.0] — 2026-07-06
 
 ### Added

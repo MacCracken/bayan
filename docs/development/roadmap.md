@@ -51,6 +51,47 @@ parser reuses the same tokenize → AST approach — modest effort, high reuse.
   behind a flag; downstream consumer (mneme) green; folds byte-identical into
   `cyrius/lib/bayan.cyr` per the sandhi pattern.
 
+### YAML parsing — `bayan_yaml_*` (planned)
+
+Add YAML as another data-format parser alongside `json` / `toml` / `cyml` /
+`csv`. Same tokenize → key/value approach as the existing block parsers —
+the `toml` / `cyml` machinery (quote stripping, comment skipping, flow-list
+`[a, b]` splitting) covers most of the subset that real consumers need.
+
+- **Drivers (two consumers, convergent):**
+  - **agnosai** (agent-orchestration port) — definition-file loading behind
+    its `definitions` feature. Filed:
+    [2026-07-16 issue](issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md)
+    (originally noted only in agnosai's port-plan "Upstream filings" table).
+    Its ask fixes the output shape: parse into **the existing `JTAG_*`-tagged
+    `bayan_json_v_*` value tree**, not a new YAML AST, so one loader traverses
+    one node type across JSON and YAML — the serde-data-model property the
+    Rust original has.
+  - **mneme** (note-taking port) — notes are Markdown with optional YAML
+    frontmatter. mneme hand-rolls a YAML-ish subset in
+    `src/core_frontmatter.cyr` (~200 lines: `key: value` lines, one-layer
+    quote stripping, flow-list tags, an extras map) — the same interim play as
+    its markdown subset. Pairs with the markdown item (`bayan_markdown_*` +
+    frontmatter split is the full note-parsing story).
+
+  Both migrate to `bayan_yaml_*` once this lands, so no consumer hand-rolls a
+  second one.
+- **Scope:** pragmatic YAML subset, not full YAML 1.2 —
+  `bayan_yaml_parse(src)` (+ `_a` allocator variant) → `bayan_json_v_*` node
+  tree, covering block mappings (`key: value`), nested mappings by
+  indentation, block sequences (`- item`), flow sequences (`[a, b, c]`),
+  scalars with single/double-quote stripping, and `#` comments. Explicitly
+  out: anchors/aliases, tags (`!!`), multi-document streams, block scalars
+  (`|` / `>`) unless a consumer needs them. Per-call parser state (thoth
+  cursor lesson) and a recursion-depth cap (agnosai JSON filing) from day one.
+  Include a `bayan_yaml_frontmatter_split(md)` helper (split `---` fences →
+  yaml + body) since frontmatter is a known consumer shape.
+- **Acceptance:** parses agnosai definition fixtures and mneme frontmatter
+  fixtures into trees the existing `bayan_json_v_*` accessors traverse;
+  documented subset boundary (what's rejected vs. silently mis-parsed —
+  reject loudly); both downstream consumers green; folds byte-identical into
+  `cyrius/lib/bayan.cyr` per the sandhi pattern.
+
 ## Post-v1.0 / P2 backlog
 
 _Wanted, but not gating v1.0 — heavier lifts scheduled after the text-format

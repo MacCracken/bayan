@@ -12,7 +12,8 @@ from cyrius stdlib at 1.0.0 (2026-06-10).
 
 ## Toolchain
 
-- **Cyrius pin**: `6.4.10` (in `cyrius.cyml [package].cyrius`)
+- **Cyrius pin**: `6.4.64` (in `cyrius.cyml [package].cyrius`; bumped
+  2026-07-16, `lib/` snapshot re-synced via `cyrius lib sync --full`)
 
 ## Source
 
@@ -21,11 +22,11 @@ public functions prefixed `bayan_`:
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
-| `src/json.cyr`   | 1549 | 62 | `bayan_json_*` |
-| `src/u128.cyr`   | 504  | 35 | `bayan_u128_*` / `bayan_u64_*` |
-| `src/cyml.cyr`   | 422  | 17 | `bayan_cyml_*` |
+| `src/json.cyr`   | 1553 | 62 | `bayan_json_*` |
+| `src/u128.cyr`   | 526  | 35 | `bayan_u128_*` / `bayan_u64_*` |
+| `src/cyml.cyr`   | 420  | 17 | `bayan_cyml_*` |
 | `src/bigint.cyr` | 365  | 20 | `bayan_u256_*` |
-| `src/toml.cyr`   | 537  | 17 | `bayan_toml_*` |
+| `src/toml.cyr`   | 545  | 17 | `bayan_toml_*` |
 | `src/base64.cyr` | 177  | 4  | `bayan_base64_*` |
 | `src/csv.cyr`    | 97   | 3  | `bayan_csv_*` |
 
@@ -42,7 +43,7 @@ public functions prefixed `bayan_`:
   (real `&fn` handlers asserting per-event dispatch) + toml triple-quoted
   strings + toml array-value element access (bare/quoted/literal-`'`/nested/
   empty/trailing-comma/multi-line-comment/nested-inline-comment + alias
-  parity). 86 asserts, green on 6.4.10.
+  parity). 86 asserts, green on 6.4.64.
 - `src/main.cyr` — full-bundle compile smoke (exits 42).
 - Deep per-module coverage lives in cyrius's `.tcyr` suite (json/toml/csv/
   base64/bigint/u128/cyml).
@@ -56,11 +57,12 @@ NOT in cyrius's own stdlib auto-prepend set).
 
 ## Consumers
 
-- **cyrius** — folds `dist/bayan.cyr` → `lib/bayan.cyr` (v6.1.25).
+- **cyrius** — folds `dist/bayan.cyr` → `lib/bayan.cyr` (fold refreshed
+  2026-07-06 with the 1.1.0 bundle; cyrius now at v6.4.64).
 - Downstream repos using json/toml/csv/base64/bigint/u128 migrate to
   `bayan_*` on re-pin (back-compat aliases bridge the window).
 
 ## Next
 
 See [`roadmap.md`](roadmap.md). ganita (math-domain) is the sibling carve
-(cyrius v6.1.26).
+(v1.0.3, pins cyrius 6.4.26).
