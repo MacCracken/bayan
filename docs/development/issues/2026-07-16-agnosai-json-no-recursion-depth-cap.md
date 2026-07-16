@@ -1,6 +1,6 @@
 # bayan — JSON parsers have no recursion-depth cap: nested input stack-overflows the caller
 
-**Status**: ✅ **Resolved** (unreleased — in `main` post-1.1.0, cyrius pin 6.4.64).
+**Status**: ✅ **Resolved in bayan 1.1.1** (cyrius pin 6.4.64).
 Both descents are bounded at **128 levels** (serde_json's default, so the port
 is wire-parity); past the cap the parse fails with `"nesting too deep"` through
 the existing per-call error path. See the Resolution section below.
@@ -61,7 +61,7 @@ Filed per the same posture as the thoth cursor issue
 ([2026-06-23](2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md)):
 agnosai will not fork or wrap the parser to work around this.
 
-## Resolution (unreleased, post-1.1.0)
+## Resolution (bayan 1.1.1)
 
 Implemented exactly as asked. The per-call parser state grew one slot —
 `_JP_STATE_SIZE` 40 → **48** bytes (`buf@+0, len@+8, pos@+16, err_msg@+24,

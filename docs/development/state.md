@@ -5,9 +5,9 @@
 
 ## Version
 
-**1.1.0** — toml array-value element access (`bayan_toml_array_parse` /
-`bayan_toml_is_array` / `bayan_toml_get_array`) + quote-aware/comment-aware
-array-value capture; toolchain bumped to cyrius v6.4.10 (2026-07-06). Carved
+**1.1.1** — json recursion-depth cap at 128 in both parsers (serde_json
+wire-parity; parser state 40 → 48 bytes, agnosai's blocker #2) + toolchain
+bumped to cyrius v6.4.64 with a full `lib/` re-sync (2026-07-16). Carved
 from cyrius stdlib at 1.0.0 (2026-06-10).
 
 ## Toolchain
