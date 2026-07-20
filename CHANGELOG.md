@@ -4,6 +4,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-07-20
+
+### Changed
+
+- **f64 JSON is now round-trip-correct** (`src/dtoa.cyr`, new). Replaced the
+  6-decimal `fmt_float_buf(v, 6)` formatter — which lost ~9 mantissa bits on
+  values like `1/3`, flushed `|x| < 5e-7` to `0`, and emitted the **non-JSON**
+  token `-.00000-` for `Inf`/`NaN`/`|x| >= 2^63` — with a **Grisu2** (Loitsch)
+  formatter: integer-only, always-succeeds, output guaranteed to round-trip.
+  Non-finite values now serialize as `null` (serde_json / JS convention).
+- **Parser is now correctly rounded + DoS-safe.** `_jp_atof` (bayan's JSON number
+  parser) is replaced by a Clinger-fast-path + normalized-DiyFp `strtod`
+  (`bayan_f64_from_json` / `bayan_f64_parse`) that agrees with a reference
+  `strtod` on every tested input — killing the old 1-ULP divergence against
+  `math f64_parse`. Its exponent scan **saturates**: the old O(exponent-VALUE)
+  apply loop turned a 17-byte `{"x":1e100000000}` into ~237 ms of wasted CPU (an
+  algorithmic-complexity DoS); it is now O(len).
+- Validated **bit-exact across the entire double range** (all powers of two,
+  subnormals, boundaries, 5000+ randoms) for both format→parse round-trip and
+  reference-`strtod` parse agreement. +16 tests in `tests/bayan.tcyr`.
+
 ## [1.2.0] — 2026-07-16
 
 ### Added

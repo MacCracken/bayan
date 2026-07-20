@@ -22,6 +22,7 @@ include "src/u128.cyr"
 include "src/bigint.cyr"
 include "src/toml.cyr"
 include "src/cyml.cyr"
+include "src/dtoa.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
 include "src/_compat.cyr"
@@ -663,5 +664,42 @@ assert_eq(streq(bayan_yaml_last_error(), "unexpected line"), 1, "yaml: unexpecte
 var ys4 = "foo\nbar\n";
 assert_eq(bayan_yaml_parse_str(ys4, strlen(ys4)), 0, "yaml: multi-line plain doc rejected");
 assert_eq(streq(bayan_yaml_last_error(), "expected mapping or sequence entry"), 1, "yaml: plain-doc error msg");
+
+fn _dtoa_rt(bitv): i64 {
+    var b[64];
+    var n = bayan_f64_to_json(bitv, &b);
+    store8(&b + n, 0);
+    if (bayan_f64_from_json(&b) == bitv) { return 1; }
+    return 0;
+}
+fn _dtoa_emits_null(bitv): i64 {
+    var b[64];
+    var n = bayan_f64_to_json(bitv, &b);
+    if (n != 4) { return 0; }
+    if (load8(&b) == 110 && load8(&b + 1) == 117) {
+        if (load8(&b + 2) == 108 && load8(&b + 3) == 108) { return 1; }
+    }
+    return 0;
+}
+# === v1.2.1: f64 JSON round-trip (Grisu2 formatter + correctly-rounded parser) ===
+# Parse is correctly rounded: 0.333333 -> ...46 (the value a correct strtod gives;
+# the old math f64_parse gave ...47, _jp_atof ...46 — now unified + correct).
+assert_eq(bayan_f64_from_json("0.5"), 0x3FE0000000000000, "f64 parse 0.5");
+assert_eq(bayan_f64_from_json("0.333333"), 0x3FD55553EF6B5D46, "f64 parse 0.333333 correctly-rounded");
+assert_eq(bayan_f64_from_json("0.1"), 0x3FB999999999999A, "f64 parse 0.1");
+assert_eq(bayan_f64_from_json("1e-9"), 0x3E112E0BE826D695, "f64 parse 1e-9");
+# DoS clamp: a huge exponent returns instantly (was O(exp), ~237ms), saturating.
+assert_eq(bayan_f64_from_json("1e100000000"), 0x7FF0000000000000, "f64 1e100000000 -> +Inf, no DoS");
+assert_eq(bayan_f64_from_json("1e-100000000"), 0, "f64 1e-100000000 -> 0, no DoS");
+# Round-trip (format then parse == original bits) across the hard cases.
+assert_eq(_dtoa_rt(0x3FD5555555555555), 1, "f64 rt 1/3 exact (was 0.333333 lossy)");
+assert_eq(_dtoa_rt(0x3FE5555555555555), 1, "f64 rt 2/3 exact");
+assert_eq(_dtoa_rt(0x3E112E0BE826D695), 1, "f64 rt 1e-9 exact (was flushed to 0)");
+assert_eq(_dtoa_rt(0x0000000000000001), 1, "f64 rt min subnormal exact");
+assert_eq(_dtoa_rt(0x7FEFFFFFFFFFFFFF), 1, "f64 rt max double exact");
+assert_eq(_dtoa_rt(0x43E0000000000000), 1, "f64 rt 2^63 exact (was invalid -.00000-)");
+# Non-finite -> valid JSON "null" (was the non-JSON token -.00000-).
+assert_eq(_dtoa_emits_null(0x7FF0000000000000), 1, "f64 +Inf emits null");
+assert_eq(_dtoa_emits_null(0x7FF8000000000000), 1, "f64 NaN emits null");
 
 var r = assert_summary();

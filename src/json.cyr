@@ -784,56 +784,11 @@ fn _jp_atoi(buf, len): i64 {
 
 # Parse a float from buf[0..len). Returns f64 bit pattern.
 # Handles signed mantissa, optional fraction, optional signed exponent.
-fn _jp_atof(buf, len): i64 {
-    var i = 0;
-    var sign = 1;
-    if (len > 0 && load8(buf) == 45) { sign = 0 - 1; i = 1; }
-    elif (len > 0 && load8(buf) == 43) { i = 1; }
-    var int_part = f64_from(0);
-    while (i < len) {
-        var c = load8(buf + i);
-        if (c < 48 || c > 57) { break; }
-        int_part = f64_add(f64_mul(int_part, f64_from(10)), f64_from(c - 48));
-        i = i + 1;
-    }
-    var frac_part = f64_from(0);
-    var frac_div  = f64_from(1);
-    if (i < len && load8(buf + i) == 46) {
-        i = i + 1;
-        while (i < len) {
-            var c2 = load8(buf + i);
-            if (c2 < 48 || c2 > 57) { break; }
-            frac_part = f64_add(f64_mul(frac_part, f64_from(10)), f64_from(c2 - 48));
-            frac_div  = f64_mul(frac_div, f64_from(10));
-            i = i + 1;
-        }
-    }
-    var val = f64_add(int_part, f64_div(frac_part, frac_div));
-    if (i < len) {
-        var ec = load8(buf + i);
-        if (ec == 101 || ec == 69) {
-            i = i + 1;
-            var esign = 1;
-            if (i < len && load8(buf + i) == 43) { i = i + 1; }
-            elif (i < len && load8(buf + i) == 45) { esign = 0 - 1; i = i + 1; }
-            var exp = 0;
-            while (i < len) {
-                var c3 = load8(buf + i);
-                if (c3 < 48 || c3 > 57) { break; }
-                exp = exp * 10 + (c3 - 48);
-                i = i + 1;
-            }
-            var ei = 0;
-            while (ei < exp) {
-                if (esign > 0) { val = f64_mul(val, f64_from(10)); }
-                else           { val = f64_div(val, f64_from(10)); }
-                ei = ei + 1;
-            }
-        }
-    }
-    if (sign < 0) { val = f64_sub(f64_from(0), val); }
-    return val;
-}
+# v1.2.1: delegates to the correctly-rounded, DoS-safe parser in dtoa.cyr. The
+# old body accumulated digits in f64 (imprecise, disagreed with math f64_parse by
+# 1 ULP) and applied the exponent as a loop of once-per-unit-of-exponent-VALUE
+# f64 muls (O(exp) -> a 17-byte "1e100000000" burned ~237 ms). See dtoa.cyr.
+fn _jp_atof(buf, len): i64 { return bayan_f64_parse(buf, len); }
 
 # === Main parse entry ===
 
@@ -1089,7 +1044,10 @@ fn _jb_walk(sb, v, indent, level): i64 {
     }
     elif    (t == JTAG_FLOAT) {
         var fb[64];
-        var fl = fmt_float_buf(load64(v + 8), &fb, 6);
+        # v1.2.1: Grisu2 round-trip-correct (was fmt_float_buf(,6) — 6-decimal cap
+        # lost mantissa bits, flushed |x|<5e-7 to 0, and emitted "-.00000-" for
+        # Inf/NaN/>=2^63). Non-finite -> "null". See dtoa.cyr.
+        var fl = bayan_f64_to_json(load64(v + 8), &fb);
         store8(&fb + fl, 0);
         str_builder_add_cstr(sb, &fb);
     }
