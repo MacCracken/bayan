@@ -52,7 +52,7 @@ fn json_v_obj_key(v, i): i64 { return bayan_json_v_obj_key(v, i); }
 fn json_v_obj_val(v, i): i64 { return bayan_json_v_obj_val(v, i); }
 fn json_v_obj_get(v, key): i64 { return bayan_json_v_obj_get(v, key); }
 fn json_v_parse(src): i64 { return bayan_json_v_parse(src); }
-fn json_v_parse_str(buf, len): i64 { return bayan_json_v_parse_str(buf, len); }
+fn json_v_parse_buf(buf, len): i64 { return bayan_json_v_parse_buf(buf, len); }
 fn json_v_build(v): i64 { return bayan_json_v_build(v); }
 fn json_v_build_pretty(v, indent): i64 { return bayan_json_v_build_pretty(v, indent); }
 fn json_stream_handler_new(ctx): i64 { return bayan_json_stream_handler_new(ctx); }

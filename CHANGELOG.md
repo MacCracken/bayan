@@ -4,6 +4,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-07-28
+
+### Breaking
+
+- **The cstr+len parse entries are renamed `_str` → `_buf`.** The old names were
+  actively breaking their own Str-taking siblings (see Fixed below), so they
+  could not be kept as aliases — the name *is* the defect.
+
+  | Removed | Replacement | Signature |
+  |---|---|---|
+  | `bayan_json_v_parse_str` | `bayan_json_v_parse_buf` | `(buf, len)` |
+  | `bayan_yaml_parse_str` | `bayan_yaml_parse_buf` | `(buf, len)` |
+  | `json_v_parse_str` (alias) | `json_v_parse_buf` (alias) | `(buf, len)` |
+
+  Migration is mechanical: `s/_parse_str(/_parse_buf(/`. Stale calls do **not**
+  fail silently — the removed name is an undefined function, so the build
+  refuses to emit a binary. Callers already passing a `Str` should prefer the
+  bare `bayan_json_v_parse(src)` / `bayan_yaml_parse(src)`, which now work.
+
+  `bayan_json_stream_parse_str`, `bayan_json_v_parse_ctx_str` and
+  `bayan_yaml_parse_ctx_str` are **unchanged** — those genuinely take a `Str`
+  first argument, which is what the `_str` suffix is supposed to mean.
+
+### Fixed
+
+- **`bayan_json_v_parse(src)`, `bayan_yaml_parse(src)` and the `json_v_parse`
+  alias returned 0 for every input, including valid documents.** Cyrius routes a
+  call `X(a, …)` to `X_str` whenever `a` is `Str`-typed at the call site and an
+  `X_str` exists — the same overload dispatch that routes `&IDENT` to `_ptr`.
+  Because the cstr+len forms were named `bayan_json_v_parse_str` /
+  `bayan_yaml_parse_str`, every `bayan_json_v_parse(someStr)` in the ecosystem
+  was rewritten by the compiler into a **1-argument call to a 2-argument
+  function**: `len` bound garbage and the parse failed. The only outward sign was
+  a `'bayan_json_v_parse_str' expects 2 arguments, got 1` warning, easily lost in
+  build output. Renaming the cstr+len forms to `_buf` vacates the `X_str` slot
+  and the dispatch has nothing to hijack.
+
+  In Cyrius `X_str` means "the `Str`-taking variant of `X`", so a cstr+len form
+  may never occupy that name. Both renamed functions now carry a comment saying
+  so, to stop this recurring.
+
+  Discovered while porting agnosai's `core/message.rs`, where
+  `bayan_json_v_parse` silently failed to round-trip a message.
+
+### Added
+
+- **Regression coverage for the bare `Str` entries** (`tests/bayan.tcyr`, +11
+  assertions, 263 → 274). `bayan_json_v_parse`, `bayan_yaml_parse` and
+  `json_v_parse` had **no test calling them at all** — the suite only ever
+  exercised the cstr+len forms, which is why a total failure of the public Str
+  API went unnoticed. The new group asserts each returns a real tree, that the
+  `Str` and `_buf` entries produce identical output, and that a null source is
+  still rejected cleanly.
+
 ## [1.2.1] — 2026-07-20
 
 ### Changed
