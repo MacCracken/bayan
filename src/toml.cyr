@@ -1,5 +1,7 @@
 # toml.cyr — TOML parser for vidya content format
-# Usage: include "lib/toml.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-toml.cyr" (sublib).
+#        `lib/toml.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, fs.cyr
 #
 # Parses TOML files with:

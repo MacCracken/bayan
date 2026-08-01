@@ -61,6 +61,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one byte, so pretty output is byte-identical; this only moves the growth onto
   `a` and makes the failure reportable. No cyrius-side change was needed.
 
+### Changed (toolchain)
+
+- **Cyrius pin `6.4.68` → `6.5.4`**, with `cyrius lib sync --full` run against it.
+  `lib/` now matches the pinned snapshot exactly — 0 of 99 files differ, and the
+  build no longer emits a drift or shadow warning.
+
+  `lib sync --full` alone did not achieve that: it copied 99 files and left five
+  behind (`niyama` 1.0.5, `pam`, `shadow`, `vani` 1.1.1, `yantra` 1.0.0), all dated
+  from the 2026-07-16 sync and none in bayan's `[deps] stdlib` list. They were
+  refreshed from the snapshot directly. **A green `lib sync --full` is not proof
+  that `lib/` matches the pin — compare the trees.**
+
+### Removed
+
+- **Ten dead pre-carve modules deleted from `lib/`** (109 → 99): `json`, `base64`,
+  `bigint`, `csv`, `cyml`, `toml`, `u128`, `matrix`, `linalg`, `agnosys`. The first
+  seven are content that was carved *out* of the cyrius stdlib *into bayan* at 1.0.0
+  / cyrius 6.1.25 — so bayan was vendoring a stale copy of its own API, defining the
+  same symbols as `src/`. Nothing included them, but a single `include` would have
+  silently shadowed the real implementations under last-definition-wins. `matrix` and
+  `linalg` moved to ganita at 6.1.26; `agnosys` is unrelated to this package. None was
+  referenced by `src/`, `tests/`, or `cyrius.cyml`.
+- The six `# Usage: include "lib/<mod>.cyr"` header lines that still advertised those
+  removed paths now name `lib/bayan.cyr` (full bundle) or `lib/bayan-<profile>.cyr`
+  (sublib).
+
 ### Notes
 
 - **The parser state layout is unchanged at 48 bytes.** Putting the allocator in

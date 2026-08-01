@@ -22,19 +22,26 @@ dispatch); 1.2.1 made float serialization round-trip-correct (Grisu2);
 
 ## Toolchain
 
-- **Cyrius pin**: `6.4.68` (`cyrius.cyml [package].cyrius`)
-- **KNOWN DRIFT, not addressed in 1.4.0**: the installed `cycc` is **6.5.4**, and
-  `./lib/` shadows the 6.4.68 snapshot with **9 bundled libs behind** their pins
-  (bayan 1.1.0/1.2.1, niyama 1.0.5/1.0.6, sigil 3.12.0/3.12.1, yukti 2.2.9/2.2.10,
-  patra 1.12.10/1.12.12, vani 1.1.1/1.1.2, mabda 4.0.5/4.0.7, sankoch 2.5.1/2.6.4,
-  yantra 1.0.0/1.0.1). Every build and test emits the drift warning.
-  1.4.0 builds and passes green against the vendored snapshot, and every stdlib
-  verb it newly depends on (`alloc_via`, `vec_push_a`, `str_builder_new_a` /
-  `_add_cstr_a` / `_build_a`) is present there — so this is repo hygiene, not a
-  correctness risk, and **not a blocker for the cyrius fold** (cyrius's own
-  toolchain governs the folded copy). Deliberately left out of this release:
-  a pin bump means `cyrius lib sync --full` across 9 bundles, which is its own
-  change and does not belong in a feature release.
+- **Cyrius pin**: `6.5.4` (`cyrius.cyml [package].cyrius`) — bumped from `6.4.68`
+  in this release, with `cyrius lib sync --full` run against it.
+- **`lib/` matches the pin exactly**: 0 of 99 files differ from
+  `~/.cyrius/versions/6.5.4/lib`. Build and test emit no drift or shadow warning.
+
+  `cyrius lib sync --full` alone did not get there — it copied 99 files and left
+  five behind (`niyama` 1.0.5, `pam`, `shadow`, `vani` 1.1.1, `yantra` 1.0.0), all
+  dated from the 2026-07-16 sync and none of them in bayan's `[deps] stdlib` list.
+  They were refreshed from the snapshot directly. Worth knowing for the next bump:
+  a green `lib sync --full` is not by itself proof that `lib/` matches the pin —
+  compare the trees.
+- **Ten dead pre-carve modules were removed from `lib/`** (109 → 99 files):
+  `json` `base64` `bigint` `csv` `cyml` `toml` `u128` — this content was carved
+  *out* of the cyrius stdlib *into bayan* at 1.0.0 / cyrius 6.1.25, so a stale copy
+  in bayan's own `lib/` defined the same symbols as `src/`, which is a
+  last-definition-wins hazard waiting for someone to include it. `matrix` and
+  `linalg` went to ganita at 6.1.26; `agnosys` is unrelated. None was referenced by
+  `src/`, `tests/`, or `cyrius.cyml`. The six `# Usage: include "lib/<mod>.cyr"`
+  header lines that still pointed at them were corrected to name
+  `lib/bayan.cyr` / `lib/bayan-<profile>.cyr`.
 
 ## Source
 

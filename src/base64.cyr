@@ -1,5 +1,7 @@
 # base64.cyr — RFC 4648 Base64 encoding/decoding (standard + URL-safe)
-# Usage: include "lib/base64.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-base64.cyr" (sublib).
+#        `lib/base64.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: alloc.cyr, string.cyr
 
 var _b64_enc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

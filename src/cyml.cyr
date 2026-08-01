@@ -1,5 +1,7 @@
 # cyml.cyr — CYML parser (TOML header + markdown body)
-# Usage: include "lib/cyml.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-cyml.cyr" (sublib).
+#        `lib/cyml.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: string.cyr, alloc.cyr
 #
 # CYML is TOML above `---`, markdown below.

@@ -1,5 +1,7 @@
 # json.cyr — minimal JSON parser and builder
-# Usage: include "lib/json.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-json.cyr" (sublib).
+#        `lib/json.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, io.cyr
 # Internally includes: fnptr.cyr (for streaming-parser fncallN dispatch)
 #

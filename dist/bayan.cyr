@@ -6,7 +6,9 @@
 # --- base64.cyr ---
 
 # base64.cyr — RFC 4648 Base64 encoding/decoding (standard + URL-safe)
-# Usage: include "lib/base64.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-base64.cyr" (sublib).
+#        `lib/base64.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: alloc.cyr, string.cyr
 
 var _b64_enc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -186,7 +188,9 @@ fn bayan_base64url_decode(encoded, enc_len): i64 {
 # --- csv.cyr ---
 
 # csv.cyr — RFC 4180 CSV parser and writer
-# Usage: include "lib/csv.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-csv.cyr" (sublib).
+#        `lib/csv.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: alloc.cyr, string.cyr, vec.cyr, str.cyr
 
 # Parse a CSV line into a vec of field strings (C strings).
@@ -815,7 +819,9 @@ fn bayan_u64_powmod(base, exp, m): i64 {
 # --- bigint.cyr ---
 
 # bigint.cyr — 256-bit unsigned integer arithmetic
-# Usage: include "lib/bigint.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-bigint.cyr" (sublib).
+#        `lib/bigint.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: alloc.cyr, string.cyr
 #
 # Representation: 4 × 64-bit limbs in little-endian order
@@ -1183,7 +1189,9 @@ fn bayan_u256_from_hex(s): i64 {
 # --- toml.cyr ---
 
 # toml.cyr — TOML parser for vidya content format
-# Usage: include "lib/toml.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-toml.cyr" (sublib).
+#        `lib/toml.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, fs.cyr
 #
 # Parses TOML files with:
@@ -1731,7 +1739,9 @@ fn bayan_toml_get_array(pairs, key): i64 {
 # --- cyml.cyr ---
 
 # cyml.cyr — CYML parser (TOML header + markdown body)
-# Usage: include "lib/cyml.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-cyml.cyr" (sublib).
+#        `lib/cyml.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: string.cyr, alloc.cyr
 #
 # CYML is TOML above `---`, markdown below.
@@ -2730,7 +2740,9 @@ fn bayan_f64_from_json(s): i64 { return bayan_f64_parse(s, 2147483647); }
 # --- json.cyr ---
 
 # json.cyr — minimal JSON parser and builder
-# Usage: include "lib/json.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-json.cyr" (sublib).
+#        `lib/json.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, io.cyr
 # Internally includes: fnptr.cyr (for streaming-parser fncallN dispatch)
 #

@@ -1,5 +1,7 @@
 # csv.cyr — RFC 4180 CSV parser and writer
-# Usage: include "lib/csv.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-csv.cyr" (sublib).
+#        `lib/csv.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: alloc.cyr, string.cyr, vec.cyr, str.cyr
 
 # Parse a CSV line into a vec of field strings (C strings).

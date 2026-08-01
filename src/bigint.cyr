@@ -1,5 +1,7 @@
 # bigint.cyr — 256-bit unsigned integer arithmetic
-# Usage: include "lib/bigint.cyr"
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-bigint.cyr" (sublib).
+#        `lib/bigint.cyr` was the pre-carve stdlib module and no longer ships —
+#        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
 # Requires: alloc.cyr, string.cyr
 #
 # Representation: 4 × 64-bit limbs in little-endian order
