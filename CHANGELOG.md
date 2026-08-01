@@ -4,6 +4,80 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-07-31
+
+### Added
+
+- **The allocator-threaded (`_a`) JSON value surface is complete.** Six new
+  entry points close the three gaps that made an arena cover only part of a
+  request:
+
+  | New | Signature | Was reachable through an arena before? |
+  |---|---|---|
+  | `bayan_json_v_obj_set_a` | `(a, obj, key, val) → 0 / -1` | no — pair cells went to the global bump |
+  | `bayan_json_v_build_a` | `(a, v) → Str / 0` | no |
+  | `bayan_json_v_build_pretty_a` | `(a, v, indent) → Str / 0` | no |
+  | `bayan_json_v_parse_ctx_a` | `(a, ps, buf, len) → json_v* / 0` | no |
+  | `bayan_json_v_parse_buf_a` | `(a, buf, len) → json_v* / 0` | no |
+  | `bayan_json_v_parse_a` | `(a, src: Str) → json_v* / 0` | no |
+
+  The eight value **constructors** have had `_a` forms since v5.8.36. What was
+  missing was everything around them: you could allocate each cell of a tree
+  through an arena and still leak the pair cells, the parse, and the serialized
+  output onto the no-free global bump. That measures as "the arena works" right
+  up until someone checks `alloc_used()`.
+
+  Pinned by a test that fails when the threading is removed — verified by
+  mutation, not assumed. Reverting a single `alloc_via(a, …)` to `alloc(…)` in
+  the string parser turns the zero-growth assertion into `got 35200, expected 0`.
+
+  | 200 × parse → obj_set → build | global bump growth |
+  |---|---|
+  | non-`_a` path | **> 100 KB** |
+  | `_a` path through an arena | **0 bytes** |
+
+### Fixed
+
+- **The string parser never checked its allocation.** `_jp_parse_string` called
+  `alloc(cap + 4)` and wrote through the result unconditionally. On the global
+  bump that is near-unreachable (`alloc` returns 0 only for `size <= 0` or
+  `> ALLOC_MAX`, and a failed chunk mmap exits inside `alloc_init`), so it never
+  bit. Through an arena it is ordinary — a small arena runs dry — and the
+  unchecked write would have gone to address 0. `_jp_parse_string_a` checks, and
+  reports it as a normal `"out of memory in string"` parse error. `_jp_parse_array_a`
+  and `_jp_parse_object_a` do the same for their container constructors.
+
+### Changed
+
+- **`_jb_walk`, `_jb_append_string` and `_jb_emit_indent` now have one body, not
+  two.** Each is implemented as its `_a` form and the original name is a wrapper.
+  The wrappers preserve the **abort**-on-OOM contract of the non-`_a`
+  `str_builder` verbs they used to call directly, because turning an abort into a
+  silently truncated JSON string would be a worse failure than the crash it
+  replaced. The `_a` forms return `-1` instead, which is the contract an arena
+  caller needs — the same split `bayan_json_v_arr_push_a` already used.
+- **`_jb_emit_indent_a` emits its newline and spaces via `str_builder_add_cstr_a`**
+  rather than `str_builder_add_byte`, which has no `_a` form. Both literals are
+  one byte, so pretty output is byte-identical; this only moves the growth onto
+  `a` and makes the failure reportable. No cyrius-side change was needed.
+
+### Notes
+
+- **The parser state layout is unchanged at 48 bytes.** Putting the allocator in
+  `ps` would have been tidier — every `_jp_*` already takes `ps` — but callers
+  are documented to declare their own `var ps[48]`, so widening the struct would
+  have silently overflowed their buffers. The allocator is an explicit first
+  parameter instead, which is also what keeps the parse reentrant: a file-scope
+  "current allocator" global would have undone the v1.0.3 thread-safety work.
+- **`_a` is a naming convention, not a Cyrius dispatch suffix.** Unlike `_str`
+  and `_ptr` (which the compiler routes to automatically — see the `1.3.0`
+  `_str` → `_buf` entry), `_a` carries no overload behaviour, so these names
+  cannot collide with the dispatch rules.
+- The **serializer recursion is still uncapped**, matching every prior release.
+  Both *parsers* cap at `_JP_MAX_DEPTH` (128); the serializer only ever walks a
+  tree the caller built, so it is not an untrusted-input path. Do not build
+  unbounded-depth values from user data.
+
 ## [1.3.0] — 2026-07-28
 
 ### Breaking

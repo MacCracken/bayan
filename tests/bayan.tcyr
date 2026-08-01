@@ -735,4 +735,104 @@ assert_eq(d13_ydoc != 0, 1, "bayan_yaml_parse(Str) returns a value");
 assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d13_ydoc, "k")), 1, "bayan_yaml_parse(Str): k == 1");
 assert_eq(bayan_yaml_parse(0), 0, "bayan_yaml_parse(0) returns 0");
 
+# ======================================================================
+# [1.4.0] Allocator-threaded JSON value API — the `_a` surface.
+#
+# The contract under test is not "these functions exist"; it is that a caller
+# can route an ENTIRE parse->mutate->serialize cycle through an arena and see
+# ZERO growth on the global bump. Before 1.4.0 the value constructors had `_a`
+# forms but obj_set, the parser and the serializer did not, so an arena covered
+# part of a request and the rest leaked — which measures as "the arena works"
+# right up until you check alloc_used().
+# ======================================================================
+
+var A_SRC = "{\"a\":1,\"b\":[true,null,2.5,\"x\"],\"c\":{\"d\":\"e\"}}";
+
+# --- 1. byte-identical output vs the non-_a path ---------------------------
+var a_arena = arena_allocator(65536);
+var a_tree_g = bayan_json_v_parse_buf(A_SRC, strlen(A_SRC));
+var a_tree_a = bayan_json_v_parse_buf_a(a_arena, A_SRC, strlen(A_SRC));
+assert_eq(a_tree_a != 0, 1, "1.4.0: parse_buf_a returns a tree");
+assert_eq(str_eq(bayan_json_v_build(a_tree_g), bayan_json_v_build_a(a_arena, a_tree_a)), 1,
+"1.4.0: build_a(parse_buf_a) == build(parse_buf) byte-for-byte");
+assert_eq(str_eq_cstr(bayan_json_v_build_a(a_arena, a_tree_a), A_SRC), 1,
+"1.4.0: _a round-trip reproduces the source exactly");
+
+# pretty form agrees too, including the add_byte -> add_cstr_a indent swap
+assert_eq(str_eq(bayan_json_v_build_pretty(a_tree_g, 2),
+bayan_json_v_build_pretty_a(a_arena, a_tree_a, 2)), 1,
+"1.4.0: build_pretty_a == build_pretty byte-for-byte");
+assert_eq(str_eq(bayan_json_v_build_pretty_a(a_arena, a_tree_a, 0),
+bayan_json_v_build_a(a_arena, a_tree_a)), 1,
+"1.4.0: build_pretty_a(indent<=0) falls back to compact");
+
+# --- 2. the point of the release: nothing lands on the global bump ---------
+var a_a2 = arena_allocator(262144);
+reset_via(a_a2);
+var a_before = alloc_used();
+var a_i = 0;
+while (a_i < 200) {
+    var a_t = bayan_json_v_parse_buf_a(a_a2, A_SRC, strlen(A_SRC));
+    var a_o = bayan_json_v_obj_new_a(a_a2);
+    bayan_json_v_obj_set_a(a_a2, a_o, str_from_a(a_a2, "wrapped"), a_t);
+    bayan_json_v_build_a(a_a2, a_o);
+    a_i = a_i + 1;
+}
+assert_eq(alloc_used() - a_before, 0,
+"1.4.0: 200 parse+set+build cycles through an arena grow the global bump by 0 bytes");
+
+# the same loop on the non-_a path is what that number is measured against
+var a_before_g = alloc_used();
+var a_j = 0;
+while (a_j < 200) {
+    var a_tg = bayan_json_v_parse_buf(A_SRC, strlen(A_SRC));
+    var a_og = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(a_og, str_from("wrapped"), a_tg);
+    bayan_json_v_build(a_og);
+    a_j = a_j + 1;
+}
+assert_eq(alloc_used() - a_before_g > 100000, 1,
+"1.4.0: the same 200 cycles on the global path leak >100 KB (the defect this closes)");
+
+# --- 3. arena exhaustion is a reported parse error, not corruption ---------
+# A 64-byte arena cannot hold the tree. The pre-1.4.0 string parser called
+# alloc() and never checked for 0, so an exhausted arena would have written
+# through a null base.
+var a_tiny = arena_allocator(64);
+var a_fail = bayan_json_v_parse_buf_a(a_tiny, A_SRC, strlen(A_SRC));
+assert_eq(a_fail, 0, "1.4.0: parse_buf_a on an exhausted arena returns 0");
+assert_eq(strlen(bayan_json_last_error()) > 0, 1,
+"1.4.0: exhausted arena records a parse error rather than corrupting");
+
+# --- 4. obj_set_a contract: -1 on a bad object, 0 on success ---------------
+var a_ok = bayan_json_v_obj_new_a(a_arena);
+assert_eq(bayan_json_v_obj_set_a(a_arena, a_ok, str_from_a(a_arena, "k"),
+bayan_json_v_int_new_a(a_arena, 7)), 0,
+"1.4.0: obj_set_a returns 0 on success");
+assert_eq(bayan_json_v_obj_set_a(a_arena, 0, str_from_a(a_arena, "k"), 0), 0 - 1,
+"1.4.0: obj_set_a returns -1 on a null object");
+assert_eq(bayan_json_v_obj_set_a(a_arena, bayan_json_v_arr_new_a(a_arena),
+str_from_a(a_arena, "k"), 0), 0 - 1,
+"1.4.0: obj_set_a returns -1 when the target is not an object");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get(a_ok, "k")), 7,
+"1.4.0: obj_set_a stores a retrievable pair");
+
+# --- 5. reset_via actually reclaims, and a fresh parse reuses the space ----
+var a_a3 = arena_allocator(65536);
+bayan_json_v_parse_buf_a(a_a3, A_SRC, strlen(A_SRC));
+reset_via(a_a3);
+var a_reused = bayan_json_v_parse_buf_a(a_a3, A_SRC, strlen(A_SRC));
+assert_eq(a_reused != 0, 1, "1.4.0: an arena reset between parses still serves the next one");
+assert_eq(str_eq_cstr(bayan_json_v_build_a(a_arena, a_reused), A_SRC), 1,
+"1.4.0: the post-reset tree is intact");
+
+# --- 6. back-compat: the non-_a entry points are unchanged -----------------
+assert_eq(str_eq_cstr(bayan_json_v_build(bayan_json_v_parse_buf(A_SRC, strlen(A_SRC))), A_SRC), 1,
+"1.4.0: non-_a round trip unchanged after the refactor");
+var a_ps[48];
+assert_eq(bayan_json_v_parse_ctx(&a_ps, "", 0), 0,
+"1.4.0: parse_ctx back-compat wrapper still rejects empty input");
+assert_eq(bayan_json_v_parse_ctx_a(a_arena, &a_ps, A_SRC, strlen(A_SRC)) != 0, 1,
+"1.4.0: parse_ctx_a parses into a caller-owned state");
+
 var r = assert_summary();
