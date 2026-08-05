@@ -50,7 +50,9 @@ fn json_v_arr_get(v, i): i64 { return bayan_json_v_arr_get(v, i); }
 fn json_v_obj_len(v): i64 { return bayan_json_v_obj_len(v); }
 fn json_v_obj_key(v, i): i64 { return bayan_json_v_obj_key(v, i); }
 fn json_v_obj_val(v, i): i64 { return bayan_json_v_obj_val(v, i); }
-fn json_v_obj_get(v, key): i64 { return bayan_json_v_obj_get(v, key); }
+# `key: cstring` mirrors bayan_json_v_obj_get — without it the ~40 consumers using the
+# short `json_v_*` spelling get no diagnostic. bayan 1.4.1.
+fn json_v_obj_get(v, key: cstring): i64 { return bayan_json_v_obj_get(v, key); }
 fn json_v_parse(src): i64 { return bayan_json_v_parse(src); }
 fn json_v_parse_buf(buf, len): i64 { return bayan_json_v_parse_buf(buf, len); }
 fn json_v_build(v): i64 { return bayan_json_v_build(v); }

@@ -4,6 +4,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-08-05
+
+### Fixed — `json_v_obj_get` takes a C-string while `json_v_obj_set` stores a `Str`
+
+The object API is asymmetric and always has been: `bayan_json_v_obj_set` writes `key`
+straight into the pair as a `Str`, while `bayan_json_v_obj_get` does `strlen(key)`.
+Cyrius is i64-everywhere, so both spellings compile and the symmetric-looking pair is
+memory-unsafe.
+
+The failure is worse than a crash. Passing a `Str` to the getter makes `strlen` walk the
+16-byte header and terminate a few bytes in on the data pointer's zero high bytes, so it
+yields a junk length, the compare misses, and the lookup returns 0 — **"not found", a
+silent wrong answer.** The SIGSEGV reporters saw comes later and elsewhere, from
+`bayan_json_v_str(0)` → `str_len(0)`.
+
+Three changes, none of which touch a call site:
+
+- `bayan_json_v_obj_get(v, key: cstring)` — the annotation arms cyrius's existing
+  Str→cstring diagnostic, which was inert only because the parameter was untyped. It
+  fires at every call site passing a `Str`-typed local, at any argument position, and is
+  **diagnostic only**: the compiled output is byte-identical.
+- `json_v_obj_get` in `_compat.cyr` gets the same annotation, so the ~40 consumers using
+  the short spelling are covered too.
+- `bayan_json_v_obj_get_by_str(v, key: Str)` — the symmetric spelling, additive.
+  ⚠ Deliberately NOT `..._obj_get_str`: a trailing `_str` is a reserved cyrius overload
+  slot, and claiming it would silently reroute `obj_get` calls with a literal key.
+- `obj_set`'s doc comment now states that the key is stored as a `Str` — the getter's
+  side already said "C-string key" and had done since 2026-06-10; the setter's half was
+  the one actually missing.
+
+**Not done, deliberately:** renaming the getter to `_cstr` and giving the bare name a
+`: Str`. ~115 call sites across ~16 repos pass a non-literal cstr and would break
+silently, and each break is worse than the current defect (`str_len` on a raw cstr is
+arbitrary garbage). That is a cross-repo migration, not a patch.
+
 ## [1.4.0] — 2026-07-31
 
 ### Added
