@@ -1,3 +1,0 @@
-fn main(): i64 { syscall(SYS_WRITE, 1, "ok\n", 3); return 0; }
-var r = main();
-syscall(SYS_EXIT, r);
