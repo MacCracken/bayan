@@ -95,7 +95,9 @@ fn cyml_doc_entry_count(d) : i64 { return bayan_cyml_doc_entry_count(d); }
 fn cyml_doc_entry(d, n): i64 { return bayan_cyml_doc_entry(d, n); }
 fn cyml_parse(data, len): i64 { return bayan_cyml_parse(data, len); }
 fn cyml_expand_value(val): i64 { return bayan_cyml_expand_value(val); }
-fn cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len): i64 { return bayan_cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len); }
+fn cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len): i64 {
+    return bayan_cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len);
+}
 fn cyml_parse_file_r(path): i64 { return bayan_cyml_parse_file_r(path); }
 fn csv_parse_line(line): i64 { return bayan_csv_parse_line(line); }
 fn csv_escape(field): i64 { return bayan_csv_escape(field); }

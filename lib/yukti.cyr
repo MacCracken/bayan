@@ -1890,19 +1890,19 @@ pub fn storage_mount(dev_path_cstr, options) {
     if (st_rc < 0) {
         sakshi_span_exit();
         return err_mount_failed(str_from(dev_path_cstr),
-        str_from("mount target stat failed"));
+          str_from("mount target stat failed"));
     }
     var mode = load32(&stbuf + 24);
     var fmt = mode & 61440;   # 0xF000
     if (fmt == 40960) {       # 0xA000 — symlink
         sakshi_span_exit();
         return err_mount_failed(str_from(dev_path_cstr),
-        str_from("mount target is a symlink (TOCTOU guard)"));
+          str_from("mount target is a symlink (TOCTOU guard)"));
     }
     if (fmt != 16384) {       # 0x4000 — directory
         sakshi_span_exit();
         return err_mount_failed(str_from(dev_path_cstr),
-        str_from("mount target is not a directory"));
+          str_from("mount target is not a directory"));
     }
 
     var read_only = load64(options + 8);
@@ -1922,7 +1922,7 @@ pub fn storage_mount(dev_path_cstr, options) {
         sakshi_span_exit();
         var dev_id = device_id_new_cstr(dev_path_cstr);
         return Ok(mount_result_new(dev_id, str_from(dev_path_cstr), str_from(mount_cstr),
-        filesystem_from_str(fs_cstr), read_only));
+            filesystem_from_str(fs_cstr), read_only));
     }
 
     # Auto-detect filesystem type
@@ -1935,7 +1935,7 @@ pub fn storage_mount(dev_path_cstr, options) {
             sakshi_span_exit();
             var dev_id = device_id_new_cstr(dev_path_cstr);
             return Ok(mount_result_new(dev_id, str_from(dev_path_cstr), str_from(mount_cstr),
-            filesystem_from_str(fs_try), read_only));
+                filesystem_from_str(fs_try), read_only));
         }
         last_errno = 0 - r;
     }
@@ -3072,13 +3072,13 @@ fn _build_device_info_from_sysfs(sys_path, dev_name, dev_type_cstr): i64 {
 
     # Create synthetic UdevEvent
     var event = udev_event_new(
-    str_from("add"),
-    sys_path,
-    dev_path,
-    str_from("block"),
-    str_from(dev_type_cstr),
-    props
-    );
+      str_from("add"),
+      sys_path,
+      dev_path,
+      str_from("block"),
+      str_from(dev_type_cstr),
+      props
+      );
 
     var info_r = device_info_from_udev(event);
     if (is_ok(info_r) == 0) { return 0; }
@@ -3160,7 +3160,7 @@ pub fn enumerate_devices(sysfs_root) {
 
                 if (file_exists(str_cstr(part_file))) {
                     var part_info = _build_device_info_from_sysfs(
-                    part_path, part_name, "partition");
+                      part_path, part_name, "partition");
                     if (part_info != 0) {
                         vec_push(devices, part_info);
                     }
@@ -3972,11 +3972,11 @@ pub fn query_device(syspath_cstr) {
     # Parse output into UdevDeviceInfo
     var output = str_from_buf(&buf, n);
     var info = udev_device_info_new(
-    str_from(syspath_cstr),
-    str_from(""),
-    str_from(""),
-    0, 0, 0
-    );
+      str_from(syspath_cstr),
+      str_from(""),
+      str_from(""),
+      0, 0, 0
+      );
 
     # Parse KEY=VALUE lines
     var lines = str_split(output, 10);
@@ -4038,7 +4038,7 @@ pub fn list_devices(subsystem) {
                 }
                 if (include) {
                     var di = udev_device_info_new(cur_syspath, cur_devpath, cur_subsystem,
-                    cur_devtype, cur_driver, cur_devnode);
+                      cur_devtype, cur_driver, cur_devnode);
                     vec_push(devices, di);
                 }
             }
@@ -5405,7 +5405,7 @@ pub fn network_mount(share, mount_point_cstr) {
     }
 
     var mr = mount_result_new(id, source, str_from(mount_point_cstr),
-    filesystem_from_str(kernel_type), 0);
+      filesystem_from_str(kernel_type), 0);
     return Ok(mr);
 }
 
@@ -5906,7 +5906,7 @@ pub fn yukti_audio_sys_path(d)    { return load64(d + AI_SYS_PATH); }
 # ---------------------------------------------------------------------------
 
 fn _audio_info_new(card, device, subdevice, direction, name, driver,
-hw_id, dev_path, sys_path): i64 {
+  hw_id, dev_path, sys_path): i64 {
     var d = alloc(AI_SIZE);
     store64(d + AI_CARD, card);
     store64(d + AI_DEVICE, device);
@@ -6228,9 +6228,9 @@ pub fn yukti_audio_devices() {
     # /proc + sysfs helpers (_audio_load_drivers / _audio_compute_hw_id).
     var results = vec_new();
     var info = _audio_info_new(0, 0, 0, YUKTI_AUDIO_PLAYBACK,
-    str_from("AGNOS HDA Output"), str_from("agnos-hda"),
-    str_from("pci:agnos:04:00.6:dev0:p"),
-    str_from("/dev/snd/pcmC0D0p"), str_from("/sys/class/sound/card0"));
+      str_from("AGNOS HDA Output"), str_from("agnos-hda"),
+      str_from("pci:agnos:04:00.6:dev0:p"),
+      str_from("/dev/snd/pcmC0D0p"), str_from("/sys/class/sound/card0"));
     vec_push(results, info);
     return results;
     #else
@@ -6276,7 +6276,7 @@ pub fn yukti_audio_devices() {
         var hw_id = _audio_compute_hw_id(card, device, direction);
 
         var info = _audio_info_new(card, device, 0, direction,
-        pretty_name, driver, hw_id, dev_path, sys_path);
+          pretty_name, driver, hw_id, dev_path, sys_path);
         vec_push(results, info);
     }
 

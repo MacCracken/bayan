@@ -90,7 +90,7 @@ fn _toml_skip_ws(buf, pos, end): i64 {
 }
 
 # Parse a single-line quoted string: "value" — returns Str, advances pos
-fn _toml_parse_str(buf, pos, end): i64 {
+fn _toml_parse_str(buf, pos, end): Str {
     # Skip opening quote
     pos = pos + 1;
     var start = pos;
@@ -129,7 +129,7 @@ fn _toml_str_end(buf, pos, end): i64 {
 # Returns Str. (Historically only `'''` was handled — a `"""` value fell
 # through to the single-line `"` parser and parsed to an empty string, silently
 # dropping the body. Parameterizing by `q` fixes that data loss.)
-fn _toml_parse_multiline_q(buf, pos, end, q): i64 {
+fn _toml_parse_multiline_q(buf, pos, end, q): Str {
     # Skip opening delimiter
     pos = pos + 3;
     # Skip optional newline after opening delimiter
@@ -161,7 +161,7 @@ fn _toml_multiline_end_q(buf, pos, end, q): i64 {
 }
 
 # Back-compat wrappers for the original `'''`-only entry points.
-fn _toml_parse_multiline(buf, pos, end): i64 { return _toml_parse_multiline_q(buf, pos, end, 39); }
+fn _toml_parse_multiline(buf, pos, end): Str { return _toml_parse_multiline_q(buf, pos, end, 39); }
 fn _toml_multiline_end(buf, pos, end): i64 { return _toml_multiline_end_q(buf, pos, end, 39); }
 
 # Parse a TOML file into a vec of sections.

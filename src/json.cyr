@@ -227,7 +227,7 @@ fn bayan_json_parse_file_r(path): i64 {
 #   OBJ: vec<json_v_pair*> — { key: Str, value: json_v* } pairs in order
 #
 # Strings (STR tag and OBJ keys) are decoded — \" \\ \/ \b \f \n \r \t
-# \uXXXX (UTF-8 encoded) are all resolved at parse time. The Str ptr
+# \uXXXX (UTF-8 encoded) are all resolved at parse time. The Str ptr  #skip-lint: \u-escape notation, not a deferral
 # holds the decoded byte sequence, not the source-text bytes.
 #
 # Numbers: parsed as INT if the source has no `.` `e` `E`; else FLOAT.

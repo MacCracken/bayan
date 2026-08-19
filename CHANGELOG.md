@@ -4,6 +4,143 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-08-19
+
+Toolchain + CI release. No behavioural change: the compiled smoke binary is
+**byte-identical** (sha256 `9c5e4c3d…`) before and after every source edit
+below. What did change is that the project now *checks* considerably more of
+itself, and two of the new checks immediately found something.
+
+### Changed (toolchain)
+
+- **Cyrius pin `6.5.16` → `6.5.28`**, with `cyrius lib sync --full` run against
+  it. `lib/` matches the pinned snapshot **exactly — 0 of 108 files differ**,
+  confirmed by comparing the trees rather than trusting the sync's exit code
+  (see the 1.4.0 note on why: that time `--full` exited 0 and still left five
+  files stale). Build and test now emit neither the shadow-lib nor the
+  pin-drift warning.
+- **`lib/` grew 99 → 108 files.** The 6.5.28 snapshot adds `unicode/` (7 files —
+  `_decode` / `categories` / `casefold` / `normalize` plus their generated data
+  tables), `async_macos.cyr`, and `thread_macos.cyr`; 48 existing modules were
+  refreshed, six of which bayan had been shadowing at older versions
+  (`sakshi` 2.4.7, `sigil` 3.12.2, `sandhi` 1.9.8, `vani` 1.1.2,
+  `sankoch` 2.7.6, and bayan's own fold at 1.3.0).
+- **The `6.5.4` → `6.5.16` step was never recorded.** 1.4.0 shipped on `6.5.4`;
+  commit `97a3476` ("lang bump", 2026-08-10) moved the pin to `6.5.16` with no
+  CHANGELOG entry and no `state.md` refresh. Noting it here so the history is
+  contiguous: the span this release actually crosses is `6.5.4` → `6.5.28`.
+
+### Fixed
+
+- **`src/toml.cyr` no longer builds with warnings.** `_toml_parse_str` and
+  `_toml_parse_multiline_q` both return a `Str` (`str_new` / `str_from`) but
+  were declared `: i64`, so every assignment into the `Str`-typed `value` drew
+  an `assigning non-pointer to typed pointer` warning — three of them, at 257 /
+  261 / 266, present since the multiline parser was parameterized. Annotating
+  the two helpers (and the `_toml_parse_multiline` back-compat wrapper) `: Str`
+  clears all three. **Diagnostic only, and proven so**: the compiled binary is
+  byte-for-byte identical to the pre-annotation build. Same shape as the 1.4.1
+  `cstring` annotation, and both helpers are file-private with call sites only
+  inside `toml.cyr`.
+- **Lint is clean across all 12 `src/` files** (was 1 warning + 1 untracked
+  deferral). The >120-char `cyml_split` forwarding shim in `_compat.cyr` is
+  wrapped; the `\uXXXX` in `json.cyr`'s doc comment — read by the deferral
+  scanner as an `XXX` marker — carries `#skip-lint: \u-escape notation, not a
+  deferral`, matching how `lib/sigil.cyr` handles the identical false positive.
+- **`tests/bayan.tcyr` is canonically formatted.** 21 continuation lines sat at
+  column 0; `cyrius fmt` indents them to 2. Whitespace only — still 292 asserts,
+  still green. It had gone unnoticed because `cyrius audit` scopes fmt to `src`.
+
+### Added — CI now confirms the whole project
+
+`.github/workflows/ci.yml` went from 4 steps (install / deps / build / test) to
+a full gate. The new checks, and why each one is a gate rather than a printout:
+
+| Gate | Notes |
+|---|---|
+| Toolchain pin resolves with no drift | every gate below is worthless if it measured the wrong compiler |
+| Version consistent across `VERSION` / manifest / CHANGELOG / all 9 dist headers | |
+| `lib/` matches the pinned snapshot exactly | the tree diff, per the standing 1.4.0 rule |
+| Format — `src/` **and** `tests/` | `cyrius audit` only covers `src/`; the drift above was in `tests/` |
+| Lint — zero warnings, zero untracked deferrals | `cyrius lint` always exits 0, so the gate reads its report, not `$?` |
+| Include-dependency audit (`cyrius vet`) | fails on any untrusted / missing dep |
+| Build — **zero compiler warnings** | `cyrius build` only *warns* on bad pointer typing, lib/ shadowing and pin drift; `--strict` does not cover them, so the warning text is the gate |
+| Smoke exits 42 | |
+| Test | |
+| Fuzz · bench harness · `cyrius coverage --min 30` | a floor that ratchets up, never down |
+| **Distribution ×3** | see below |
+
+`release.yml` gains a CHANGELOG-entry check alongside the existing tag/VERSION
+check, and both workflows lost the `|| true` that let a half-finished toolchain
+install pass as success.
+
+**The three distribution gates**, since `dist/` is what bayan actually ships:
+
+1. `cyrius distlib --all --check` — the bundles are regenerable from `src/`.
+2. Regenerating leaves no tree diff — the *committed* bundles are what a fresh
+   regeneration produces, sidecars included.
+3. `scripts/consumer-check.sh` (new) — every bundle compiles for a downstream
+   repo that supplies **only** the leaves its `.deps` sidecar declares.
+
+Gate 3 has to build with `cyrius build --no-deps`. Without it, `cyrius build`
+auto-prepends everything in bayan's own `[deps].stdlib`, so a consumer missing
+a declared leaf still compiles and the check passes vacuously — verified by
+deleting leaves from a sidecar one at a time and watching all eight still
+report clean.
+
+### Found by the new gates
+
+- **Two sublib sidecars under-declare their dependencies.** With `--no-deps` in
+  place, `bayan-toml` fails on `memcpy` / `memeq` / `fmt_int_buf` / `fmt_int`
+  and `bayan-cyml` on `fmt_int`. `cyrius distlib` generates each sidecar from
+  the leaves *bayan's* code touches and does not close over the stdlib's own —
+  `lib/str.cyr` calls memcpy/memeq/fmt_int with no include lines at all,
+  `lib/result.cyr` calls fmt_int, `lib/io.cyr` calls memcpy. Verified minimal
+  fix: `bayan-toml` needs `+string +fmt`, `bayan-cyml` needs `+fmt`. The
+  compiler reports these as *warnings*, so a consumer following the sidecar
+  gets a green build and a broken binary. Filed as
+  [2026-08-19](docs/development/issues/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md)
+  — the sidecars are generated, so bayan cannot fix it in-repo. The two are
+  carried in the script's `EXPECTED_FAIL` list, which **fails if either starts
+  passing**, so the exemption cannot outlive the bug.
+- **The committed sidecars were stale.** A regeneration on 6.5.28 adds
+  `syscalls` to `bayan-cyml` / `bayan-json` / `bayan-toml` / `bayan-yaml` and
+  creates `dist/bayan-u128.deps` (empty — u128 needs no leaves), which had
+  never existed. Gate 2 is exactly the check that catches this.
+
+### Verified on 6.5.28
+
+| Gate | Result |
+|---|---|
+| `cyrius build src/main.cyr` | OK, **0 warnings**; smoke exits 42 |
+| `cyrius test` / `cyrius tests` | **292 passed, 0 failed** (+ 1/1 `[build].test`) |
+| `cyrius fmt --check` (src + tests) | clean |
+| `cyrius lint` (12 files) | 0 warnings, 0 untracked deferrals |
+| `cyrius vet src/main.cyr` | 20 deps, 0 untrusted, 0 missing |
+| `cyrius distlib --all --check` | 9 bundles current (deterministic over 6 runs) |
+| `scripts/consumer-check.sh` | 7/9 clean, 2 known-under-declared |
+| `cyrius fuzz` · `cyrius bench` | 1/1 · 1/1 |
+| `cyrius coverage` | 102/335 fns (30%) reference coverage |
+
+### Known, not fixed here
+
+Surfaced by the state review and recorded in
+[`state.md`](docs/development/state.md) — each is its own change:
+
+- `tests/bayan.fcyr` and `tests/bayan.bcyr` are still `cyrius init` scaffolds.
+  The fuzz harness feeds a 4-byte literal into a body that returns immediately;
+  the bench measures a no-op. Both report PASS — a false green on two v1.0
+  criteria, and the CI gates that run them are correspondingly vacuous.
+- `bigint` (0/20), `cyml` (0/17) and `csv` (0/3) are referenced by no test in
+  bayan's own suite; their coverage still lives upstream in cyrius.
+- `lib/bayan.cyr` is bayan's own fold vendored back into bayan's own `lib/` by
+  `lib sync --full`. Inert (nothing includes it) but it defines the same symbols
+  as `src/` — the hazard the ten dead pre-carve modules were removed for at
+  1.4.0, and not durably fixable in-repo since `--full` re-adds it.
+- `README.md` still says "Status **1.0.0** — Seven modules"; `docs/adr/` holds
+  no ADRs; roadmap M1/M2 are unfilled template stubs; `CLAUDE.md` Project
+  Identity and Goal are still `TODO`.
+
 ## [1.4.1] — 2026-08-05
 
 ### Fixed — `json_v_obj_get` takes a C-string while `json_v_obj_set` stores a `Str`
