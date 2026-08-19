@@ -74,6 +74,25 @@ a full gate. The new checks, and why each one is a gate rather than a printout:
 check, and both workflows lost the `|| true` that let a half-finished toolchain
 install pass as success.
 
+**Both workflows now install via the upstream installer** rather than
+untarring a release by hand:
+
+```sh
+curl -sSf .../cyrius/main/scripts/install.sh | CYRIUS_VERSION="$pin" sh
+```
+
+The hand-rolled step (inherited from the original scaffold, and still present
+in ganita) laid the toolchain down at `~/.cyrius/{bin,lib}` as real
+directories. 6.5.28's `cyrius deps` requires the snapshot at
+`~/.cyrius/versions/<pin>/lib` specifically and errors with *"pins version
+6.5.28 but it is not installed"* — CI's first red. The installer creates
+`versions/<pin>/{bin,lib}` and symlinks `~/.cyrius/{bin,lib}` at them, which is
+what every path-sensitive command expects; the `lib/`-vs-snapshot gate compares
+against `versions/<pin>/lib` for the same reason. The pipe carries
+`set -eo pipefail` — without it a failed download pipes empty input to `sh`,
+`sh` exits 0, and the install silently no-ops.
+
+
 **The three distribution gates**, since `dist/` is what bayan actually ships:
 
 1. `cyrius distlib --all --check` — the bundles are regenerable from `src/`.

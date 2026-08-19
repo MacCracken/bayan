@@ -22,22 +22,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The pin in cyrius.cyml is the single source of truth — never hardcode a
-      # toolchain version in this file. Failures here are hard: an install that
-      # half-succeeds produces confusing failures three steps later.
+      # The `[package].cyrius` pin is the single source of truth — no version is
+      # hardcoded in this YAML. Hand it to the UPSTREAM INSTALLER rather than
+      # untarring by hand: the installer lays out
+      # ~/.cyrius/versions/<v>/{bin,lib} and symlinks ~/.cyrius/{bin,lib} at it.
+      # `cyrius deps` requires versions/<v>/lib specifically and errors with
+      # "pins version <v> but it is not installed" if only ~/.cyrius/lib exists,
+      # which is exactly what the previous hand-rolled tar step produced.
       - name: Install Cyrius toolchain
         run: |
-          set -euo pipefail
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          # pipefail matters here: without it only `sh`'s status counts, so a
+          # failed download pipes empty input to sh, sh exits 0, and the install
+          # silently no-ops until some later step fails for the wrong reason.
+          set -eo pipefail
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           test -n "$CYRIUS_VERSION" || { echo "::error::no [package].cyrius pin found in cyrius.cyml"; exit 1; }
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sfLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/"
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/"
-          chmod +x "$HOME/.cyrius/bin/"*
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
           echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
           echo "CYRIUS_HOME=$HOME/.cyrius" >> "$GITHUB_ENV"
           echo "CYRIUS_VERSION=$CYRIUS_VERSION" >> "$GITHUB_ENV"
@@ -78,7 +80,9 @@ jobs:
       - name: Vendored lib/ matches the pinned snapshot exactly
         run: |
           set -euo pipefail
-          if ! diff -rq lib "$HOME/.cyrius/lib" > /tmp/lib-drift.txt 2>&1; then
+          SNAP="$HOME/.cyrius/versions/${CYRIUS_VERSION}/lib"
+          test -d "$SNAP" || { echo "::error::no stdlib snapshot at $SNAP"; exit 1; }
+          if ! diff -rq lib "$SNAP" > /tmp/lib-drift.txt 2>&1; then
             echo "::error::lib/ does not match the ${CYRIUS_VERSION} snapshot — run 'cyrius lib sync --full' and commit"
             cat /tmp/lib-drift.txt
             exit 1

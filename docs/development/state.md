@@ -157,7 +157,14 @@ bayan's own tests:
 
 `.github/workflows/ci.yml` is the gate; `release.yml` calls it via
 `workflow_call` before publishing anything. Rewritten at 1.4.2 from 4 steps to
-a full sweep. Two properties worth remembering when editing it:
+a full sweep. Three properties worth remembering when editing it:
+
+- **Install via the upstream `scripts/install.sh`, never a hand-rolled tar.**
+  `cyrius deps` requires the snapshot at `~/.cyrius/versions/<pin>/lib`; a
+  hand-untar into `~/.cyrius/{bin,lib}` satisfies the compiler but not `deps`,
+  which fails with *"pins version X but it is not installed"*. The installer
+  creates `versions/<pin>/{bin,lib}` and symlinks `~/.cyrius/{bin,lib}` at
+  them. Compare `lib/` against `versions/<pin>/lib`, not the symlink.
 
 - **`cyrius lint` and `cyrius fmt --check` do not both gate by exit code.**
   `lint` always exits 0 — the CI step parses its `N warnings` /
@@ -165,6 +172,12 @@ a full sweep. Two properties worth remembering when editing it:
   `cyrius build` exits non-zero on errors but only *warns* on the diagnostics
   that matter here (bad pointer typing, `lib/` shadowing, pin drift), and
   `--strict` does not promote them — so that step greps for `^warning:`.
+
+  The format step must stay a **per-file loop**. `cyrfmt` reads only `argv[1]`
+  and silently ignores the rest, so `cyrius fmt src/*.cyr --check` checks the
+  first file and exits 0 — verified here by passing a known-good then a
+  known-bad file and getting a green. patra records the same trap (libro sat
+  green over five unformatted files on exactly that form).
 - **`scripts/consumer-check.sh` must build with `--no-deps`.** `cyrius build`
   auto-prepends everything in `[deps].stdlib`, so a consumer missing a declared
   leaf still compiles and the check passes vacuously. Verified by deleting
