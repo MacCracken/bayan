@@ -5,7 +5,7 @@
 **Against**: cyrius `distlib` (sidecar generation) — the sidecars are
 auto-generated, so bayan cannot fix this in-repo
 **Date**: 2026-08-19
-**Version**: cyrius 6.5.28 / bayan 1.4.2
+**Version**: cyrius 6.5.28 (released tarball) / bayan 1.4.2
 **Severity**: Medium — two shipped sublibs do not compile for a consumer that
 follows their own `.deps` file. Undefined functions, not a wrong answer.
 
@@ -19,8 +19,8 @@ For two profiles that is not true:
 
 | Sublib | Sidecar declares | Actually needs | Missing |
 |---|---|---|---|
-| `bayan-toml` | `syscalls alloc io vec str result` | + `string` `fmt` | `memcpy`, `memeq`, `fmt_int_buf`, `fmt_int` |
-| `bayan-cyml` | `syscalls string alloc io result` | + `fmt` | `fmt_int` |
+| `bayan-toml` | `alloc io vec str result` | + `string` `fmt` | `memcpy`, `memeq`, `fmt_int_buf`, `fmt_int` |
+| `bayan-cyml` | `string alloc io result` | + `fmt` | `fmt_int` |
 
 The other seven bundles (`bayan`, `bayan-json`, `bayan-yaml`, `bayan-csv`,
 `bayan-base64`, `bayan-u128`, `bayan-bigint`) are correct.

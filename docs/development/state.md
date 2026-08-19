@@ -43,17 +43,12 @@ stdlib at 1.0.0 (2026-06-10).
 - **Pin history**: 6.4.68 → 6.5.4 (1.4.0) → 6.5.16 (commit `97a3476`,
   2026-08-10, **undocumented** — no CHANGELOG entry, no state refresh) →
   6.5.28 (1.4.2).
-- **Caveat on the local snapshot.** `lib/` was synced from
-  `~/.cyrius/versions/6.5.28/lib` on 2026-08-19 at 08:36, when it matched
-  exactly. That snapshot's `freelist.cyr` was then edited in place later the
-  same morning with REDZONE/QUARANTINE work labelled **v6.5.29** (not a
-  released version — there is no `versions/6.5.29`). bayan's copy is
-  deliberately *not* re-synced: it holds released 6.5.28, which is what CI
-  downloads. `freelist` is not in `[deps].stdlib` and is vendored only because
-  `--full` copies the whole snapshot, so nothing in bayan builds against it
-  either way. The CI `lib/`-vs-snapshot gate compares against the release
-  tarball and is unaffected; a local run of that same diff will show
-  `freelist.cyr` until 6.5.29 ships.
+- **Caveat on the local snapshot.** `lib/` matches the **released** 6.5.28
+  tarball exactly (verified by extracting it). `~/.cyrius/versions/6.5.28/lib`
+  on a machine that also develops cyrius may not: its `freelist.cyr` was edited
+  in place on 2026-08-19 with `.29` REDZONE/QUARANTINE work. A local
+  `diff -rq lib ~/.cyrius/versions/6.5.28/lib` can therefore show drift that CI
+  will not — compare against the release tarball to settle it.
 
 ## Source
 
@@ -89,7 +84,7 @@ global-bump growth; the assertion that pins this is mutation-verified.
 - `dist/bayan-<format>.cyr` — per-format sublibs (the sigil/sandhi
   `[lib.<name>]` pattern), each `cyrius distlib <name>`-generated,
   compile-verified self-contained, with a `.deps` stdlib-leaf sidecar
-  (`bayan-u128.deps` is new at 6.5.28 and empty — u128 needs no leaves).
+  (u128 has none under released 6.5.28 — `.29`'s distlib writes an empty one).
   Canonical `bayan_*` names only — `_compat` aliases ride the full bundle.
   Two sidecars under-declare; see Known gaps 2.
 
@@ -158,6 +153,27 @@ bayan's own tests:
 `.github/workflows/ci.yml` is the gate; `release.yml` calls it via
 `workflow_call` before publishing anything. Rewritten at 1.4.2 from 4 steps to
 a full sweep. Three properties worth remembering when editing it:
+
+- **Regenerate `dist/` with the PINNED toolchain — the release tarball, not
+  whatever `~/.cyrius` happens to hold.** The cyrius repo is frequently mid-flight
+  at the same version number: on 2026-08-19 the local `cyrius` self-reported
+  `6.5.28` while carrying unreleased `.29` distlib fixes, and `dist/` generated
+  with it was STALE on CI (sidecar bytes count toward `--check` staleness, so the
+  `.cyr` looked fine and the `.deps` failed it). To verify the way CI does,
+  install the release into an isolated home:
+
+  ```sh
+  curl -sfLO https://github.com/MacCracken/cyrius/releases/download/<pin>/cyrius-<pin>-x86_64-linux.tar.gz
+  tar xzf cyrius-<pin>-x86_64-linux.tar.gz
+  H=/tmp/cy<pin>; mkdir -p "$H/versions/<pin>"
+  cp -R cyrius-<pin>-x86_64-linux/bin cyrius-<pin>-x86_64-linux/lib "$H/versions/<pin>/"
+  ln -sfn "$H/versions/<pin>/bin" "$H/bin"; ln -sfn "$H/versions/<pin>/lib" "$H/lib"
+  CYRIUS_HOME=$H PATH="$H/bin:$PATH" cyrius distlib --all --check
+  ```
+
+  The same caveat explains a local-only `lib/` diff: `~/.cyrius/versions/<pin>/lib`
+  can be edited in place by in-flight work, while bayan's vendored copy holds the
+  released content. Against the release tarball, `lib/` matches exactly.
 
 - **Install via the upstream `scripts/install.sh`, never a hand-rolled tar.**
   `cyrius deps` requires the snapshot at `~/.cyrius/versions/<pin>/lib`; a
