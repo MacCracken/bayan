@@ -25,6 +25,7 @@ include "src/cyml.cyr"
 include "src/dtoa.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
+include "src/pdf.cyr"
 include "src/_compat.cyr"
 
 alloc_init();
@@ -834,5 +835,334 @@ assert_eq(bayan_json_v_parse_ctx(&a_ps, "", 0), 0,
   "1.4.0: parse_ctx back-compat wrapper still rejects empty input");
 assert_eq(bayan_json_v_parse_ctx_a(a_arena, &a_ps, A_SRC, strlen(A_SRC)) != 0, 1,
   "1.4.0: parse_ctx_a parses into a caller-owned state");
+
+# =============================================================================
+# pdf (v1.5.0) — bayan_pdf_*
+#
+# The writer's real gate is scripts/pdfcheck.py, a strict independent parser
+# run by CI over tests/pdf_fixture.cyr's output; these assertions pin the
+# in-language contracts that gate cannot see. Flate lives in
+# tests/pdf_flate.tcyr, which is the only test that needs lib/sankoch.cyr.
+# =============================================================================
+
+test_group("pdf: standard-14 metrics come from Adobe's AFM data (v1.5.0)");
+assert_eq(bayan_pdf_font_count(), 14, "pdf: the standard 14 faces");
+assert_eq(bayan_pdf_char_width(PDF_FONT_HELVETICA, 65), 667, "pdf: Helvetica 'A' is 667/1000 em");
+assert_eq(bayan_pdf_char_width(PDF_FONT_HELVETICA, 32), 278, "pdf: Helvetica space is 278");
+assert_eq(bayan_pdf_char_width(PDF_FONT_HELVETICA, 35), 556, "pdf: Helvetica '#' is 556");
+assert_eq(bayan_pdf_char_width(PDF_FONT_HELVETICA, 87), 944, "pdf: Helvetica 'W' is 944");
+assert_eq(bayan_pdf_char_width(PDF_FONT_HELVETICA, 105), 222, "pdf: Helvetica 'i' is 222");
+assert_eq(bayan_pdf_char_width(PDF_FONT_TIMES_ROMAN, 65), 722, "pdf: Times-Roman 'A' is 722");
+assert_eq(bayan_pdf_char_width(PDF_FONT_TIMES_ROMAN, 32), 250, "pdf: Times-Roman space is 250");
+assert_eq(bayan_pdf_char_width(PDF_FONT_COURIER, 65), 600, "pdf: Courier 'A' is 600");
+assert_eq(bayan_pdf_char_width(PDF_FONT_COURIER, 87), 600, "pdf: Courier 'W' is 600 (monospace)");
+assert_eq(bayan_pdf_font_is_monospace(PDF_FONT_COURIER), 1, "pdf: Courier is monospace");
+assert_eq(bayan_pdf_font_is_monospace(PDF_FONT_HELVETICA), 0, "pdf: Helvetica is not");
+assert_eq(bayan_pdf_font_id("Times-Bold"), PDF_FONT_TIMES_BOLD, "pdf: font lookup by PostScript name");
+assert_eq(bayan_pdf_font_id("Comic Sans"), 0 - 1, "pdf: an unknown face is rejected, not guessed");
+assert_eq(str_eq_cstr(bayan_pdf_font_name(PDF_FONT_SYMBOL), "Symbol"), 1, "pdf: face id back to its name");
+
+# The five CP1252 holes have no glyph in ANY face. _pdff_width must test them
+# before the Courier shortcut, or the four Courier faces answer 600 there and
+# silently disagree with the other ten.
+assert_eq(bayan_pdf_char_width(PDF_FONT_HELVETICA, 129), 0, "pdf: 0x81 is undefined in WinAnsi");
+assert_eq(bayan_pdf_char_width(PDF_FONT_COURIER, 129), 0, "pdf: 0x81 is undefined in Courier too");
+assert_eq(bayan_pdf_char_width(PDF_FONT_COURIER, 157), 0, "pdf: 0x9D likewise");
+
+test_group("pdf: metric text measurement — the defect mneme's 80-char wrap has");
+# 4 chars * 600/1000 em * 12 pt = 28.8 pt = 28800 mpt, exactly.
+assert_eq(bayan_pdf_text_width(PDF_FONT_COURIER, 12000, str_from("AAAA")), 28800,
+  "pdf: a monospaced run measures exactly");
+# Sum-then-scale, not scale-per-character: the latter loses up to 1 mpt each.
+assert_eq(bayan_pdf_text_width(PDF_FONT_HELVETICA, 1001, str_from("AAA")), 2003,
+  "pdf: widths are summed before scaling, so no per-character rounding loss");
+assert_eq(bayan_pdf_text_width(PDF_FONT_HELVETICA, 11000, str_from("")), 0,
+  "pdf: an empty run measures zero");
+# THE POINT: the same character COUNT is wildly different widths. 80 'W' is
+# 830720 mpt and 80 'l' is 195360 mpt in the same face at the same size — a
+# 4.25x spread that a character-count wrap cannot see.
+var pdf_w80 = str_from("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW");
+var pdf_l80 = str_from("llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll");
+assert_eq(str_len(pdf_w80), 80, "pdf: the wide fixture is 80 characters");
+assert_eq(str_len(pdf_l80), 80, "pdf: the narrow fixture is 80 characters too");
+assert_eq(bayan_pdf_text_width(PDF_FONT_HELVETICA, 11000, pdf_w80), 830720,
+  "pdf: 80 'W' at 11pt is 830.72 pt — 184% of a 451 pt column");
+assert_eq(bayan_pdf_text_width(PDF_FONT_HELVETICA, 11000, pdf_l80), 195360,
+  "pdf: 80 'l' at 11pt is 195.36 pt — 43% of the same column");
+assert_gt(bayan_pdf_text_width(PDF_FONT_HELVETICA, 11000, pdf_w80), 451000,
+  "pdf: the character-count wrap mneme uses would run 80 'W' off the page");
+
+test_group("pdf: metric word wrap");
+var pdf_prose = str_from("the quick brown fox jumps over the lazy dog and keeps running until it is tired");
+var pdf_lines = bayan_pdf_wrap(PDF_FONT_HELVETICA, 11000, 200000, pdf_prose);
+assert_gt(vec_len(pdf_lines), 1, "pdf: prose wider than the column wraps");
+var pdf_wi = 0;
+var pdf_over = 0;
+while (pdf_wi < vec_len(pdf_lines)) {
+    if (bayan_pdf_text_width(PDF_FONT_HELVETICA, 11000, vec_get(pdf_lines, pdf_wi)) > 200000) {
+        pdf_over = pdf_over + 1;
+    }
+    pdf_wi = pdf_wi + 1;
+}
+assert_eq(pdf_over, 0, "pdf: EVERY wrapped line measures within the column");
+assert_eq(vec_len(bayan_pdf_wrap(PDF_FONT_HELVETICA, 11000, 500000, str_from("short"))), 1,
+  "pdf: text narrower than the column is one line");
+# An unbreakable word must be emitted whole rather than truncated or looped on.
+assert_eq(vec_len(bayan_pdf_wrap(PDF_FONT_HELVETICA, 11000, 20000, pdf_w80)), 1,
+  "pdf: a single word wider than the column is emitted alone, never split or dropped");
+
+test_group("pdf: units");
+assert_eq(bayan_pdf_in(1), 72000, "pdf: one inch is 72 pt exactly");
+assert_eq(bayan_pdf_mm(210), 595276, "pdf: 210 mm is A4's documented 595.276 pt");
+assert_eq(bayan_pdf_mm(297), 841890, "pdf: 297 mm is A4's documented 841.890 pt");
+assert_eq(bayan_pdf_page_size_w(PDF_PAGE_A4), 595000, "pdf: A4 width preset");
+assert_eq(bayan_pdf_page_size_h(PDF_PAGE_LETTER), 792000, "pdf: Letter height preset");
+
+test_group("pdf: WinAnsi transcoding — what mneme silently mangles");
+var pdf_st[16];
+# mneme emits raw UTF-8 into a font with no /Encoding, so "e-acute" renders as
+# two StandardEncoding glyphs and an em-dash vanishes entirely.
+var pdf_eacute = bayan_pdf_winansi(str_from("caf\xc3\xa9"), PDF_WINANSI_STRICT, &pdf_st);
+assert_eq(str_len(pdf_eacute), 4, "pdf: 'cafe-acute' is 4 WinAnsi bytes, not 5 UTF-8 ones");
+assert_eq(load8(str_data(pdf_eacute) + 3), 233, "pdf: e-acute is the single byte 0xE9");
+assert_eq(str_eq_cstr(bayan_pdf_from_winansi(pdf_eacute), "caf\xc3\xa9"), 1, "pdf: and it decodes back to UTF-8");
+var pdf_emdash = bayan_pdf_winansi(str_from("\xe2\x80\x94"), PDF_WINANSI_STRICT, &pdf_st);
+assert_eq(load8(str_data(pdf_emdash)), 151, "pdf: an em-dash is WinAnsi 0x97, not three raw bytes");
+var pdf_euro = bayan_pdf_winansi(str_from("\xe2\x82\xac"), PDF_WINANSI_STRICT, &pdf_st);
+assert_eq(load8(str_data(pdf_euro)), 128, "pdf: the Euro sign is WinAnsi 0x80");
+assert_eq(bayan_pdf_winansi_ok(str_from("plain ascii")), 1, "pdf: ASCII is always representable");
+assert_eq(bayan_pdf_winansi_ok(str_from("\xe4\xb8\x80")), 0,
+  "pdf: a CJK codepoint is NOT representable in WinAnsi");
+assert_eq(bayan_pdf_winansi(str_from("\xe4\xb8\x80"), PDF_WINANSI_STRICT, &pdf_st), 0,
+  "pdf: STRICT rejects it loudly rather than emitting a wrong glyph");
+var pdf_sub = bayan_pdf_winansi(str_from("\xe4\xb8\x80"), PDF_WINANSI_SUBSTITUTE, &pdf_st);
+assert_eq(load8(str_data(pdf_sub)), 63, "pdf: SUBSTITUTE emits '?' instead");
+
+test_group("pdf: object model");
+assert_eq(bayan_pdf_obj_tag(0), 0 - 1, "pdf: a null cell reports tag -1, it does not abort");
+assert_eq(bayan_pdf_obj_tag(bayan_pdf_obj_null()), PTAG_NULL, "pdf: null");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_int_new(42)), 42, "pdf: an integer");
+assert_eq(bayan_pdf_obj_bool_value(bayan_pdf_obj_bool_new(1)), 1, "pdf: a boolean");
+# A real is (scaled, places) so parse and emit are exact inverses; PDF has no
+# exponent form, which is why bayan_f64_to_json is unusable here.
+var pdf_real = bayan_pdf_obj_real_new(50, 2);
+assert_eq(bayan_pdf_obj_real_scaled(pdf_real), 50, "pdf: a real keeps its scaled integer");
+assert_eq(bayan_pdf_obj_real_places(pdf_real), 2, "pdf: and its decimal places");
+assert_eq(bayan_pdf_obj_num_mpt(pdf_real), 500, "pdf: 0.50 is 500 milli-points");
+assert_eq(bayan_pdf_obj_num_mpt(bayan_pdf_obj_int_new(72)), 72000, "pdf: the integer 72 is 72000 mpt");
+assert_eq(str_eq_cstr(bayan_pdf_obj_name(bayan_pdf_obj_name_new("Catalog")), "Catalog"), 1, "pdf: a name");
+assert_eq(bayan_pdf_obj_ref_num(bayan_pdf_obj_ref_new(3, 0)), 3, "pdf: an indirect reference");
+var pdf_arr = bayan_pdf_obj_array_new();
+bayan_pdf_obj_array_push(pdf_arr, bayan_pdf_obj_int_new(7));
+assert_eq(bayan_pdf_obj_array_len(pdf_arr), 1, "pdf: an array grows");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_array_get(pdf_arr, 0)), 7, "pdf: and indexes");
+# Out-of-range access must return 0, NOT abort — vec_get exits the process on
+# an out-of-range index and these indices come from untrusted input.
+assert_eq(bayan_pdf_obj_array_get(pdf_arr, 99), 0, "pdf: an out-of-range index returns 0, never exits");
+var pdf_dict = bayan_pdf_obj_dict_new();
+bayan_pdf_obj_dict_set(pdf_dict, "Type", bayan_pdf_obj_name_new("Page"));
+assert_eq(bayan_pdf_obj_dict_len(pdf_dict), 1, "pdf: a dict grows");
+assert_eq(bayan_pdf_obj_name_eq(bayan_pdf_obj_dict_get(pdf_dict, "Type"), "Page"), 1, "pdf: and looks up by name");
+assert_eq(bayan_pdf_obj_dict_get(pdf_dict, "Missing"), 0, "pdf: a missing key is 0");
+# Accessors called on the WRONG tag return a neutral value rather than aborting.
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_name_new("X")), 0, "pdf: int_value on a name is 0");
+assert_eq(bayan_pdf_obj_array_len(pdf_dict), 0 - 1,
+  "pdf: array_len on a dict is -1, which an empty array can never be");
+assert_eq(bayan_pdf_obj_is_dict(pdf_dict), 1, "pdf: is_dict");
+assert_eq(bayan_pdf_obj_is_array(pdf_arr), 1, "pdf: is_array");
+
+test_group("pdf: object grammar — parse and serialise are inverses");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_parse_buf("42", 2)), 42, "pdf: parse an integer");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_parse_buf("-17", 3)), 0 - 17, "pdf: a negative integer");
+assert_eq(str_eq_cstr(bayan_pdf_obj_name(bayan_pdf_obj_parse_buf("/A#20B", 6)), "A B"), 1, "pdf: #xx in a name resolves");
+assert_eq(str_eq_cstr(bayan_pdf_obj_bytes(bayan_pdf_obj_parse_buf("<48656C6C6F>", 12)), "Hello"), 1, "pdf: a hex string");
+assert_eq(str_eq_cstr(bayan_pdf_obj_bytes(bayan_pdf_obj_parse_buf("(a\\(b\\)c)", 9)), "a(b)c"), 1, "pdf: escaped parens");
+# "1 0 R" and the two integers "1 0" are lexically identical up to the third
+# token; only backtracking tells them apart.
+assert_eq(bayan_pdf_obj_is_ref(bayan_pdf_obj_parse_buf("1 0 R", 5)), 1, "pdf: 1 0 R is a reference");
+assert_eq(bayan_pdf_obj_array_len(bayan_pdf_obj_parse_buf("[1 0]", 5)), 2, "pdf: [1 0] is two integers");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_parse_buf("1 0 Rx", 6)), 1,
+  "pdf: 1 0 Rx is NOT a reference — R must be followed by a delimiter");
+assert_eq(bayan_pdf_obj_array_len(bayan_pdf_obj_parse_buf("[1 % c\n2]", 9)), 2, "pdf: comments are skipped");
+# Token-exact round trip: "0.50" must not normalise to "0.5".
+assert_eq(str_eq_cstr(bayan_pdf_obj_to_bytes(bayan_pdf_obj_parse_buf("0.50", 4)), "0.50"), 1,
+  "pdf: a real round-trips token-exact, keeping its trailing zero");
+assert_eq(str_eq_cstr(bayan_pdf_obj_to_bytes(bayan_pdf_obj_parse_buf("-0.000016", 9)), "-0.000016"), 1,
+  "pdf: and a negative real does not emit the '-13.-200' shape truncation produces");
+assert_eq(str_eq_cstr(bayan_pdf_obj_to_bytes(bayan_pdf_obj_ref_new(1, 0)), "1 0 R"), 1, "pdf: a reference serialises");
+assert_eq(str_eq_cstr(bayan_pdf_obj_to_bytes(bayan_pdf_obj_name_new("A B")), "/A#20B"), 1, "pdf: a name re-escapes");
+assert_eq(bayan_pdf_obj_eq(bayan_pdf_obj_parse_buf("[1 2]", 5), bayan_pdf_obj_parse_buf("[1 2]", 5)), 1,
+  "pdf: structural equality");
+assert_eq(bayan_pdf_obj_eq(bayan_pdf_obj_parse_buf("[1 2]", 5), bayan_pdf_obj_parse_buf("[1 3]", 5)), 0,
+  "pdf: and inequality");
+
+test_group("pdf: loud rejection — never a silent mis-parse");
+assert_eq(bayan_pdf_obj_parse_buf("(unterminated", 13), 0, "pdf: an unterminated string is rejected");
+assert_eq(bayan_pdf_obj_parse_buf("[1 2", 4), 0, "pdf: an unterminated array is rejected");
+assert_eq(bayan_pdf_obj_parse_buf("<<1 2>>", 7), 0, "pdf: a dict key that is not a name is rejected");
+assert_eq(bayan_pdf_obj_parse_buf("1.2.3", 5), 0, "pdf: a malformed number is rejected");
+assert_eq(bayan_pdf_obj_parse_buf("42e5", 4), 0, "pdf: PDF has no exponent form, so this is rejected");
+assert_gt(strlen(bayan_pdf_last_error()), 0, "pdf: a rejection leaves a message, not silence");
+
+test_group("pdf: writer — the whole pipeline in-language");
+var pdf_doc = bayan_pdf_new();
+assert_neq(pdf_doc, 0, "pdf: a document is created");
+var pdf_pg = bayan_pdf_add_page(pdf_doc, bayan_pdf_page_size_w(PDF_PAGE_A4), bayan_pdf_page_size_h(PDF_PAGE_A4));
+assert_neq(pdf_pg, 0, "pdf: a page is added");
+assert_eq(bayan_pdf_page_count(pdf_doc), 1, "pdf: the document knows its page count");
+bayan_pdf_set_info(pdf_doc, "Title", str_from("test"));
+bayan_pdf_text_at(pdf_pg, PDF_FONT_HELVETICA, 12000, 72000, 720000, str_from("Hello"));
+bayan_pdf_rect(pdf_pg, 10000, 20000, 30000, 40000);
+bayan_pdf_fill(pdf_pg);
+var pdf_bytes = bayan_pdf_to_bytes(pdf_doc);
+assert_gt(str_len(pdf_bytes), 400, "pdf: it serialises to a plausible size");
+assert_eq(memeq(str_data(pdf_bytes), "%PDF-1.", 7), 1, "pdf: with a PDF header");
+assert_eq(bayan_pdf_doc_error_count(pdf_doc), 0, "pdf: and no writer error");
+# Deterministic output is what makes a byte-comparison gate possible at all.
+assert_eq(str_eq(bayan_pdf_to_bytes(pdf_doc), pdf_bytes), 1, "pdf: serialisation is deterministic");
+
+test_group("pdf: writer refuses what it cannot emit correctly");
+# mneme silently DROPS a newline inside show-text. A newline means "break the
+# run", so accepting one and deleting it is a silent content change.
+assert_eq(bayan_pdf_text_show(pdf_pg, str_from("a\nb")), 0 - 1,
+  "pdf: a newline inside show-text is rejected, not silently dropped");
+var pdf_doc2 = bayan_pdf_new();
+assert_eq(str_len(bayan_pdf_to_bytes(pdf_doc2)), 0, "pdf: a document with no pages will not serialise");
+assert_gt(strlen(bayan_pdf_doc_error(pdf_doc2)), 0, "pdf: and it says why");
+
+test_group("pdf: writer -> reader round trip");
+var pdf_rt = bayan_pdf_parse(pdf_bytes);
+assert_neq(pdf_rt, 0, "pdf: our own output parses back");
+assert_eq(bayan_pdf_page_count(pdf_rt), 1, "pdf: with the right page count");
+assert_eq(bayan_pdf_is_encrypted(pdf_rt), 0, "pdf: and is not encrypted");
+assert_neq(bayan_pdf_catalog(pdf_rt), 0, "pdf: the catalog resolves");
+assert_eq(bayan_pdf_obj_name_eq(bayan_pdf_obj_dict_get(bayan_pdf_catalog(pdf_rt), "Type"), "Catalog"), 1,
+  "pdf: and is a /Catalog");
+assert_eq(str_contains_cstr(bayan_pdf_extract_text(pdf_rt), "Hello"), 1,
+  "pdf: the text we wrote comes back out");
+var pdf_mb: i64[4];
+bayan_pdf_page_media_box(bayan_pdf_page(pdf_rt, 0), &pdf_mb);
+assert_eq(load64(&pdf_mb + 16), 595000, "pdf: the page reports A4 width in mpt");
+
+test_group("pdf: reader — fixtures on disk");
+var pdf_good = bayan_pdf_parse_file("tests/fixtures/pdf/ref-good.pdf");
+assert_neq(pdf_good, 0, "pdf: a classic-xref file parses");
+assert_eq(bayan_pdf_page_count(pdf_good), 1, "pdf: one page");
+assert_eq(str_contains_cstr(bayan_pdf_extract_text(pdf_good), "Hello bayan"), 1, "pdf: its text extracts");
+assert_eq(str_contains_cstr(bayan_pdf_extract_text(pdf_good), "(parens)"), 1,
+  "pdf: escaped parens survive the round trip");
+assert_eq(bayan_pdf_page_count(bayan_pdf_parse_file("tests/fixtures/pdf/ref-3page.pdf")), 3,
+  "pdf: a three-page file walks the page tree");
+# PDF 1.5: a cross-reference STREAM, objects inside an object STREAM, and a PNG
+# predictor. None of that exists in the classic form.
+# A 1.5 cross-reference stream is ITSELF Flate-compressed, so with no inflate
+# hook installed the file is unreadable. It must say so rather than present a
+# half-loaded document. tests/pdf_flate.tcyr installs the hook and asserts the
+# success path on this same file.
+assert_eq(bayan_pdf_parse_file("tests/fixtures/pdf/ref-15-objstm.pdf"), 0,
+  "pdf: a 1.5 xref stream without an inflate hook is refused, not half-loaded");
+assert_gt(strlen(bayan_pdf_last_error()), 0, "pdf: and the refusal names the missing hook");
+
+test_group("pdf: text decoding — /Differences, base encodings, /ToUnicode");
+# Every one of these decoded as raw WinAnsi through 1.5.0, which is right for
+# the fourth case and mojibake for the first three.
+var pdf_enc = bayan_pdf_parse_file("tests/fixtures/pdf/ref-enc-simple.pdf");
+assert_neq(pdf_enc, 0, "pdf: a file carrying three different encodings parses");
+var pdf_enc_txt = bayan_pdf_extract_text(pdf_enc);
+assert_eq(str_contains_cstr(pdf_enc_txt, "\xc3\xa9\xc3\x9f\xe2\x82\xac ABC \xef\xac\x81"), 1,
+  "pdf: /Encoding /Differences remaps codes through their glyph names");
+assert_eq(str_contains_cstr(pdf_enc_txt, "\xc3\xa9\xe2\x80\xa2\xe2\x80\x93\xc2\xa4"), 1,
+  "pdf: /MacRomanEncoding decodes its high half — 0xDB is currency, not the euro");
+assert_eq(str_contains_cstr(pdf_enc_txt, "\xe2\x80\x99q\xe2\x80\x98 \xe2\x80\x94 \xef\xac\x81\xef\xac\x82"), 1,
+  "pdf: /StandardEncoding differs from ASCII below 0x80 and is followed there");
+assert_eq(bayan_pdf_doc_error_count(pdf_enc), 0, "pdf: and none of that warns");
+
+var pdf_t0 = bayan_pdf_parse_file("tests/fixtures/pdf/ref-enc-type0.pdf");
+assert_neq(pdf_t0, 0, "pdf: an Identity-H composite-font file parses");
+var pdf_t0_txt = bayan_pdf_extract_text(pdf_t0);
+assert_eq(str_contains_cstr(pdf_t0_txt, "ABC A"), 1,
+  "pdf: a /ToUnicode bfrange maps consecutive CIDs");
+assert_eq(str_contains_cstr(pdf_t0_txt, "\xef\xac\x81X\xf0\x9f\x98\x80YZ J"), 1,
+  "pdf: a bfchar ligature, a bfrange array, a surrogate pair and a two-codepoint destination all land");
+assert_eq(bayan_pdf_doc_error_count(pdf_t0), 0,
+  "pdf: a Type0 font that carries a CMap no longer warns");
+
+var pdf_nocmap = bayan_pdf_parse_file("tests/fixtures/pdf/ref-enc-nocmap.pdf");
+assert_neq(pdf_nocmap, 0, "pdf: a Type0 file with no /ToUnicode still parses");
+assert_eq(str_len(bayan_pdf_extract_text(pdf_nocmap)), 0,
+  "pdf: but its CIDs produce NOTHING — a loud mis-parse is still a mis-parse");
+assert_gt(bayan_pdf_doc_error_count(pdf_nocmap), 0, "pdf: and the document says why");
+
+test_group("pdf: reader rejects corrupt cross-references loudly");
+# poppler and mupdf recover these by rescanning for "N 0 obj". That hides
+# exactly the byte-accounting bugs this reader exists to refuse.
+assert_eq(bayan_pdf_parse_file("tests/fixtures/pdf/bad-xref.pdf"), 0,
+  "pdf: an xref offset pointing at the wrong object is rejected");
+assert_gt(strlen(bayan_pdf_last_error()), 0, "pdf: and names the failure");
+assert_eq(bayan_pdf_parse_file("tests/fixtures/pdf/bad-size.pdf"), 0,
+  "pdf: a trailer /Size that does not exceed the highest object number is rejected");
+# A wrong /Length is only reachable when the stream is read, so the failure
+# surfaces on content access rather than at parse time — but it does surface.
+var pdf_badlen = bayan_pdf_parse_file("tests/fixtures/pdf/bad-length.pdf");
+assert_neq(pdf_badlen, 0, "pdf: a bad /Length does not stop the xref from loading");
+bayan_pdf_extract_text(pdf_badlen);
+assert_gt(bayan_pdf_doc_error_count(pdf_badlen), 0,
+  "pdf: but reading the stream reports it rather than returning empty text in silence");
+
+test_group("pdf: Flate hook is absent by default and says so");
+assert_eq(bayan_pdf_has_inflate(), 0, "pdf: no inflate hook is installed by default");
+assert_eq(bayan_pdf_has_deflate(), 0, "pdf: nor a deflate hook");
+var pdf_fl = bayan_pdf_parse_file("tests/fixtures/pdf/ref-flate.pdf");
+assert_neq(pdf_fl, 0, "pdf: a Flate file still parses — the xref itself is not compressed");
+bayan_pdf_extract_text(pdf_fl);
+assert_gt(bayan_pdf_doc_error_count(pdf_fl), 0,
+  "pdf: but its compressed content reports the missing hook instead of returning garbage");
+
+test_group("pdf: reentrant per-call parser state");
+var pdf_ps1[64];
+var pdf_ps2[64];
+assert_eq(bayan_pdf_parse_state_size(), 64, "pdf: the state is 64 bytes");
+var pdf_o1 = bayan_pdf_obj_parse_ctx_a(default_alloc(), &pdf_ps1, "[1 2 3]", 7);
+var pdf_o2 = bayan_pdf_obj_parse_ctx_a(default_alloc(), &pdf_ps2, "(bad", 4);
+assert_eq(bayan_pdf_obj_array_len(pdf_o1), 3, "pdf: one parse succeeds");
+assert_eq(pdf_o2, 0, "pdf: while a concurrent one fails");
+assert_eq(strlen(bayan_pdf_state_error(&pdf_ps1)), 0, "pdf: and the good state stays clean");
+assert_gt(strlen(bayan_pdf_state_error(&pdf_ps2)), 0, "pdf: with the error on the failing state only");
+
+test_group("pdf: hardening — defects found by the 1.5.0 adversarial review");
+# Each of these was a CONFIRMED, reproduced defect before release, so each
+# assertion below is a regression guard with a known failure mode rather than a
+# hypothetical. See the CHANGELOG's "Fixed before release" section.
+
+# 1. CRITICAL — /Length near i64 max made `start + n > len` wrap NEGATIVE, so
+#    the reach check passed and load8() read ~9.2 exabytes below the buffer.
+#    Reproduced as a SIGSEGV from a 428-byte file; the guard now subtracts.
+var pdf_huge = bayan_pdf_parse_file("tests/fixtures/pdf/bad-huge-length.pdf");
+assert_neq(pdf_huge, 0, "pdf: an absurd /Length does not stop the xref from loading");
+bayan_pdf_extract_text(pdf_huge);
+assert_gt(bayan_pdf_doc_error_count(pdf_huge), 0,
+  "pdf: a near-i64-max /Length is refused rather than dereferenced");
+# Reaching this line at all is the assertion: the pre-fix build died here.
+assert_eq(1, 1, "pdf: and the process survived reading it");
+
+# 2. The writer's depth cap did not fire through PTAG_STREAM, because the
+#    stream arm hard-coded the counter instead of forwarding it, so a stream
+#    whose own dict referenced the stream recursed until the stack died.
+var pdf_sd = bayan_pdf_obj_dict_new();
+var pdf_ss = bayan_pdf_obj_stream_new(pdf_sd, str_from("BT ET"));
+bayan_pdf_obj_dict_set(pdf_sd, "Self", pdf_ss);
+assert_eq(str_len(bayan_pdf_obj_to_bytes(pdf_ss)), 0,
+  "pdf: a self-referential stream is refused by the depth cap, not followed");
+
+# 3. The object-stream memo was keyed on the document POINTER alone, and
+#    alloc_reset() recycles document addresses, so a second document could be
+#    served a freed record. Parsing twice with the same shapes must agree.
+var pdf_o1 = bayan_pdf_parse_file("tests/fixtures/pdf/ref-good.pdf");
+var pdf_t1 = bayan_pdf_extract_text(pdf_o1);
+var pdf_o2 = bayan_pdf_parse_file("tests/fixtures/pdf/ref-good.pdf");
+var pdf_t2 = bayan_pdf_extract_text(pdf_o2);
+assert_eq(str_eq(pdf_t1, pdf_t2), 1,
+  "pdf: two documents parsed in sequence do not share cached state");
+assert_neq(bayan_pdf_page(pdf_o2, 0), 0, "pdf: and the second one is intact");
 
 var r = assert_summary();

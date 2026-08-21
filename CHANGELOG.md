@@ -2,7 +2,206 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.5.0] — 2026-08-21
+
+**PDF read/write — `bayan_pdf_*`.** The roadmap's P2 item lands: a PDF writer
+and a PDF reader with text extraction, as `src/pdf.cyr` (9,348 lines, 152
+public functions). Its one known consumer, **mneme**, has shipped a hand-rolled
+writer since its port; that hand-roll is superseded here, and the defects found
+while reading it are what this module is shaped around.
+
+Also in this release: the Cyrius pin moves `6.5.28` → `6.5.33`.
+
+### Added — the writer
+
+- `bayan_pdf_new()` → document, `bayan_pdf_add_page`, the standard-14 fonts,
+  text and graphics operators, `/Info` metadata, `bayan_pdf_to_bytes`, and
+  `bayan_pdf_write_file`.
+- **Every byte offset in the cross-reference table is MEASURED, never
+  predicted.** The offset for an object is read off the output builder
+  immediately before that object is appended, and `_pdfw_selfcheck` then
+  re-reads every recorded offset and confirms it lands on `<n> 0 obj` before
+  `to_bytes` returns. mneme predicts offsets from `var offset = 9;` — the
+  length of `"%PDF-1.4\n"` — which is correct only until a second header line
+  exists. bayan emits the conventional binary-comment line, so the predicted
+  constant would have been wrong for every object in the file.
+- **Object numbers come from a counter, not closed-form arithmetic.** mneme's
+  `4+2p` / `5+2p` scheme is correct today and must be re-derived the moment
+  anything — `/Info`, a second font, an `/ID` — is added.
+- **Real AFM font metrics.** The standard-14 width tables are derived from
+  Adobe's original AFM data (via groff's `afmtodit`-generated metrics) by
+  `scripts/gen-widths.py`, which self-verifies against 22 documented spot
+  widths, a whole-family monospace check, and a decode round-trip.
+- **`/Encoding /WinAnsiEncoding` is declared, and text is transcoded to match.**
+  mneme declares no encoding, so viewers fall back to StandardEncoding, where
+  only 54 of the 128 high codes exist: `Résumé` renders `RÃ©sumÃ©` and an
+  em-dash disappears entirely. Declaring the encoding without transcoding would
+  merely change the flavour of mojibake, so bayan does both.
+- **A newline inside show-text is rejected**, not silently deleted. A newline
+  means "break the run"; accepting and dropping it is a silent content change.
+- **`bayan_pdf_write_file` propagates the write failure.** mneme ignores
+  `file_write_all`'s return and reports success on a full disk.
+
+### Added — metric text measurement
+
+- `bayan_pdf_text_width` and `bayan_pdf_wrap` lay text out by **measured
+  advance width**. mneme wraps at 80 characters, but in a proportional face 80
+  characters spans a **4.26× range** — 80 `l` is 195 pt (43% of a 451 pt
+  column) while 80 `W` is 831 pt (184%, running 308 pt off a 595 pt page).
+  Verified on the release fixture: the widest wrapped line measures 450.2 pt in
+  a 451 pt column, and no line overflows.
+- WinAnsi transcoding both ways (`bayan_pdf_winansi`, `bayan_pdf_from_winansi`),
+  with a strict mode that refuses an unrepresentable codepoint and a substitute
+  mode that emits `?`.
+
+### Added — the reader
+
+- `bayan_pdf_parse*` → an object graph, plus `bayan_pdf_extract_text`.
+- Classic cross-reference **tables** and PDF-1.5 cross-reference **streams**,
+  `/Prev` chains, objects stored inside **object streams**, and PNG **and**
+  TIFF predictors.
+- Filters: `FlateDecode` (through the hook below), `ASCIIHexDecode`,
+  `ASCII85Decode`, `RunLengthDecode`. An unrecognised filter is an error, not a
+  pass-through — returning still-encoded bytes as "text" is a silent wrong
+  answer.
+- **Inherited page attributes** (`/Resources`, `/MediaBox`, `/CropBox`,
+  `/Rotate`) are honoured. A reader that consults only the `/Page` dict reports
+  a missing `/MediaBox` on a large fraction of real files.
+- **Text decoding follows the font**, not a fixed encoding: `/ToUnicode` CMaps
+  (`beginbfchar`, `beginbfrange` in both forms, surrogate pairs, ligature
+  destinations), `/Type0` composite fonts consuming two-byte codes,
+  `/Encoding /Differences` by Adobe glyph name, and the WinAnsi / MacRoman /
+  Standard base encodings. Parsed maps are cached per font.
+
+  This is what makes the reader work on modern files. `glm/manual.pdf` uses
+  `/Type0` `/Identity-H`; decoding it a byte at a time yields
+  `* / 0        0 D Q X D O` where the page reads `GLM 0.9.9 Manual`.
+- **`/Encrypt` is detected and rejected** before any string or stream is
+  touched. Encryption is out of scope for 1.5.0, and a half-handled encrypted
+  file presents ciphertext as text.
+- Bounded on five independent axes — object nesting, indirect-reference chains,
+  xref `/Prev` sections, page-tree depth, and total inflated bytes — each with
+  its own counter and its own message, so a refusal names the bound it hit.
+
+### Added — compression, without a sankoch dependency
+
+`FlateDecode` / `FlateEncode` is reached through consumer-installed function
+pointers, `bayan_pdf_set_inflate(&zlib_decompress)` and
+`bayan_pdf_set_deflate(&zlib_compress)`. bayan folds INTO cyrius's stdlib, so a
+hard `include "lib/sankoch.cyr"` would create a module-ordering hazard in that
+fold for a filter many consumers never touch. With no hook installed the writer
+emits valid uncompressed output and the reader reports a specific error naming
+the missing hook — both paths are tested, the hook-absent one in
+`tests/bayan.tcyr` and the hook-present one in `tests/pdf_flate.tcyr`.
+
+`[deps].stdlib` is unchanged and `[lib.pdf]` is a **single-module closure** —
+pdf carries its own object graph and its own decimal number emitter, so neither
+`json.cyr` nor `dtoa.cyr` rides along.
+
+### Design notes worth keeping
+
+- **No floating point anywhere in the module.** Geometry is integer
+  milli-points (1 pt = 1000 mpt) and a PDF real is captured losslessly as
+  `(scaled, places)`, so parse and emit are exact inverses and `0.50`
+  round-trips as `0.50` rather than normalising to `0.5`. `bayan_f64_to_json`
+  is unusable here: it emits exponent notation and the token `null`, both
+  invalid PDF number syntax, and both of which compile clean.
+- **A separate `bayan_pdf_obj_*` tree rather than reusing `bayan_json_v_*`.**
+  PDF has name, indirect-reference, and stream types with no JSON analogue, and
+  `JTAG_STR` is documented as decoded UTF-8 while PDF strings are raw bytes.
+- **Ten subsystem helper prefixes, never a bare `_pdf_`.** mneme defines 14
+  bare `_pdf_*` helpers and will have both files in scope during its migration;
+  a duplicate function name in cyrius is only a *warning*, with
+  last-definition-wins that rebinds even textually-earlier call sites.
+
+### Added — the acceptance oracle
+
+`scripts/pdfcheck.py` is a strict, stdlib-only PDF validator, and it is the
+gate CI runs the writer's output through. It is deliberately stricter than
+poppler and mupdf, which reconstruct a broken cross-reference by scanning for
+`N 0 obj` and thereby hide exactly the byte-accounting bugs it exists to catch:
+every offset is checked against the byte it claims to point at. It was itself
+mutation-tested — a corrupted xref offset, a `/Length` off by one, and a stale
+`/Size` must each be caught — and that exercise found two bugs in the oracle
+before it was trusted: a `\s*endstream` match that let an off-by-one `/Length`
+slide through, and a tuple/int comparison that crashed on any PDF-1.5 file.
+
+`scripts/gen-pdf-fixtures.py` generates the eight checked-in fixtures — five
+that must parse and three corrupted ones that must be refused.
+
+### Fixed before release — an adversarial review of the new module
+
+`src/pdf.cyr` was reviewed under five lenses (bounds, overflow, termination,
+byte accounting, silent wrong answers) with every finding handed to a separate
+agent instructed to **refute** it. Eighteen candidate defects; ten survived
+refutation with a reproducer, and all ten are fixed here. Recording them
+because "the parser passed its tests" and "the parser is safe on hostile input"
+are different claims, and only the first was true before this pass.
+
+- **A near-i64-max `/Length` segfaulted the reader.** The reach check was
+  `start + n > len`. The number lexer admits values up to 9223372036854775799
+  (its range guard runs *before* the multiply-accumulate), so `start + n`
+  wrapped to a large **negative** i64 — neither `n < 0` nor `> len` — the guard
+  passed, and `load8(buf + e)` then read about 9.2 exabytes below the buffer.
+  Reproduced as a SIGSEGV from a 428-byte file, with the wrapped value visible
+  in the backtrace. Now compared by subtraction (`n > len - start`), which
+  cannot overflow because `start <= len` always holds.
+  **Mutation-verified**: restoring the additive form makes the new
+  `bad-huge-length.pdf` fixture crash the process again.
+- **The object-stream memo was keyed on the document pointer alone.**
+  `alloc_reset()` rewinds the bump allocator and a `PdfDoc` is the first thing a
+  parse allocates, so document *addresses* are recycled and a second document
+  could be handed a freed record whose vec and Str words now held unrelated
+  bytes. Documents now carry a monotonic generation stamp that the key includes.
+  The decompression budget already defended against exactly this recycling; the
+  memo had been given the same rationale in a comment but not the same guard.
+- **`/XRefStm` chains bypassed `_PDF_MAX_XREF`.** The hybrid-reference path
+  recurses `_pdfx_read_table` → `_pdfx_read_section` → `_pdfx_read_table`
+  without passing through the `/Prev` loop that holds the counter, so one of
+  the two chains was bounded and the other exhausted the native stack. Now
+  bounded on the shared visited-set length, which covers both chains.
+- **Indirect `/Length` chains recursed without bound.** Every
+  `_pdfp_resolve_d` call site passes a literal depth of 0 and its visited set
+  is per-call, so neither survived the trip back through `_pdfp_stream_a`;
+  `k 0 obj<</Length k+1 0 R>>` repeated N times recursed N deep. Bounded by a
+  per-document re-entry counter.
+- **The page-tree walk was exponential.** `_PDF_MAX_TREE` caps *depth* and the
+  cycle set is *path*-scoped — correct for a node that reaches itself, useless
+  for a node reached down many distinct paths. Thirty `/Pages` nodes each
+  listing the same kid twice is 2^30 visits at depth 30: inside every existing
+  bound and indistinguishable from a hang. Now carries a total-work budget.
+- **The cross-reference table grew by exact request.** `_pdfx_alloc_table` is
+  called once per subsection and nothing is freed, so a table of N one-entry
+  subsections allocated O(N²) bytes — tens of gigabytes from a 1 MB file.
+  Growth is now geometric, with the allocated capacity tracked separately from
+  the logical `/Size` so a resolve still cannot reach past what the trailer
+  declares.
+- **`/ToUnicode` `bfrange` had no cumulative work budget.** Each entry may span
+  65,536 codes and the outer loop admitted 65,536 entries, so a ~2 KB
+  compressed CMap could drive ~4e9 map writes.
+- **The writer's depth cap never fired through a stream.** `_pdfw_obj` forwarded
+  `depth` on every composite arm except `PTAG_STREAM`, which hard-coded it, so
+  a stream whose own dictionary referenced the stream recursed until the stack
+  died. Now forwarded like every other arm.
+- **`bayan_pdf_raw_op`'s comment described behaviour the code did not have** —
+  it claimed a `q` inside a literal string was not matched, when delimiters
+  make `(a q b)` tokenise as `a`, `q`, `b` and be refused. The refusal is the
+  safe direction and is kept deliberately; the comment now says so, rather than
+  a string-aware lexer being added inside a safety check.
+
+Two reviewer findings were **refuted** and deliberately not changed: the writer
+does not leak partial output on a failed content operator (the failure fires
+before anything is appended), and the shared empty `Str` is not a dangling
+pointer.
+
+### Changed (toolchain)
+
+- **Cyrius pin `6.5.28` → `6.5.33`**, with `cyrius lib sync --full`. `lib/`
+  matches the **release tarball** exactly — 0 of 108 files differ — verified by
+  comparing the trees rather than trusting the sync's exit code, and against
+  the released tarball rather than `~/.cyrius`, which on a machine that also
+  develops cyrius can carry unreleased in-flight edits at the same version
+  number. (This time the local snapshot and the release agreed.)
 
 ## [1.4.2] — 2026-08-19
 

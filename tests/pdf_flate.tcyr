@@ -1,0 +1,99 @@
+# pdf_flate.tcyr — the FlateDecode / FlateEncode path, isolated.
+#
+# This is the ONLY test that pulls in lib/sankoch.cyr, and it is separate from
+# tests/bayan.tcyr for a reason worth stating: src/pdf.cyr deliberately does NOT
+# depend on sankoch. bayan folds into cyrius's stdlib, and a hard include of
+# sankoch.cyr from a folded module would create a module-ordering hazard there
+# for a filter most consumers never touch. So compression is reached through
+# consumer-installed function pointers instead:
+#
+#     bayan_pdf_set_inflate(&zlib_decompress)
+#     bayan_pdf_set_deflate(&zlib_compress)
+#
+# Keeping this file separate means the main suite proves the HOOK-ABSENT path
+# (a valid uncompressed writer, a loud reader error) while this one proves the
+# HOOK-PRESENT path, and neither can accidentally mask the other.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/sankoch.cyr"
+
+include "src/pdf.cyr"
+
+alloc_init();
+
+test_group("pdf: the Flate hooks dispatch through fncall4 (v1.5.0)");
+assert_eq(bayan_pdf_has_inflate(), 0, "flate: no inflate hook before installation");
+assert_eq(bayan_pdf_has_deflate(), 0, "flate: no deflate hook before installation");
+
+bayan_pdf_set_inflate(&zlib_decompress);
+bayan_pdf_set_deflate(&zlib_compress);
+
+assert_eq(bayan_pdf_has_inflate(), 1, "flate: the inflate hook installs");
+assert_eq(bayan_pdf_has_deflate(), 1, "flate: the deflate hook installs");
+
+test_group("pdf: reading a FlateDecode content stream");
+# ref-flate.pdf's page content is a zlib stream. Without the hook the main
+# suite asserts this same file reports a loud error; with it installed the
+# text must come back intact.
+var fl_doc = bayan_pdf_parse_file("tests/fixtures/pdf/ref-flate.pdf");
+assert_neq(fl_doc, 0, "flate: a Flate file parses");
+var fl_txt = bayan_pdf_extract_text(fl_doc);
+assert_eq(str_contains_cstr(fl_txt, "Hello bayan"), 1, "flate: its compressed text decodes");
+assert_eq(str_contains_cstr(fl_txt, "quick brown fox"), 1, "flate: all of it, not just the first run");
+assert_eq(bayan_pdf_doc_error_count(fl_doc), 0, "flate: and no error is recorded");
+
+test_group("pdf: PDF 1.5 xref streams need inflate too");
+# The cross-reference of a 1.5 file is itself a Flate stream with a PNG
+# predictor, so this exercises the hook on the xref path rather than content.
+var fl_15 = bayan_pdf_parse_file("tests/fixtures/pdf/ref-15-objstm.pdf");
+assert_neq(fl_15, 0, "flate: an xref-stream file parses with the hook installed");
+assert_eq(bayan_pdf_page_count(fl_15), 1, "flate: its page tree resolves");
+assert_eq(str_contains_cstr(bayan_pdf_extract_text(fl_15), "PDF 1.5"), 1,
+  "flate: text from inside a compressed object stream extracts");
+
+test_group("pdf: writing compressed output");
+var fl_w = bayan_pdf_new();
+var fl_pg = bayan_pdf_add_page(fl_w, bayan_pdf_page_size_w(PDF_PAGE_A4), bayan_pdf_page_size_h(PDF_PAGE_A4));
+# Highly repetitive content — the shape a text PDF actually has, where every
+# line repeats "BT /F1 11 Tf ... Tj ET". Measured on mneme's real output this
+# compresses about 7.9x, which is why the hook is worth having at all.
+var fl_i = 0;
+while (fl_i < 60) {
+    bayan_pdf_text_at(fl_pg, PDF_FONT_HELVETICA, 11000, 72000, 760000 - fl_i * 12000,
+      str_from("the quick brown fox jumps over the lazy dog"));
+    fl_i = fl_i + 1;
+}
+
+bayan_pdf_set_compress(fl_w, 0);
+var fl_raw = bayan_pdf_to_bytes(fl_w);
+bayan_pdf_set_compress(fl_w, 1);
+var fl_zip = bayan_pdf_to_bytes(fl_w);
+
+assert_gt(str_len(fl_raw), 0, "flate: the uncompressed form serialises");
+assert_gt(str_len(fl_zip), 0, "flate: the compressed form serialises");
+assert_lt(str_len(fl_zip), str_len(fl_raw), "flate: compression actually makes it smaller");
+assert_eq(bayan_pdf_doc_error_count(fl_w), 0, "flate: with no writer error");
+
+test_group("pdf: compressed output round-trips through the reader");
+# The real proof is not that the bytes shrank but that they still mean the
+# same thing.
+var fl_back = bayan_pdf_parse(fl_zip);
+assert_neq(fl_back, 0, "flate: compressed output parses back");
+assert_eq(bayan_pdf_page_count(fl_back), 1, "flate: with its page intact");
+assert_eq(str_contains_cstr(bayan_pdf_extract_text(fl_back), "quick brown fox"), 1,
+  "flate: and its text decodes to what was written");
+var fl_plain = bayan_pdf_parse(fl_raw);
+assert_eq(str_eq(bayan_pdf_extract_text(fl_back), bayan_pdf_extract_text(fl_plain)), 1,
+  "flate: compressed and uncompressed extract IDENTICAL text");
+
+var r = assert_summary();

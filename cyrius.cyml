@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "bayan — data-format & big-integer distfile (json / yaml / toml / cyml / csv / base64 / bigint / u128) for the AGNOS-lineage Cyrius ecosystem; foldable into stdlib per the sandhi pattern"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.5.28"
+cyrius = "6.5.33"
 
 [build]
 entry = "src/main.cyr"
@@ -27,7 +27,11 @@ stdlib = [
 # each module may only reference symbols defined earlier. The first 7 data
 # modules have no cross-deps among them (order free); `yaml.cyr` MUST come
 # after `json.cyr` (it parses into the shared json_v value tree and reuses
-# the json parser state/number scanner); `_compat.cyr` (back-compat aliases
+# the json parser state/number scanner); `pdf.cyr` is cross-dep-free — it
+# carries its own bayan_pdf_obj_* object graph (PDF has name / indirect-ref /
+# stream types the json tree has none of) and its own decimal number emitter
+# (PDF reals have no exponent form, so bayan_f64_to_json is unusable), so it
+# depends on neither json.cyr nor dtoa.cyr; `_compat.cyr` (back-compat aliases
 # forwarding the legacy json_*/u256_* names to the canonical bayan_* API)
 # MUST be last — its aliases reference every bayan_* symbol.
 [lib]
@@ -41,6 +45,7 @@ modules = [
     "src/dtoa.cyr",
     "src/json.cyr",
     "src/yaml.cyr",
+    "src/pdf.cyr",
     "src/_compat.cyr",
 ]
 
@@ -107,4 +112,16 @@ modules = [
 [lib.bigint]
 modules = [
     "src/bigint.cyr",
+]
+
+# pdf — PDF writer + reader (text extraction). A single-module closure: pdf
+# carries its own object graph and number emitter, so neither json.cyr nor
+# dtoa.cyr rides along. FlateDecode/FlateEncode is reached through
+# consumer-installed function-pointer hooks (bayan_pdf_set_inflate /
+# bayan_pdf_set_deflate, matching sankoch's zlib_decompress / zlib_compress)
+# rather than a hard lib/sankoch.cyr dependency, which would create a module
+# ordering hazard in the cyrius stdlib fold.
+[lib.pdf]
+modules = [
+    "src/pdf.cyr",
 ]

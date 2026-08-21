@@ -1,21 +1,116 @@
 # bayan benchmarks
-# Stdlib auto-included via cyrius.cyml
 #
-# Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop -> bench_report.
-# For sub-1us ops use batch_size >= 1000 to amortize clock_gettime overhead
-# (~240 ns per start/stop pair on x86_64 Linux). See lib/bench.cyr header for
-# the full overhead-vs-batching guidance.
+# Until 1.5.0 this file measured a no-op and reported `noop: 2ns avg`, so the
+# CI bench gate was a false green and docs/benchmarks.md did not exist. It now
+# measures the operations a consumer actually pays for: the PDF object grammar,
+# font metric measurement, metric word wrap, whole-document serialisation, and
+# whole-document parse + text extraction.
+#
+# Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop ->
+# bench_report. For sub-microsecond operations use a batch of >= 1000 to
+# amortise the ~240 ns clock_gettime start/stop overhead on x86_64 Linux; the
+# document-level benchmarks below are far above that, so they use small batches.
+#
+# NOTE: a file carrying include directives skips the [deps].stdlib
+# auto-prepend, so the stdlib prerequisites are listed explicitly.
 
-fn bench_noop(): i64 { return 0; }
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/bench.cyr"
+
+include "src/pdf.cyr"
+
+var B_DICT = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Contents 5 0 R/Resources<</Font<</F1 3 0 R>>>>>>";
+var B_PROSE = "The quick brown fox jumps over the lazy dog and keeps on running well past the right edge of any column you care to name";
 
 fn main(): i64 {
     alloc_init();
-    var b = bench_new("noop");
-    bench_batch_start(b);
+    bench_report_clock();
+
+    # --- the object grammar -------------------------------------------------
+    # A page dictionary is the shape the reader meets most often: nested dicts,
+    # an array, and three indirect references, each of which costs the
+    # three-token "N G R" lookahead with backtracking.
+    var b1 = bench_new("pdf_obj_parse (page dict, 97 bytes)");
+    var n1 = strlen(B_DICT);
+    bench_batch_start(b1);
     var i = 0;
-    while (i < 1000000) { bench_noop(); i = i + 1; }
-    bench_batch_stop(b, 1000000);
-    bench_report(b);
+    while (i < 10000) { bayan_pdf_obj_parse_buf(B_DICT, n1); i = i + 1; }
+    bench_batch_stop(b1, 10000);
+    bench_report(b1);
+
+    # --- font metrics -------------------------------------------------------
+    # Measured width is what makes wrapping correct, so it sits in the inner
+    # loop of every laid-out paragraph. It sums 1/1000-em widths and scales
+    # once, so it is one pass over the bytes plus one multiply-divide.
+    var b2 = bench_new("pdf_text_width (120 chars, Helvetica)");
+    var prose = str_from(B_PROSE);
+    bench_batch_start(b2);
+    i = 0;
+    while (i < 100000) { bayan_pdf_text_width(PDF_FONT_HELVETICA, 11000, prose); i = i + 1; }
+    bench_batch_stop(b2, 100000);
+    bench_report(b2);
+
+    # --- metric word wrap ---------------------------------------------------
+    var b3 = bench_new("pdf_wrap (120 chars into a 200pt column)");
+    bench_batch_start(b3);
+    i = 0;
+    while (i < 10000) { bayan_pdf_wrap(PDF_FONT_HELVETICA, 11000, 200000, prose); i = i + 1; }
+    bench_batch_stop(b3, 10000);
+    bench_report(b3);
+
+    # --- WinAnsi transcode --------------------------------------------------
+    var b4 = bench_new("pdf_winansi (120 chars, ASCII fast path)");
+    var st[16];
+    bench_batch_start(b4);
+    i = 0;
+    while (i < 100000) { bayan_pdf_winansi(prose, PDF_WINANSI_SUBSTITUTE, &st); i = i + 1; }
+    bench_batch_stop(b4, 100000);
+    bench_report(b4);
+
+    # --- whole-document write -----------------------------------------------
+    # 50 text runs on one page, which is roughly a full page of body copy.
+    var doc = bayan_pdf_new();
+    var pg = bayan_pdf_add_page(doc, bayan_pdf_page_size_w(PDF_PAGE_A4), bayan_pdf_page_size_h(PDF_PAGE_A4));
+    i = 0;
+    while (i < 50) {
+        bayan_pdf_text_at(pg, PDF_FONT_HELVETICA, 11000, 72000, 760000 - i * 14000, prose);
+        i = i + 1;
+    }
+    var b5 = bench_new("pdf_to_bytes (1 page, 50 text runs)");
+    bench_batch_start(b5);
+    i = 0;
+    while (i < 1000) { bayan_pdf_to_bytes(doc); i = i + 1; }
+    bench_batch_stop(b5, 1000);
+    bench_report(b5);
+
+    # --- whole-document read ------------------------------------------------
+    # Parse and extract from what we just wrote, so the two halves are measured
+    # against the same content rather than against different fixtures.
+    var bytes = bayan_pdf_to_bytes(doc);
+    var b6 = bench_new("pdf_parse (1 page, ~6KB)");
+    bench_batch_start(b6);
+    i = 0;
+    while (i < 1000) { bayan_pdf_parse(bytes); i = i + 1; }
+    bench_batch_stop(b6, 1000);
+    bench_report(b6);
+
+    var rd = bayan_pdf_parse(bytes);
+    var b7 = bench_new("pdf_extract_text (1 page, 50 runs)");
+    bench_batch_start(b7);
+    i = 0;
+    while (i < 1000) { bayan_pdf_extract_text(rd); i = i + 1; }
+    bench_batch_stop(b7, 1000);
+    bench_report(b7);
+
     return 0;
 }
 

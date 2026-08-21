@@ -1,0 +1,145 @@
+# tests/pdf_fixture.cyr — writes a representative PDF for the CI oracle step.
+#
+# The acceptance criterion for bayan_pdf_* is not "the bytes look plausible" but
+# "a strict, independent parser accepts them". This program exercises the
+# writer's whole surface — multiple pages, several standard-14 faces, metric
+# word wrap, graphics operators, WinAnsi text, and /Info metadata — and writes
+# the result to argv[1]. CI then runs it through scripts/pdfcheck.py, which
+# validates every xref offset against the byte it claims to point at and
+# refuses to reconstruct a broken table the way poppler and mupdf would.
+#
+#   cyrius build tests/pdf_fixture.cyr build/pdf-fixture
+#   ./build/pdf-fixture /tmp/out.pdf && python3 scripts/pdfcheck.py /tmp/out.pdf --text
+#
+# Exits 0 on success, non-zero with a diagnostic on any writer error.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/args.cyr"
+
+include "src/pdf.cyr"
+
+var LEFT   = 72000;    # 72 pt margin, in milli-points
+var COLUMN = 451000;   # 595 - 72 - 72 pt of usable column width
+
+fn say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+
+fn die(doc, what: cstring): i64 {
+    say("pdf_fixture: ");
+    say(what);
+    if (doc != 0) {
+        var e = bayan_pdf_doc_error(doc);
+        if (strlen(e) > 0) { say(": "); say(e); }
+    }
+    say("\n");
+    return 1;
+}
+
+# One wrapped paragraph, laid out by MEASURED width rather than a character
+# count. This is the defect the port fixes: mneme wraps at 80 characters, and
+# in a proportional face 80 characters is anywhere from 43% to 184% of this
+# column depending on which characters they are.
+fn para(pg, font, size, y_mpt, leading, s: Str): i64 {
+    var lines = bayan_pdf_wrap(font, size, COLUMN, s);
+    var y = y_mpt;
+    var i = 0;
+    while (i < vec_len(lines)) {
+        bayan_pdf_text_at(pg, font, size, LEFT, y, vec_get(lines, i));
+        y = y - leading;
+        i = i + 1;
+    }
+    return y;
+}
+
+fn main(): i64 {
+    args_init();
+    alloc_init();
+
+    if (argc() < 2) { return die(0, "usage: pdf-fixture <out.pdf>"); }
+    var out = argv(1);
+
+    var doc = bayan_pdf_new();
+    if (doc == 0) { return die(0, "bayan_pdf_new failed"); }
+
+    bayan_pdf_set_info(doc, "Title", str_from("bayan PDF writer fixture"));
+    bayan_pdf_set_info(doc, "Author", str_from("bayan"));
+    bayan_pdf_set_info(doc, "Subject", str_from("CI acceptance fixture"));
+
+    var w = bayan_pdf_page_size_w(PDF_PAGE_A4);
+    var h = bayan_pdf_page_size_h(PDF_PAGE_A4);
+
+    # --- page 1: headings, wrapped body text, a rule, and a filled box ---
+    var p1 = bayan_pdf_add_page(doc, w, h);
+    if (p1 == 0) { return die(doc, "add_page 1"); }
+
+    bayan_pdf_text_at(p1, PDF_FONT_HELVETICA_BOLD, 24000, LEFT, 760000,
+      str_from("bayan PDF writer"));
+    bayan_pdf_text_at(p1, PDF_FONT_HELVETICA_OBLIQUE, 11000, LEFT, 736000,
+      str_from("Standard-14 metrics, WinAnsi text, byte-accurate xref"));
+
+    var y = para(p1, PDF_FONT_TIMES_ROMAN, 11000, 700000, 16000,
+      str_from("The quick brown fox jumps over the lazy dog. This paragraph is wrapped by measured advance width using the Adobe Core-14 metrics, so the right edge lands inside the column no matter which characters appear in it. A character-count wrap cannot do that, because in a proportional face the same eighty characters can measure anywhere from 43 percent to 184 percent of the column."));
+
+    # A horizontal rule and a filled swatch — the graphics operators.
+    y = y - 8000;
+    bayan_pdf_set_line_width(p1, 500);
+    bayan_pdf_move_to(p1, LEFT, y);
+    bayan_pdf_line_to(p1, LEFT + COLUMN, y);
+    bayan_pdf_stroke(p1);
+
+    y = y - 40000;
+    bayan_pdf_set_rgb(p1, 200, 400, 800);
+    bayan_pdf_rect(p1, LEFT, y, 120000, 30000);
+    bayan_pdf_fill(p1);
+
+    # Escapes and non-ASCII, which must survive the WinAnsi transcode. mneme
+    # emits raw UTF-8 into a font with no /Encoding, so an accented character
+    # renders as mojibake and an em-dash disappears entirely.
+    y = y - 30000;
+    bayan_pdf_text_at(p1, PDF_FONT_HELVETICA, 11000, LEFT, y,
+      str_from("Escapes: (parens), a backslash \\, and a percent %"));
+    y = y - 16000;
+    bayan_pdf_text_at(p1, PDF_FONT_HELVETICA, 11000, LEFT, y,
+      str_from("Non-ASCII: Resume, cafe, naive - en dash, em dash"));
+
+    # --- page 2: a monospaced block, proving the Courier faces ---
+    var p2 = bayan_pdf_add_page(doc, w, h);
+    if (p2 == 0) { return die(doc, "add_page 2"); }
+
+    bayan_pdf_text_at(p2, PDF_FONT_HELVETICA_BOLD, 15000, LEFT, 760000,
+      str_from("Monospaced sample"));
+
+    var cy = 730000;
+    bayan_pdf_text_at(p2, PDF_FONT_COURIER, 10000, LEFT, cy,
+      str_from("fn bayan_pdf_to_bytes(doc): Str {"));
+    cy = cy - 14000;
+    bayan_pdf_text_at(p2, PDF_FONT_COURIER, 10000, LEFT, cy,
+      str_from("    return bayan_pdf_to_bytes_a(default_alloc(), doc);"));
+    cy = cy - 14000;
+    bayan_pdf_text_at(p2, PDF_FONT_COURIER, 10000, LEFT, cy, str_from("}"));
+
+    cy = cy - 28000;
+    para(p2, PDF_FONT_TIMES_ITALIC, 11000, cy, 16000,
+      str_from("Every byte offset in the cross-reference table is measured from the output builder immediately before the object it names is appended, never predicted from a running sum, and each one is re-checked against the bytes it points at before these bytes are returned."));
+
+    # --- serialise ---
+    var r = bayan_pdf_write_file(doc, out);
+    if (r != 0) { return die(doc, "write_file"); }
+    if (bayan_pdf_doc_error_count(doc) != 0) { return die(doc, "writer recorded an error"); }
+
+    say("pdf_fixture: wrote ");
+    say(out);
+    say("\n");
+    return 0;
+}
+
+var rc = main();
+syscall(SYS_EXIT, rc);

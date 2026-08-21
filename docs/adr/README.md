@@ -19,4 +19,11 @@ Decisions about bayan — what we chose, the context, and the consequences we ac
 
 ## Index
 
-_No ADRs yet. Add the first as `0001-kebab-case-title.md`._
+| ADR | Title | Status |
+|---|---|---|
+| [0001](0001-flate-via-hooks-not-a-sankoch-dependency.md) | Flate compression via consumer-installed hooks, not a sankoch dependency | Accepted |
+| [0002](0002-pdf-objects-do-not-reuse-the-json-value-tree.md) | The PDF object graph does not reuse the JSON value tree | Accepted |
+
+Both were written at 1.5.0, alongside `bayan_pdf_*`. They record the two
+decisions in that module a future reader is most likely to try to "simplify" —
+and in both cases the simplification has a specific, non-obvious cost.

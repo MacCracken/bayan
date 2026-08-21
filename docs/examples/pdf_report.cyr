@@ -1,0 +1,186 @@
+# docs/examples/pdf_report.cyr — write a multi-page PDF, then read it back.
+#
+# This is the shape a consumer holding structured content (mneme holds a
+# markdown AST) drives the writer with: measure, wrap, paginate, emit. The
+# second half reads the file back and extracts its text, which is also how you
+# check your own output without leaving the language.
+#
+# Build and run from the repo root:
+#
+#   cyrius build docs/examples/pdf_report.cyr build/pdf-report
+#   ./build/pdf-report /tmp/report.pdf
+#   python3 scripts/pdfcheck.py /tmp/report.pdf --text
+#
+# Uncomment the two sankoch lines to compress the output; everything else is
+# unchanged, which is the point of the hook design.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/args.cyr"
+# include "lib/sankoch.cyr"
+
+include "src/pdf.cyr"
+
+# A4 with 72 pt margins, all in milli-points (1 pt = 1000 mpt).
+var LEFT    = 72000;
+var TOP     = 770000;
+var BOTTOM  = 72000;
+var COLUMN  = 451000;
+var LEADING = 15000;
+
+fn say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+
+# --- a tiny flow layer -------------------------------------------------------
+#
+# bayan deliberately ships no pagination API in 1.5.0 (it wants a markdown AST
+# that does not exist yet), so a consumer writes the ~30 lines it needs. State
+# is [doc@0, page@8, y@16].
+
+fn flow_new(doc): i64 {
+    var f = alloc(24);
+    store64(f, doc);
+    store64(f + 8, 0);
+    store64(f + 16, TOP);
+    return f;
+}
+
+fn flow_page(f): i64 {
+    var doc = load64(f);
+    var pg = bayan_pdf_add_page(doc, bayan_pdf_page_size_w(PDF_PAGE_A4),
+      bayan_pdf_page_size_h(PDF_PAGE_A4));
+    store64(f + 8, pg);
+    store64(f + 16, TOP);
+    return pg;
+}
+
+# Reserve vertical space, starting a new page when this line would not fit.
+fn flow_room(f, need): i64 {
+    if (load64(f + 8) == 0) { flow_page(f); }
+    if (load64(f + 16) - need < BOTTOM) { flow_page(f); }
+    return load64(f + 8);
+}
+
+# One line of text at the current cursor, advancing it.
+fn flow_line(f, font, size, s: Str): i64 {
+    var lead = size + (size / 4);
+    var pg = flow_room(f, lead);
+    bayan_pdf_text_at(pg, font, size, LEFT, load64(f + 16), s);
+    store64(f + 16, load64(f + 16) - lead);
+    return 0;
+}
+
+# A paragraph, wrapped by MEASURED width. This is the call that makes the
+# right edge land inside the column regardless of which characters appear:
+# 80 characters of 'l' and 80 of 'W' differ by 4.26x in Helvetica.
+fn flow_para(f, font, size, s: Str): i64 {
+    var lines = bayan_pdf_wrap(font, size, COLUMN, s);
+    var i = 0;
+    while (i < vec_len(lines)) {
+        flow_line(f, font, size, vec_get(lines, i));
+        i = i + 1;
+    }
+    store64(f + 16, load64(f + 16) - (size / 2));
+    return 0;
+}
+
+fn flow_heading(f, s: Str): i64 {
+    store64(f + 16, load64(f + 16) - 6000);
+    flow_line(f, PDF_FONT_HELVETICA_BOLD, 15000, s);
+    return 0;
+}
+
+# A horizontal rule across the column.
+fn flow_rule(f): i64 {
+    var pg = flow_room(f, 8000);
+    var y = load64(f + 16);
+    bayan_pdf_set_line_width(pg, 400);
+    bayan_pdf_move_to(pg, LEFT, y);
+    bayan_pdf_line_to(pg, LEFT + COLUMN, y);
+    bayan_pdf_stroke(pg);
+    store64(f + 16, y - 8000);
+    return 0;
+}
+
+fn main(): i64 {
+    args_init();
+    alloc_init();
+
+    if (argc() < 2) { say("usage: pdf-report <out.pdf>\n"); return 1; }
+    var out = argv(1);
+
+    # bayan_pdf_set_deflate(&zlib_compress);   # with lib/sankoch.cyr included
+
+    var doc = bayan_pdf_new();
+    if (doc == 0) { say("could not create the document\n"); return 1; }
+
+    bayan_pdf_set_info(doc, "Title", str_from("A bayan report"));
+    bayan_pdf_set_info(doc, "Author", str_from("bayan"));
+    # bayan_pdf_set_compress(doc, 1);
+
+    var f = flow_new(doc);
+
+    flow_line(f, PDF_FONT_HELVETICA_BOLD, 24000, str_from("A bayan report"));
+    flow_rule(f);
+
+    flow_heading(f, str_from("Why measured wrapping"));
+    flow_para(f, PDF_FONT_TIMES_ROMAN, 11000,
+      str_from("A proportional typeface gives every glyph its own advance width, so counting characters tells you almost nothing about how wide a line will be. In Helvetica at eleven points, eighty narrow letters occupy about a hundred and ninety-five points while eighty capital Ws occupy eight hundred and thirty-one — more than four times as much, and far past the right edge of this column. Wrapping by measurement removes the guess."));
+
+    flow_heading(f, str_from("Why encoding is declared"));
+    flow_para(f, PDF_FONT_TIMES_ROMAN, 11000,
+      str_from("A font object with no encoding falls back to StandardEncoding, in which only fifty-four of the high codes exist at all. Text written as raw bytes into such a font loses accents, quotation marks and dashes silently. bayan declares WinAnsiEncoding and transcodes to match, so what you wrote is what renders."));
+
+    flow_heading(f, str_from("A monospaced sample"));
+    flow_line(f, PDF_FONT_COURIER, 10000, str_from("var doc = bayan_pdf_new();"));
+    flow_line(f, PDF_FONT_COURIER, 10000, str_from("var pg  = bayan_pdf_add_page(doc, w, h);"));
+    flow_line(f, PDF_FONT_COURIER, 10000, str_from("bayan_pdf_text_at(pg, font, size, x, y, s);"));
+
+    # Enough filler to force a second page, exercising pagination.
+    var i = 0;
+    while (i < 12) {
+        flow_para(f, PDF_FONT_TIMES_ROMAN, 11000,
+          str_from("Every byte offset in the cross-reference table is measured from the output builder immediately before the object it names is appended, and re-checked against the bytes it points at before the document is returned."));
+        i = i + 1;
+    }
+
+    if (bayan_pdf_write_file(doc, out) != 0) {
+        say("write failed: ");
+        say(bayan_pdf_doc_error(doc));
+        say("\n");
+        return 1;
+    }
+
+    # --- read it back -------------------------------------------------------
+    # Checking your own output through your own reader proves consistency, not
+    # correctness — for the latter, run scripts/pdfcheck.py over the file.
+    var back = bayan_pdf_parse_file(out);
+    if (back == 0) {
+        say("the file we just wrote will not parse: ");
+        say(bayan_pdf_last_error());
+        say("\n");
+        return 1;
+    }
+
+    var b[24];
+    say("wrote ");
+    say(out);
+    say(" — pages: ");
+    var l = fmt_int_buf(bayan_pdf_page_count(back), &b);
+    print(&b, l);
+    say(", extracted text: ");
+    l = fmt_int_buf(str_len(bayan_pdf_extract_text(back)), &b);
+    print(&b, l);
+    say(" bytes\n");
+    return 0;
+}
+
+var r = main();
+syscall(SYS_EXIT, r);

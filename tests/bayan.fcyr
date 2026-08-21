@@ -1,13 +1,129 @@
-# bayan fuzz harness
+# bayan fuzz harness — the PDF reader over hostile bytes.
+#
+# Until 1.5.0 this file fed a 4-byte literal into a body that returned
+# immediately, so the CI fuzz gate was a false green. A parser that reads
+# untrusted binary — a cross-reference table whose offsets are attacker-chosen,
+# a /Length that need not match its stream, an object graph that can reference
+# itself — is exactly the shape fuzzing exists for, so that is what it now runs.
+#
+# The corpus is the checked-in fixture set, and each file is fed in whole and
+# then systematically damaged: truncated at every fraction, and byte-flipped at
+# a stride across its whole length. The contract under test is NOT that the
+# parse succeeds — most of these inputs are meaningless — but that it never
+# reads out of bounds, never loops forever, and never aborts the process. Every
+# rejection must come back as a value.
+#
+# No inflate hook is installed on purpose: a Flate stream must then fail
+# loudly rather than dispatch through a null function pointer.
+
+# NOTE: a file carrying include directives skips the [deps].stdlib
+# auto-prepend, so the stdlib prerequisites are listed explicitly here, exactly
+# as src/main.cyr does.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+
+include "src/pdf.cyr"
 
 fn fuzz_main(data, len) {
     if (len == 0) { return 0; }
+
+    # A whole-document parse: header, cross-reference, trailer, page tree.
+    var d = bayan_pdf_parse_buf(data, len);
+    if (d != 0) {
+        # Walk what it claims to hold. Page count comes from the file, so it
+        # is attacker-controlled; cap the walk rather than trusting it.
+        var n = bayan_pdf_page_count(d);
+        var i = 0;
+        while (i < n && i < 16) {
+            var pg = bayan_pdf_page(d, i);
+            if (pg != 0) {
+                bayan_pdf_page_extract_text(d, pg);
+                var mb: i64[4];
+                bayan_pdf_page_media_box(pg, &mb);
+            }
+            i = i + 1;
+        }
+        # Resolve object numbers straight out of the cross-reference.
+        var m = bayan_pdf_obj_count(d);
+        var k = 0;
+        while (k < m && k < 64) {
+            var o = bayan_pdf_obj(d, k);
+            if (o != 0) { bayan_pdf_resolve(d, o); }
+            k = k + 1;
+        }
+    }
+
+    # The object grammar on its own, which is reachable without a valid file.
+    bayan_pdf_obj_parse_buf(data, len);
+    return 0;
+}
+
+# Feed one buffer whole, then truncated, then byte-flipped at a stride.
+fn fuzz_file(path: cstring, buf, cap) {
+    var len = file_read_all(path, buf, cap);
+    if (len <= 0) { return 0; }
+
+    fuzz_main(buf, len);
+
+    # Truncation: every prefix that is a sixteenth of the file. Catches the
+    # whole family of "read past the end of a span" bugs, and in particular a
+    # cross-reference or stream whose declared length outruns the buffer.
+    var t = 1;
+    while (t < 16) {
+        fuzz_main(buf, (len * t) / 16);
+        t = t + 1;
+    }
+
+    # Single-byte damage across the file. A stride keeps the run bounded while
+    # still landing inside the header, the object bodies, the xref digits, and
+    # the trailer.
+    var step = len / 64;
+    if (step < 1) { step = 1; }
+    var i = 0;
+    while (i < len) {
+        var save = load8(buf + i);
+        store8(buf + i, 255 - save);
+        fuzz_main(buf, len);
+        store8(buf + i, save);
+        i = i + step;
+    }
     return 0;
 }
 
 fn main() {
     alloc_init();
-    fuzz_main("test", 4);
+
+    var cap = 1048576;
+    var buf = alloc(cap);
+    if (buf == 0) { println("fuzz: allocation failed"); return 1; }
+
+    fuzz_file("tests/fixtures/pdf/ref-good.pdf", buf, cap);
+    fuzz_file("tests/fixtures/pdf/ref-3page.pdf", buf, cap);
+    fuzz_file("tests/fixtures/pdf/ref-flate.pdf", buf, cap);
+    fuzz_file("tests/fixtures/pdf/ref-15-objstm.pdf", buf, cap);
+    fuzz_file("tests/fixtures/pdf/bad-xref.pdf", buf, cap);
+    fuzz_file("tests/fixtures/pdf/bad-length.pdf", buf, cap);
+    fuzz_file("tests/fixtures/pdf/bad-size.pdf", buf, cap);
+    fuzz_file("tests/fixtures/pdf/bad-huge-length.pdf", buf, cap);
+
+    # Degenerate inputs that skip the corpus entirely.
+    fuzz_main("", 0);
+    fuzz_main("%PDF-1.4", 8);
+    fuzz_main("%PDF-1.4\nstartxref\n999999999\n%%EOF\n", 36);
+    fuzz_main("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", 32);
+    fuzz_main("[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[", 32);
+    fuzz_main("1 0 R", 5);
+    fuzz_main("(((((((((((((((((((((((((((((((", 31);
+
     println("fuzz: ok");
     return 0;
 }

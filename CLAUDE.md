@@ -8,7 +8,7 @@
 
 ## Project Identity
 
-**bayan** — bayan — TODO
+**bayan** — data-format, document and big-integer distfile for the AGNOS-lineage Cyrius ecosystem
 
 - **Type**: Binary
 - **License**: GPL-3.0-only
@@ -18,7 +18,17 @@
 
 ## Goal
 
-_TODO: one-or-two-sentence mission statement. What does bayan OWN in the stack? Durable — doesn't change per release._
+bayan owns the **data-domain modules that do not belong in a primitives-only
+stdlib floor** — parsing, serialising, and document formats — so that bare-metal
+and firmware consumers of Cyrius never drag them into a kernel object, and so
+that **no downstream project hand-rolls a second one**.
+
+That second clause is the operative half. Every module here exists because some
+consumer had already written an interim version: mneme hand-rolled YAML
+frontmatter, a markdown subset, and a PDF writer; agnosai hand-rolled definition
+loading. bayan's job is to make those hand-rolls deletable — which means the
+replacement has to be *better*, not merely shared, and the CHANGELOG should say
+which defect each design choice answers.
 
 ## Current State
 
