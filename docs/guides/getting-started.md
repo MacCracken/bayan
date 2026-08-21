@@ -53,6 +53,11 @@ Two things to know before you start:
   README, and [ADR-0001](../adr/0001-flate-via-hooks-not-a-sankoch-dependency.md)
   for why it works this way.
 
+`scripts/check-widths.py` verifies the checked-in font metrics using nothing
+but the Python stdlib, and is what CI gates on. `scripts/gen-widths.py`
+*regenerates* them from groff's Adobe metrics and is only needed when the
+tables actually change — install groff for that.
+
 `scripts/pdfcheck.py` is the acceptance oracle and is deliberately stricter
 than a viewer: it validates every cross-reference offset against the byte it
 claims to point at, where poppler and mupdf would silently rebuild a broken

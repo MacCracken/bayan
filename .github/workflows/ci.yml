@@ -191,10 +191,33 @@ jobs:
           test "$fail" -eq 0
           echo "all $(ls tests/fixtures/pdf/*.pdf | wc -l) pdf fixtures behave as intended"
 
-      # The generated font metrics must stay reproducible from their source.
-      - name: PDF — font metric tables regenerate identically
+      # Correctness of the checked-in font metrics, with NO external
+      # dependency. scripts/gen-widths.py derives them from groff's
+      # afmtodit-generated Adobe metrics and therefore needs groff installed —
+      # the wrong dependency for a gate, and it failed here for exactly that
+      # reason (a hardcoded /usr/share/groff/<version>/ path that existed only
+      # on the authoring machine). This checker decodes the tables out of
+      # src/pdf.cyr and validates them against documented Adobe widths and
+      # Python's own cp1252 codec, so it always runs. It is mutation-tested:
+      # corrupting a width, filling an undefined code, truncating a table, or
+      # breaking the WinAnsi block are each caught.
+      - name: PDF — font metric tables are correct
         run: |
           set -euo pipefail
+          python3 scripts/check-widths.py src/pdf.cyr
+
+      # Strictly stronger, but only possible where groff is present: prove the
+      # tables still regenerate byte-for-byte from their actual source. Skipped
+      # rather than failed when groff is absent, because its absence says
+      # nothing about whether the tables are right.
+      - name: PDF — font metric tables regenerate identically (if groff present)
+        run: |
+          set -euo pipefail
+          if ! ls -d /usr/share/groff/*/font/devps >/dev/null 2>&1; then
+            echo "groff devps metrics not installed — skipping the regeneration diff;"
+            echo "the correctness check above already ran."
+            exit 0
+          fi
           python3 scripts/gen-widths.py "${RUNNER_TEMP}/w.cyr"
           diff <(grep -oE '^var _PDF_W[A-Z_]* = "[^"]*"' "${RUNNER_TEMP}/w.cyr") \
                <(grep -oE '^var _PDF_W[A-Z_]* = "[^"]*"' src/pdf.cyr) \

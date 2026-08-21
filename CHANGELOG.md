@@ -126,8 +126,32 @@ mutation-tested — a corrupted xref offset, a `/Length` off by one, and a stale
 before it was trusted: a `\s*endstream` match that let an off-by-one `/Length`
 slide through, and a tuple/int comparison that crashed on any PDF-1.5 file.
 
-`scripts/gen-pdf-fixtures.py` generates the eight checked-in fixtures — five
-that must parse and three corrupted ones that must be refused.
+`scripts/gen-pdf-fixtures.py` generates the checked-in fixtures — the `ref-*`
+ones must parse and the `bad-*` ones must be refused, and CI asserts BOTH
+directions. A validator that quietly goes lenient passes every happy-path check
+ever written; the polarity assertion is the only step that would notice.
+
+**Font metrics are verified without needing groff.** `scripts/gen-widths.py`
+*derives* the tables from groff's afmtodit-generated Adobe metrics, so it needs
+groff installed — the wrong dependency for a gate, and it broke CI on the first
+run for exactly that reason: a hardcoded `/usr/share/groff/<version>/` path
+that existed only on the authoring machine. Two changes:
+
+- the generator now **discovers** groff's font directory across the usual
+  roots instead of pinning a version, and fails with an actionable message
+  rather than a `FileNotFoundError` traceback;
+- `scripts/check-widths.py` is new and is what CI actually gates on. It decodes
+  the tables straight out of `src/pdf.cyr` and checks them against documented
+  Adobe Core-14 widths and Python's own `cp1252` codec — no groff, no network,
+  stdlib only. The byte-for-byte regeneration diff still runs, but only where
+  groff is present, and is skipped rather than failed when it is not: groff's
+  absence says nothing about whether the tables are right.
+
+The checker is mutation-tested — corrupting a width, filling one of the five
+undefined CP1252 codes, truncating a table, and breaking the WinAnsi block are
+each caught. It also found its own first bug on contact with real data: it
+applied the undefined-codes rule to Symbol and ZapfDingbats, which are symbolic
+faces carrying their own built-in encodings where those codes are real glyphs.
 
 ### Fixed before release — an adversarial review of the new module
 

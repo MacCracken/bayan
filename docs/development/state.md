@@ -297,9 +297,19 @@ Four gates were added at 1.5.0, and the shape of each is worth keeping:
 - **The fixture-polarity gate asserts the `bad-*` fixtures still FAIL.** A
   validator that quietly goes lenient passes every happy-path check ever
   written; this is the only step that would notice.
-- **The metric-table gate re-runs `scripts/gen-widths.py`** and diffs its output
-  against what is in `src/pdf.cyr`, so the generated data cannot drift from its
-  generator.
+- **The metric-table gate does not depend on groff.** The first version did —
+  it re-ran `scripts/gen-widths.py`, which reads groff's afmtodit-generated
+  Adobe metrics from a hardcoded `/usr/share/groff/<version>/` path — and it
+  failed on CI immediately, because that path is a fact about one laptop.
+  The lesson generalises past this one script: **a gate must not depend on a
+  package the property under test does not depend on.** The tables are checked
+  into the repo; whether they are CORRECT is a question about their contents,
+  not about what is installed. So `scripts/check-widths.py` decodes them out of
+  `src/pdf.cyr` and validates against documented Adobe widths plus Python's own
+  `cp1252` codec (stdlib only, always runs), while the stronger byte-for-byte
+  regeneration diff runs only where groff exists and is *skipped* rather than
+  failed when it does not. The checker is mutation-tested against four distinct
+  corruptions.
 - **The naming-hazard gate** forbids a bare `_pdf_<word>` helper (mneme defines
   14 of them and a duplicate fn name in cyrius silently rebinds even earlier
   call sites) and the reserved `_int` / `_cstr` / `_ptr` / `_str` overload-slot

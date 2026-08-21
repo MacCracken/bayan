@@ -14,7 +14,41 @@ byte, because WinAnsi is what the writer will declare on its /Font objects.
 """
 import os, sys, re
 
-DEVPS = "/usr/share/groff/1.24.1/font/devps"
+def _find_devps():
+    """Locate groff's devps font directory.
+
+    NEVER hardcode a groff version here: "/usr/share/groff/1.24.1/..." is
+    whatever happened to be on the machine that first ran this, and it broke CI
+    immediately (the runner has a different groff, or none). Search the usual
+    roots, newest version last so it wins.
+    """
+    import glob
+    pats = [
+        "/usr/share/groff/current/font/devps",
+        "/usr/share/groff/*/font/devps",
+        "/usr/local/share/groff/*/font/devps",
+        "/opt/homebrew/share/groff/*/font/devps",
+        "/usr/lib/groff/font/devps",
+    ]
+    found = []
+    for pat in pats:
+        for d in sorted(glob.glob(pat)):
+            if os.path.isfile(os.path.join(d, "HR")):
+                found.append(d)
+    if not found:
+        raise SystemExit(
+            "gen-widths.py: no groff devps font directory found.\n"
+            "  These tables are derived from Adobe's AFM metrics via groff's\n"
+            "  afmtodit-generated font files. Install groff (Debian/Ubuntu:\n"
+            "  `apt-get install groff`; macOS: `brew install groff`) and re-run.\n"
+            "  NOTE: regenerating is only needed when the tables change. To\n"
+            "  VERIFY the checked-in tables, run scripts/check-widths.py, which\n"
+            "  needs no groff at all."
+        )
+    return found[-1]
+
+
+DEVPS = _find_devps()
 
 # The standard 14, in the order bayan will number them.
 FONTS_SRC = [
