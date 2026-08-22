@@ -6,50 +6,49 @@
 
 ## Version
 
-**1.5.0** — **PDF read/write, `bayan_pdf_*`.** The roadmap's P2 item ships as
-`src/pdf.cyr`: 9,348 lines, 152 public functions, the largest module in the
-bundle by a wide margin and the first that is neither a stdlib carve nor a
-text-format parser. Writer and reader both. Cyrius pin `6.5.28` → `6.5.33`.
+**1.5.1** — **P-1 security and hardening sweep.** Twenty confirmed defects
+across every module, each reproduced before it was fixed, plus four found by
+hand while writing the first tests three modules had ever had. No API changed;
+two behaviours are deliberately stricter (see the CHANGELOG).
 
-The module is shaped by a close reading of **mneme**'s hand-rolled writer,
-which it supersedes. That reading found the structural layer correct — the
-byte-exact `/Length`, the 20-byte xref entries, one `BT`/`ET` per line — and
-the typography layer wrong: an 80-**character** wrap in a proportional face
-(a measured 4.26× spread, running 308 pt off a 595 pt page at worst), no
-`/Encoding` on the font (so `Résumé` renders `RÃ©sumÃ©` and an em-dash
-vanishes), no compression, and silent failure on write. bayan fixes each,
-and the CHANGELOG records which mneme defect each choice answers.
+**The finding that reframes the rest.** Eight of ten modules were carved
+byte-identical out of cyrius's stdlib at 1.0.0. Their tests stayed behind, and
+`csv` (0/3), `cyml` (0/17) and `bigint` (0/20) were referenced by **no test in
+bayan's own suite** — on the standing assumption that their coverage still
+lived upstream. It does not. bayan has owned that code since the carve;
+`lib/csv.cyr` no longer ships in cyrius at all, and the fold is how a fix
+reaches it. Writing csv's first test found **two heap buffer overflows** in the
+first hour.
 
-**The module was reviewed adversarially before release, and that pass was not
-ceremonial.** Five lenses over the new code, every finding handed to a separate
-agent told to refute it: eighteen candidates, **ten survived with a
-reproducer**, all ten fixed. One was a **remote SIGSEGV from a 428-byte file**
-— a `/Length` near i64 max made an additive bounds check wrap negative, so the
-guard passed and the reader dereferenced ~9.2 exabytes below its buffer. It is
-now `bad-huge-length.pdf` in the fixture set and a mutation-verified assertion
-in the suite. The lesson to carry: 446 passing assertions, a strict external
-validator, and a fuzz harness all reported green on that code. None of them
-generate a near-i64-max integer, and none of them were looking for wraparound.
+> **A carved module whose tests stayed behind is not "covered elsewhere". It is
+> uncovered.** That sentence is the durable output of this release.
 
-Two more things worth carrying forward as habits rather than facts:
+What the sweep cost is worth recording next to what it found: the audit ran
+against modules that had built clean, linted clean, and passed every gate for
+five releases. Severity was not correlated with module size — the two overflows
+were in a **99-line** file.
 
-- **Byte offsets are measured, never predicted.** mneme's `var offset = 9;` is
-  `len("%PDF-1.4\n")` and is correct only until a second header line exists.
-  bayan reads each offset off the output builder immediately before appending
-  the object, then re-checks every recorded offset against the bytes it names
-  before `to_bytes` returns.
-- **The acceptance oracle was mutation-tested before it was trusted**, and
-  that exercise found two bugs *in the oracle*: a `\s*endstream` match that let
-  an off-by-one `/Length` slide through, and a tuple/int comparison that
-  crashed on every PDF-1.5 file. A gate you have not tried to fool is not a
-  gate.
+The worst four, with their measurements:
 
-Before that: 1.4.2 was toolchain + CI (pin `6.5.16` → `6.5.28`, 4 CI steps to a
-full gate); 1.4.1 armed the Str→cstring diagnostic on `bayan_json_v_obj_get`;
-1.4.0 completed the allocator-threaded (`_a`) JSON value surface; 1.3.0 renamed
+| Defect | Measured |
+|---|---|
+| `json` sized every string buffer from the whole remaining document | 1 MB input → **125 GB heap / 46 GB RSS**; quadratic, and worst on the *streaming* parser, whose stated purpose is bounded memory |
+| `bigint` `u256_mul` dropped carries | **220 of 400** random products wrong; 53/100 mulmods under Curve25519's p. Single-limb inputs were all correct, which is why the old tests passed |
+| `csv` wrote past fixed buffers | **2,976** and **5,912** bytes past the end, content and length attacker-controlled |
+| `base64_decode("=", 1)` | SIGSEGV — `out_len` went to −1, `alloc(0)` returned 0, terminator written through address −1 |
+
+Method, since it is reusable: five lenses per module (bounds, overflow,
+termination, byte accounting, silent wrong answers), every finding handed to a
+separate reviewer told to **refute** it, and nothing fixed without a reproducer
+that produced a number. Six findings were correctly refuted. Every fix that
+could be is mutation-verified — revert it, watch the regression test report the
+original measurement.
+
+Before that: 1.5.0 added `bayan_pdf_*` (writer + reader) and moved the pin to
+6.5.33; 1.4.2 was toolchain + CI; 1.4.1 armed the Str→cstring diagnostic on
+`bayan_json_v_obj_get`; 1.4.0 completed the `_a` JSON surface; 1.3.0 renamed
 the cstr+len parse entries `_str` → `_buf`; 1.2.1 made float serialization
-round-trip-correct (Grisu2); 1.2.0 added `yaml`. Carved from cyrius stdlib at
-1.0.0 (2026-06-10).
+round-trip-correct; 1.2.0 added `yaml`. Carved from cyrius stdlib at 1.0.0.
 
 ## Toolchain
 
@@ -176,7 +175,11 @@ global-bump growth; the assertion that pins this is mutation-verified.
   confirmed, so each has a regression guard with a known failure mode rather
   than a hypothetical one.
 
-  **433 asserts, green** on cycc 6.5.33.
+  1.5.1 adds groups for `csv`, `bigint` and `cyml` — the three modules that had
+  none — and a regression guard for all twenty sweep defects, each pinned to the
+  measurement that confirmed it.
+
+  **525 asserts, green** on cycc 6.5.33.
 - `tests/pdf_flate.tcyr` — the compression path, isolated because it is the
   only test that pulls in `lib/sankoch.cyr`. The main suite proves the
   hook-ABSENT contract (valid uncompressed output, a loud reader error); this
@@ -226,9 +229,9 @@ than after it.
 | `u128.cyr`   | 3/35  |
 | `base64.cyr` | 2/4   |
 | `dtoa.cyr`   | 2/3   |
-| `bigint.cyr` | **0/20** |
-| `cyml.cyr`   | **0/17** |
-| `csv.cyr`    | **0/3**  |
+| `bigint.cyr` | covered (was 0/20) |
+| `cyml.cyr`   | covered (was 0/17) |
+| `csv.cyr`    | 12/3 → covered |
 
 ## CI
 
@@ -337,9 +340,11 @@ were fixed in 1.4.2 (toml warnings, lint); **item 1 of this list was fixed in
    [2026-08-19](issues/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md).
    Held in `consumer-check.sh`'s `EXPECTED_FAIL`, which fails if either starts
    passing.
-3. **`bigint` (0/20), `cyml` (0/17) and `csv` (0/3) are referenced by no test
-   in bayan's own suite** — their coverage still lives upstream in cyrius,
-   which is where it was before the carve. bayan owns them now.
+3. ~~**`bigint`, `cyml` and `csv` are referenced by no test in bayan's own
+   suite.**~~ **Fixed in 1.5.1**, and it was not a paperwork gap: writing those
+   first tests surfaced two heap overflows, an out-of-bounds read, and a silent
+   256-entry truncation. What remains is that `u128` (3/35), `toml` (6/17) and
+   `dtoa` (2/3) are still thin.
 4. **`lib/bayan.cyr` is bayan's own fold vendored back into bayan's own
    `lib/`** (1.4.1, from the pinned snapshot). Nothing in `src/`, `tests/`, or
    `cyrius.cyml` includes it, so it is inert — but it defines the same symbols
@@ -364,6 +369,19 @@ were fixed in 1.4.2 (toml warnings, lint); **item 1 of this list was fixed in
    items are marked shipped. Benchmarks and a real fuzz harness were two of the
    unticked criteria and are now met.
 8. ~~**`CLAUDE.md` Project Identity and Goal are still `TODO`.**~~ **Fixed in 1.5.0.**
+9. **The two flat lookup APIs disagree about their key type.**
+   `bayan_json_get(pairs, key)` compares with `str_eq` and needs a **`Str`**;
+   `bayan_toml_get(pairs, key)` compares with `str_eq_cstr` and needs a
+   **cstring**. Passing the wrong one yields a silent "not found" — the exact
+   trap 1.4.1 armed a diagnostic for on `bayan_json_v_obj_get`. toml's doc
+   comment actively claimed either form worked; that comment is corrected in
+   1.5.1, but reconciling the signatures is a breaking change and wants its own
+   release. Both were hit while writing 1.5.1's probes, which is how the
+   comment came to be checked.
+10. **`u128` (3/35), `toml` (6/17) and `dtoa` (2/3) remain thinly tested.**
+   1.5.1 closed the three modules at zero; these are the next tier, and the
+   sweep's own result argues they are worth doing before the next fold rather
+   than after.
 
 ## Scripts
 

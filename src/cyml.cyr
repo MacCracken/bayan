@@ -42,13 +42,13 @@ fn bayan_cyml_entry_new(hp, hl, bp, bl): i64 {
 }
 
 # Get TOML header pointer from a CymlEntry
-fn bayan_cyml_entry_header(e) : i64 { return load64(e); }
+fn bayan_cyml_entry_header(e) : i64 { if (e == 0) { return 0; } return load64(e); }
 # Get TOML header byte length from a CymlEntry
-fn bayan_cyml_entry_header_len(e) : i64 { return load64(e + 8); }
+fn bayan_cyml_entry_header_len(e) : i64 { if (e == 0) { return 0; } return load64(e + 8); }
 # Get markdown body pointer from a CymlEntry
-fn bayan_cyml_entry_body(e) : i64 { return load64(e + 16); }
+fn bayan_cyml_entry_body(e) : i64 { if (e == 0) { return 0; } return load64(e + 16); }
 # Get markdown body byte length from a CymlEntry
-fn bayan_cyml_entry_body_len(e) : i64 { return load64(e + 24); }
+fn bayan_cyml_entry_body_len(e) : i64 { if (e == 0) { return 0; } return load64(e + 24); }
 
 # v5.8.36 — Allocator-as-first-arg variant of bayan_cyml_doc_new.
 # Allocates the 32-byte doc struct via `a`. Returns 0 on OOM.
@@ -69,17 +69,29 @@ fn bayan_cyml_doc_new(): i64 {
 }
 
 # Get file-level TOML header pointer from a CymlDoc
-fn bayan_cyml_doc_header(d) : i64 { return load64(d); }
+fn bayan_cyml_doc_header(d) : i64 { if (d == 0) { return 0; } return load64(d); }
 # Get file-level TOML header byte length from a CymlDoc
-fn bayan_cyml_doc_header_len(d) : i64 { return load64(d + 8); }
+fn bayan_cyml_doc_header_len(d) : i64 { if (d == 0) { return 0; } return load64(d + 8); }
 # Get entries array pointer from a CymlDoc
-fn bayan_cyml_doc_entries(d) : i64 { return load64(d + 16); }
+fn bayan_cyml_doc_entries(d) : i64 { if (d == 0) { return 0; } return load64(d + 16); }
 # Get number of entries in a CymlDoc
-fn bayan_cyml_doc_entry_count(d) : i64 { return load64(d + 24); }
+fn bayan_cyml_doc_entry_count(d) : i64 { if (d == 0) { return 0; } return load64(d + 24); }
 
 # Get entry N from a doc (returns CymlEntry pointer)
+# BOUNDS (fixed in 1.5.1 — this was an out-of-bounds read). The body was bare
+# pointer arithmetic, `load64(load64(d + 16) + n * 8)`, with no check on `d`
+# and none on `n`. A negative index read BEFORE the entry array and a large one
+# read past it, and because this does raw loads rather than `vec_get` it does
+# not abort — it returns whatever those bytes hold as a CymlEntry pointer,
+# which the caller then dereferences. Found by writing the module's first test:
+# `bayan_cyml_doc_entry(d, 0 - 1)` returned a live-looking pointer.
 fn bayan_cyml_doc_entry(d, n): i64 {
-    return load64(load64(d + 16) + n * 8);
+    if (d == 0) { return 0; }
+    if (n < 0)  { return 0; }
+    if (n >= load64(d + 24)) { return 0; }
+    var entries = load64(d + 16);
+    if (entries == 0) { return 0; }
+    return load64(entries + n * 8);
 }
 
 # Check if data[pos..] starts with "\n---\n" (or "---\n" at pos==0)
@@ -101,40 +113,45 @@ fn _cyml_is_delim(data, len, pos): i64 {
     return 1;
 }
 
-# Check if data[pos..] starts with "\n[[entries]]\n" (or "[[entries]]\n" at pos==0)
+# 1 when the literal `[[entries]]\n` sits at `at`.
+fn _cyml_marker_at(data, len, at): i64 {
+    if (at + 12 > len) { return 0; }
+    if (load8(data + at)      != 91)  { return 0; }   # [
+    if (load8(data + at + 1)  != 91)  { return 0; }   # [
+    if (load8(data + at + 2)  != 101) { return 0; }   # e
+    if (load8(data + at + 3)  != 110) { return 0; }   # n
+    if (load8(data + at + 4)  != 116) { return 0; }   # t
+    if (load8(data + at + 5)  != 114) { return 0; }   # r
+    if (load8(data + at + 6)  != 105) { return 0; }   # i
+    if (load8(data + at + 7)  != 101) { return 0; }   # e
+    if (load8(data + at + 8)  != 115) { return 0; }   # s
+    if (load8(data + at + 9)  != 93)  { return 0; }   # ]
+    if (load8(data + at + 10) != 93)  { return 0; }   # ]
+    if (load8(data + at + 11) != 10)  { return 0; }   # \n
+    return 1;
+}
+
+# Check if data[pos..] starts with "\n[[entries]]\n" (or "[[entries]]\n" at
+# pos == 0).
+#
+# OFFSET 0 (fixed in 1.5.1 — this dropped an entry). The pos == 0 case used to
+# test ONLY for the marker at byte 0 and then return, so a document beginning
+# with a newline never matched: the marker at byte 1 needed the newline form,
+# but that form was only reachable for pos > 0 and the newline was at pos 0.
+# Measured: "\n[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n" gave
+# entry_count 1, against 2 for the identical text without the leading newline —
+# and the lost entry's 22 bytes were silently folded into the file header.
+# A leading blank line is not a syntax error in any format, so it must not
+# change what parses.
 fn _cyml_is_entries(data, len, pos): i64 {
-    # "[[entries]]" = 11 chars + newline before and after
     if (pos == 0) {
-        if (len < 12) { return 0; }
-        if (load8(data) != 91) { return 0; }       # [
-        if (load8(data+1) != 91) { return 0; }     # [
-        if (load8(data+2) != 101) { return 0; }    # e
-        if (load8(data+3) != 110) { return 0; }    # n
-        if (load8(data+4) != 116) { return 0; }    # t
-        if (load8(data+5) != 114) { return 0; }    # r
-        if (load8(data+6) != 105) { return 0; }    # i
-        if (load8(data+7) != 101) { return 0; }    # e
-        if (load8(data+8) != 115) { return 0; }    # s
-        if (load8(data+9) != 93) { return 0; }     # ]
-        if (load8(data+10) != 93) { return 0; }    # ]
-        if (load8(data+11) != 10) { return 0; }    # \n
-        return 1;
+        # A marker flush against the start of the document.
+        if (_cyml_marker_at(data, len, 0) == 1) { return 1; }
+        # Otherwise fall through: byte 0 may itself be the preceding newline.
     }
     if (pos + 13 > len) { return 0; }
-    if (load8(data+pos) != 10) { return 0; }       # \n
-    if (load8(data+pos+1) != 91) { return 0; }     # [
-    if (load8(data+pos+2) != 91) { return 0; }     # [
-    if (load8(data+pos+3) != 101) { return 0; }    # e
-    if (load8(data+pos+4) != 110) { return 0; }    # n
-    if (load8(data+pos+5) != 116) { return 0; }    # t
-    if (load8(data+pos+6) != 114) { return 0; }    # r
-    if (load8(data+pos+7) != 105) { return 0; }    # i
-    if (load8(data+pos+8) != 101) { return 0; }    # e
-    if (load8(data+pos+9) != 115) { return 0; }    # s
-    if (load8(data+pos+10) != 93) { return 0; }    # ]
-    if (load8(data+pos+11) != 93) { return 0; }    # ]
-    if (load8(data+pos+12) != 10) { return 0; }    # \n
-    return 1;
+    if (load8(data + pos) != 10) { return 0; }
+    return _cyml_marker_at(data, len, pos + 1);
 }
 
 # Trim leading/trailing whitespace from a (ptr, len) pair.
@@ -163,27 +180,48 @@ fn _cyml_trim(ptr, len, out_ptr, out_len): i64 {
 # data = pointer to buffer, len = byte length.
 fn bayan_cyml_parse(data, len): i64 {
     var doc = bayan_cyml_doc_new();
-    # Collect entry positions: up to 256 entries
-    # 256 eight-byte slots = 2048 BYTES. A function-local `var X[N]` is N
-    # BYTES (not N i64 slots), so this MUST be [2048] to hold the 256 entries
-    # the `entry_count >= 256` cap (below) permits. [256] was a 1792-byte OOB
-    # stack write from untrusted CYML (8-byte stride × 256). See CHANGELOG [6.0.79].
-    var entry_starts[2048];  # byte offsets of [[entries]] markers (256 × 8B)
-    var entry_count = 0;
 
-    # Scan for [[entries]] markers
+    # Entry offsets, in TWO PASSES (1.5.1 — this was a silent truncation).
+    #
+    # The previous form used a 2048-byte stack array holding 256 eight-byte
+    # slots and stopped scanning at the 256th marker, so a document with more
+    # entries than that parsed "successfully" and simply lost the rest: 300
+    # blocks in, 256 reported, 44 gone with no error. Raising the constant
+    # would only move the cliff, so the cap is removed instead — count the
+    # markers first, allocate exactly that many slots, then fill them. Memory
+    # is now proportional to the document rather than fixed, and there is no
+    # silent boundary left to fall off.
+    #
+    # (The stack array it replaces has its own history: it was declared [256]
+    # when it needed to be [2048], because a function-local `var X[N]` is N
+    # BYTES and not N slots, which made it a 1,792-byte out-of-bounds stack
+    # write from untrusted input. See CHANGELOG [6.0.79]. Heap-allocating an
+    # exact count retires that trap along with the truncation.)
+    var entry_count = 0;
     var i = 0;
     while (i < len) {
         if (_cyml_is_entries(data, len, i) == 1) {
-            store64(&entry_starts + entry_count * 8, i);
             entry_count = entry_count + 1;
-            if (entry_count >= 256) { i = len; }
-            else {
-                if (i == 0) { i = 12; }
-                else { i = i + 13; }
-            }
+            if (i == 0) { i = 12; } else { i = i + 13; }
         } else {
             i = i + 1;
+        }
+    }
+
+    var entry_starts = 0;
+    if (entry_count > 0) {
+        entry_starts = alloc(entry_count * 8);
+        if (entry_starts == 0) { return doc; }
+        var w = 0;
+        i = 0;
+        while (i < len && w < entry_count) {
+            if (_cyml_is_entries(data, len, i) == 1) {
+                store64(entry_starts + w * 8, i);
+                w = w + 1;
+                if (i == 0) { i = 12; } else { i = i + 13; }
+            } else {
+                i = i + 1;
+            }
         }
     }
 
@@ -225,7 +263,7 @@ fn bayan_cyml_parse(data, len): i64 {
 
     # Multi-entry file
     # File header = data[0..first_entry_start]
-    var first_entry = load64(&entry_starts);
+    var first_entry = load64(entry_starts);
     if (first_entry > 0) {
         var fhp = 0; var fhl = 0;
         _cyml_trim(data, first_entry, &fhp, &fhl);
@@ -236,9 +274,9 @@ fn bayan_cyml_parse(data, len): i64 {
     var entries = alloc(entry_count * 8);
     var ei = 0;
     while (ei < entry_count) {
-        var estart = load64(&entry_starts + ei * 8);
+        var estart = load64(entry_starts + ei * 8);
         var eend = len;
-        if (ei + 1 < entry_count) { eend = load64(&entry_starts + (ei + 1) * 8); }
+        if (ei + 1 < entry_count) { eend = load64(entry_starts + (ei + 1) * 8); }
 
         # Entry header starts after "[[entries]]\n"
         var hdr_start = estart + 12;
@@ -285,10 +323,18 @@ fn bayan_cyml_parse(data, len): i64 {
 
 fn _cyml_read_file_trimmed(path): i64 {
     var buf[4096];
-    var fd = syscall(2, path, 0, 0);
+    # PORTABLE WRAPPERS, not raw syscall numbers (fixed in 1.5.1). This used
+    # `syscall(2, ...)` / `syscall(0, ...)` / `syscall(3, ...)` — the x86_64
+    # Linux numbers for open/read/close, hardcoded. On another target those
+    # numbers are different calls entirely: on agnos the "open" returned the
+    # process's own pid, the `fd < 0` guard did not fire because a pid is
+    # positive, and the following "read" terminated the process (measured exit
+    # status 102 = pid mod 256). lib/io.cyr resolves the right number per
+    # target, and bayan already depends on it.
+    var fd = file_open(path, 0, 0);
     if (fd < 0) { return 0; }
-    var n = syscall(0, fd, &buf, 4095);
-    syscall(3, fd);
+    var n = file_read(fd, &buf, 4095);
+    file_close(fd);
     if (n <= 0) { return 0; }
     # Trim trailing whitespace/newlines
     while (n > 0) {
@@ -304,10 +350,13 @@ fn _cyml_read_file_trimmed(path): i64 {
 
 fn _cyml_read_env(name, name_len): i64 {
     var ebuf[8192];
-    var fd = syscall(2, "/proc/self/environ", 0, 0);
+    # Same portability fix as _cyml_read_file_trimmed above. (The path itself
+    # is Linux-specific; a target without /proc simply fails the open, which is
+    # a clean "not found" rather than a process kill.)
+    var fd = file_open("/proc/self/environ", 0, 0);
     if (fd < 0) { return 0; }
-    var n = syscall(0, fd, &ebuf, 8191);
-    syscall(3, fd);
+    var n = file_read(fd, &ebuf, 8191);
+    file_close(fd);
     if (n <= 0) { return 0; }
     store8(&ebuf + n, 0);
     var pos = 0;
@@ -340,42 +389,91 @@ fn _cyml_read_env(name, name_len): i64 {
 
 # Expand ${file:PATH} and ${env:NAME} in a value string.
 # Returns expanded cstring (allocated). Returns input unchanged if no expansion.
+# Expand every `${file:PATH}` / `${env:NAME}` reference in `val`, returning a
+# NUL-terminated cstring. Text outside the references is preserved.
+#
+# SUBSTITUTION (fixed in 1.5.1 — this used to discard the rest of the value).
+# The previous body found the FIRST `${...}`, returned the expansion alone, and
+# threw away everything before and after it. Measured:
+#
+#   "v${file:VERSION}-beta"   -> "1.5.0"        (16 of 21 bytes dropped)
+#   "${env:HOME}:${env:USER}" -> "/home/macro"  (12 dropped, second ref ignored)
+#   "https://${env:HOST}/api" -> the host alone, scheme and path gone
+#
+# A caller building a URL or a path out of a manifest value got a silently
+# truncated string, which is the shape that turns a config typo into a request
+# to the wrong place.
+#
+# Expanded text is deliberately NOT re-scanned: substitution happens once, so a
+# file or environment variable that itself contains `${...}` cannot drive an
+# expansion loop.
 fn bayan_cyml_expand_value(val): i64 {
     if (val == 0) { return 0; }
     var len = strlen(val);
     if (len < 4) { return val; }
-    # Scan for ${
+
+    # First pass: is there anything to expand? Avoids allocating for the
+    # overwhelmingly common case of a plain value.
+    var seen = 0;
+    var q = 0;
+    while (q < len - 1) {
+        if (load8(val + q) == 36 && load8(val + q + 1) == 123) { seen = 1; q = len; }
+        else { q = q + 1; }
+    }
+    if (seen == 0) { return val; }
+
+    var sb = str_builder_new();
     var i = 0;
-    while (i < len - 1) {
-        if (load8(val + i) == 36 && load8(val + i + 1) == 123) {
-            # Found ${ — find closing }
+    while (i < len) {
+        var isref = 0;
+        if (i + 1 < len) {
+            if (load8(val + i) == 36 && load8(val + i + 1) == 123) { isref = 1; }
+        }
+        if (isref == 0) {
+            str_builder_putc(sb, load8(val + i));
+            i = i + 1;
+        } else {
             var start = i + 2;
             var end = start;
             while (end < len && load8(val + end) != 125) { end = end + 1; }
-            if (end >= len) { return val; }
-            # Extract reference: file:PATH or env:NAME
-            if (end - start > 5 && memeq(val + start, "file:", 5) == 1) {
-                # ${file:PATH}
-                var plen = end - start - 5;
-                var path = alloc(plen + 1);
-                memcpy(path, val + start + 5, plen);
-                store8(path + plen, 0);
-                var expanded = _cyml_read_file_trimmed(path);
-                if (expanded != 0) { return expanded; }
-                return val;
+            if (end >= len) {
+                # Unterminated `${` — emit it literally rather than dropping
+                # the remainder of the value.
+                str_builder_putc(sb, load8(val + i));
+                i = i + 1;
+            } else {
+                var expanded = 0;
+                if (end - start > 5 && memeq(val + start, "file:", 5) == 1) {
+                    var plen = end - start - 5;
+                    var path = alloc(plen + 1);
+                    if (path != 0) {
+                        memcpy(path, val + start + 5, plen);
+                        store8(path + plen, 0);
+                        expanded = _cyml_read_file_trimmed(path);
+                    }
+                } elif (end - start > 4 && memeq(val + start, "env:", 4) == 1) {
+                    expanded = _cyml_read_env(val + start + 4, end - start - 4);
+                }
+                if (expanded != 0) {
+                    str_builder_add(sb, str_new(expanded, strlen(expanded)));
+                } else {
+                    # Unknown scheme, or the file/variable did not resolve:
+                    # keep the reference verbatim so the caller can see what
+                    # failed instead of receiving a value with a hole in it.
+                    var k = i;
+                    while (k <= end) { str_builder_putc(sb, load8(val + k)); k = k + 1; }
+                }
+                i = end + 1;
             }
-            if (end - start > 4 && memeq(val + start, "env:", 4) == 1) {
-                # ${env:NAME}
-                var nlen = end - start - 4;
-                var expanded = _cyml_read_env(val + start + 4, nlen);
-                if (expanded != 0) { return expanded; }
-                return val;
-            }
-            return val;
         }
-        i = i + 1;
     }
-    return val;
+    var out = str_builder_build(sb);
+    var olen = str_len(out);
+    var cstr = alloc(olen + 1);
+    if (cstr == 0) { return val; }
+    memcpy(cstr, str_data(out), olen);
+    store8(cstr + olen, 0);
+    return cstr;
 }
 
 # Convenience: split a single-entry CYML buffer into header + body.

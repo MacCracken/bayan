@@ -1165,4 +1165,317 @@ assert_eq(str_eq(pdf_t1, pdf_t2), 1,
   "pdf: two documents parsed in sequence do not share cached state");
 assert_neq(bayan_pdf_page(pdf_o2, 0), 0, "pdf: and the second one is intact");
 
+# =============================================================================
+# csv / bigint / cyml (v1.5.1)
+#
+# These three modules were carved out of cyrius's stdlib at 1.0.0 and, until
+# now, were referenced by NO test in bayan's own suite — their coverage still
+# lived upstream. The 1.5.1 sweep found two heap buffer overflows in csv.cyr in
+# the first hour of actually looking, which is what an untested carved module
+# costs. bayan owns these now.
+# =============================================================================
+
+test_group("csv: fields are bounded (v1.5.1 — was a heap overflow)");
+var csv_f = bayan_csv_parse_line("a,b,c");
+assert_eq(vec_len(csv_f), 3, "csv: three fields");
+assert_eq(streq(vec_get(csv_f, 0), "a"), 1, "csv: first field");
+assert_eq(streq(vec_get(csv_f, 2), "c"), 1, "csv: last field");
+var csv_q = bayan_csv_parse_line("\"a,b\",c");
+assert_eq(vec_len(csv_q), 2, "csv: a comma inside quotes does not split");
+assert_eq(streq(vec_get(csv_q, 0), "a,b"), 1, "csv: quoted field keeps its comma");
+var csv_e = bayan_csv_parse_line("\"a\"\"b\",c");
+assert_eq(streq(vec_get(csv_e, 0), "a\"b"), 1, "csv: a doubled quote is one quote");
+
+# THE REGRESSION. Each field used to get a fixed alloc(1024) filled one byte
+# per input byte with no bound: a 4000-byte field wrote 2976 bytes past the end
+# of its allocation with attacker-controlled content. A field can never exceed
+# its line, so the buffer is now sized from the line and copied out exactly.
+var csv_big = str_builder_new();
+var csv_i = 0;
+while (csv_i < 4000) { str_builder_putc(csv_big, 65); csv_i = csv_i + 1; }
+var csv_long = str_data(str_builder_build(csv_big));
+var csv_lf = bayan_csv_parse_line(csv_long);
+assert_eq(vec_len(csv_lf), 1, "csv: a 4000-byte field is one field");
+assert_eq(strlen(vec_get(csv_lf, 0)), 4000, "csv: and survives at full length");
+# Any byte of the input pattern appearing in a block allocated afterwards is a
+# byte the parser wrote past its own allocation.
+var csv_probe = alloc(8192);
+var csv_stray = 0;
+csv_i = 0;
+while (csv_i < 8192) {
+    if (load8(csv_probe + csv_i) == 65) { csv_stray = csv_stray + 1; }
+    csv_i = csv_i + 1;
+}
+assert_eq(csv_stray, 0, "csv: nothing was written past the parser's allocations");
+
+test_group("csv: escaping and the write side (v1.5.1 — was a second overflow)");
+assert_eq(streq(bayan_csv_escape("plain"), "plain"), 1, "csv: a plain field is not quoted");
+assert_eq(streq(bayan_csv_escape("has,comma"), "\"has,comma\""), 1, "csv: a comma forces quoting");
+assert_eq(streq(bayan_csv_escape("has\"quote"), "\"has\"\"quote\""), 1, "csv: a quote is doubled");
+var csv_row = vec_new();
+vec_push(csv_row, "x");
+vec_push(csv_row, "y,z");
+assert_eq(streq(bayan_csv_write_line(csv_row), "x,\"y,z\"\n"), 1, "csv: a row round-trips");
+# The writer used a fixed alloc(4096) and memcpy'd unbounded into it.
+var csv_wide = vec_new();
+var csv_cell = alloc(501);
+csv_i = 0;
+while (csv_i < 500) { store8(csv_cell + csv_i, 66); csv_i = csv_i + 1; }
+store8(csv_cell + 500, 0);
+csv_i = 0;
+while (csv_i < 20) { vec_push(csv_wide, csv_cell); csv_i = csv_i + 1; }
+var csv_out = bayan_csv_write_line(csv_wide);
+assert_eq(strlen(csv_out), 20 * 500 + 19 + 1, "csv: a 10 KB row is written whole");
+var csv_probe2 = alloc(16384);
+csv_stray = 0;
+csv_i = 0;
+while (csv_i < 16384) {
+    if (load8(csv_probe2 + csv_i) == 66) { csv_stray = csv_stray + 1; }
+    csv_i = csv_i + 1;
+}
+assert_eq(csv_stray, 0, "csv: nor past the writer's allocation");
+
+test_group("bigint: u256 arithmetic (v1.5.1 — first tests in bayan)");
+var bi_z = bayan_u256_zero();
+assert_eq(bayan_u256_is_zero(bi_z), 1, "u256: zero is zero");
+var bi_a = bayan_u256_from(12345);
+var bi_b = bayan_u256_from(54321);
+assert_eq(bayan_u256_is_zero(bi_a), 0, "u256: a non-zero value is not zero");
+assert_eq(bayan_u256_limb(bi_a, 0), 12345, "u256: the low limb holds the value");
+assert_eq(bayan_u256_cmp(bi_a, bi_b), 0 - 1, "u256: 12345 < 54321");
+assert_eq(bayan_u256_cmp(bi_b, bi_a), 1, "u256: and the reverse");
+assert_eq(bayan_u256_eq(bi_a, bayan_u256_from(12345)), 1, "u256: equality");
+var bi_r = bayan_u256_zero();
+bayan_u256_add(bi_r, bi_a, bi_b);
+assert_eq(bayan_u256_limb(bi_r, 0), 66666, "u256: add");
+bayan_u256_sub(bi_r, bi_b, bi_a);
+assert_eq(bayan_u256_limb(bi_r, 0), 41976, "u256: sub");
+bayan_u256_mul(bi_r, bayan_u256_from(1000), bayan_u256_from(1000));
+assert_eq(bayan_u256_limb(bi_r, 0), 1000000, "u256: mul");
+# A carry across the 64-bit limb boundary is the thing a 256-bit type exists
+# for, so it is the thing worth asserting.
+var bi_max = bayan_u256_zero();
+bayan_u256_set_limb(bi_max, 0, 0 - 1);          # limb0 = 0xFFFF...FF
+bayan_u256_add(bi_r, bi_max, bayan_u256_from(1));
+assert_eq(bayan_u256_limb(bi_r, 0), 0, "u256: adding 1 to a full limb wraps it to 0");
+assert_eq(bayan_u256_limb(bi_r, 1), 1, "u256: and carries into the next limb");
+bayan_u256_shl1(bi_r, bayan_u256_from(1));
+assert_eq(bayan_u256_limb(bi_r, 0), 2, "u256: shift left by one");
+bayan_u256_shr1(bi_r, bayan_u256_from(4));
+assert_eq(bayan_u256_limb(bi_r, 0), 2, "u256: shift right by one");
+bayan_u256_mod(bi_r, bayan_u256_from(17), bayan_u256_from(5));
+assert_eq(bayan_u256_limb(bi_r, 0), 2, "u256: 17 mod 5");
+bayan_u256_addmod(bi_r, bayan_u256_from(7), bayan_u256_from(9), bayan_u256_from(10));
+assert_eq(bayan_u256_limb(bi_r, 0), 6, "u256: (7+9) mod 10");
+bayan_u256_mulmod(bi_r, bayan_u256_from(7), bayan_u256_from(9), bayan_u256_from(10));
+assert_eq(bayan_u256_limb(bi_r, 0), 3, "u256: (7*9) mod 10");
+assert_eq(bayan_u256_eq(bayan_u256_from_hex(bayan_u256_to_hex(bayan_u256_from(48879))),
+    bayan_u256_from(48879)), 1, "u256: hex round-trips");
+
+test_group("cyml: the manifest parser (v1.5.1 — first tests in bayan)");
+# CYML is TOML above `---`, markdown below; multi-entry files use [[entries]]
+# markers with a per-entry header and body.
+var cy_src = "title = \"demo\"\n[[entries]]\nkey = \"a\"\n---\nbody A\n[[entries]]\nkey = \"b\"\n---\nbody B\n";
+var cy_doc = bayan_cyml_parse(cy_src, strlen(cy_src));
+assert_neq(cy_doc, 0, "cyml: a document parses");
+assert_eq(bayan_cyml_doc_entry_count(cy_doc), 2, "cyml: both [[entries]] blocks are found");
+assert_gt(bayan_cyml_doc_header_len(cy_doc), 0, "cyml: the header before the first entry is kept");
+var cy_e0 = bayan_cyml_doc_entry(cy_doc, 0);
+assert_neq(cy_e0, 0, "cyml: the first entry is reachable");
+assert_gt(bayan_cyml_entry_body_len(cy_e0), 0, "cyml: and carries a body below its --- delimiter");
+assert_gt(bayan_cyml_entry_header_len(cy_e0), 0, "cyml: and a TOML header above it");
+# A single-entry file has no [[entries]] marker at all — one header, one body.
+var CY_ONE = "k = \"v\"\n---\njust the body\n";
+var cy_one = bayan_cyml_parse(CY_ONE, strlen(CY_ONE));
+assert_eq(bayan_cyml_doc_entry_count(cy_one), 1,
+  "cyml: a file with no [[entries]] marker parses as one header/body entry");
+assert_gt(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(cy_one, 0)), 0,
+  "cyml: whose body is the text below ---");
+# Out-of-range entry access must return 0 rather than abort — vec_get exits the
+# process on an out-of-range index, and this index comes from a caller.
+assert_eq(bayan_cyml_doc_entry(cy_doc, 99), 0, "cyml: an out-of-range entry is 0, not an abort");
+assert_eq(bayan_cyml_doc_entry(cy_doc, 0 - 1), 0, "cyml: a negative index likewise");
+assert_eq(bayan_cyml_doc_entry_count(0), 0, "cyml: a null doc reports no entries, it does not fault");
+assert_eq(bayan_cyml_doc_entry(0, 0), 0, "cyml: nor does indexing one");
+assert_eq(bayan_cyml_entry_body_len(0), 0, "cyml: nor does a null entry");
+# THE REGRESSION. The scan used a fixed 256-slot stack array and stopped at
+# the 256th marker, so a larger document parsed "successfully" with the
+# remainder silently gone — measured: 300 blocks in, 256 reported. The scan is
+# now two-pass (count, allocate exactly, fill), so there is no cliff to fall
+# off and no fixed stack array to size wrong.
+var cy_many = str_builder_new();
+var cy_i = 0;
+while (cy_i < 300) {
+    str_builder_add_cstr(cy_many, "[[entries]]\nk = \"v\"\n---\nbody\n");
+    cy_i = cy_i + 1;
+}
+var cy_ms = str_builder_build(cy_many);
+var cy_md = bayan_cyml_parse(str_data(cy_ms), str_len(cy_ms));
+assert_eq(bayan_cyml_doc_entry_count(cy_md), 300,
+  "cyml: 300 entries parse as 300, not silently truncated to 256");
+assert_neq(bayan_cyml_doc_entry(cy_md, 299), 0, "cyml: and the last one is reachable");
+assert_eq(bayan_cyml_doc_entry(cy_md, 300), 0, "cyml: while one past the end is still 0");
+
+var cy_empty = bayan_cyml_parse("", 0);
+assert_eq(bayan_cyml_doc_entry_count(cy_empty), 0, "cyml: an empty document has no entries");
+
+# =============================================================================
+# 1.5.1 P-1 sweep — regression guards
+#
+# Every assertion below pins a defect that a reproducer CONFIRMED before the
+# fix. They are grouped by the module they were found in, not by severity, so
+# the next person auditing a module sees what already went wrong in it.
+# =============================================================================
+
+test_group("json: string buffers are sized from the string, not the document");
+# Sizing the decode buffer from the REMAINING DOCUMENT made heap use quadratic:
+# 40 KB of input took 200 MB, and 1 MB took 125 GB / 46 GB RSS. Both parsers
+# shared the helper, so the streaming parser — whose whole purpose is bounded
+# memory — was the most quadratic path in the module.
+var jq_sb = str_builder_new();
+str_builder_putc(jq_sb, 91);
+var jq_i = 0;
+while (jq_i < 2000) {
+    if (jq_i > 0) { str_builder_putc(jq_sb, 44); }
+    str_builder_add_cstr(jq_sb, "\"a\"");
+    jq_i = jq_i + 1;
+}
+str_builder_putc(jq_sb, 93);
+var jq_doc = str_builder_build(jq_sb);
+var jq_before = alloc_used();
+var jq_v = bayan_json_v_parse_buf(str_data(jq_doc), str_len(jq_doc));
+var jq_used = alloc_used() - jq_before;
+assert_eq(bayan_json_v_arr_len(jq_v), 2000, "json: the array parses");
+# Pre-fix this ratio grew without bound (66x at 400 B, 5018x at 40 KB). A flat
+# ceiling is the property; 64x leaves generous headroom over the ~16x measured.
+assert_lt(jq_used / str_len(jq_doc), 64,
+  "json: heap stays proportional to input, not to input squared");
+
+test_group("json: numbers are validated, not merely scanned");
+assert_eq(bayan_json_v_parse_buf("-", 1), 0, "json: a lone minus is not the integer 0");
+assert_eq(bayan_json_v_parse_buf("1.", 2), 0, "json: a trailing decimal point is rejected");
+assert_eq(bayan_json_v_parse_buf("1e", 2), 0, "json: an empty exponent is rejected");
+# _jp_atoi wrapped silently, so this came back as -9223372036854775808 — a
+# value whose SIGN differs from the document's.
+assert_eq(bayan_json_v_parse_buf("9223372036854775808", 19), 0,
+  "json: an integer past i64 max is an error, not a sign flip");
+assert_eq(bayan_json_v_parse_buf("-9223372036854775809", 20), 0, "json: nor past i64 min");
+assert_neq(bayan_json_v_parse_buf("9223372036854775807", 19), 0, "json: i64 max itself still parses");
+assert_neq(bayan_json_v_parse_buf("-9223372036854775808", 20), 0, "json: and i64 min");
+
+test_group("json: the flat parser honours escapes (was key injection)");
+# The value scan stopped at the first quote regardless of a preceding
+# backslash, so a string value could terminate early and the parser
+# resynchronised mid-value — deleting the NEXT key entirely. A caller checking
+# a permission with bayan_json_get got a silent "not found" that any string
+# field could trigger.
+var je_doc = "{\"note\":\"hi\\\"there\",\"admin\":\"false\"}";
+var je_pairs = bayan_json_parse(str_from(je_doc));
+assert_eq(vec_len(je_pairs), 2, "json: an escaped quote does not split the value into a key");
+assert_neq(bayan_json_get(je_pairs, str_from("admin")), 0,
+  "json: the key after an escaped quote survives");
+
+test_group("json: a JSON-pointer index cannot wrap into range");
+var jp_doc = "[\"first\",\"second\",\"third\"]";
+var jp_v = bayan_json_v_parse_buf(jp_doc, strlen(jp_doc));
+assert_neq(bayan_json_v_pointer(jp_v, str_from("/2")), 0, "json: an in-range pointer resolves");
+assert_eq(bayan_json_v_pointer(jp_v, str_from("/3")), 0, "json: one past the end resolves to nothing");
+# `n = n * 10 + d` wrapped mod 2^64, so this selected element 2.
+assert_eq(bayan_json_v_pointer(jp_v, str_from("/18446744073709551618")), 0,
+  "json: an index that overflows i64 selects nothing, not a wrapped element");
+
+test_group("base64: decode validates length and alphabet");
+# out_len went negative on a padding-only input, alloc(0) returned 0, and the
+# unconditional terminator wrote through address -1. Verified SIGSEGV.
+assert_eq(bayan_base64_decode("=", 1), 0, "base64: a lone '=' is refused, not a fault");
+assert_eq(bayan_base64_decode("==", 2), 0, "base64: nor two");
+assert_eq(bayan_base64_decode("A=", 2), 0, "base64: nor a short group");
+# Bytes outside the alphabet decoded as 0xFF filler and produced confident garbage.
+assert_eq(bayan_base64_decode("!!!!", 4), 0, "base64: non-alphabet bytes are refused");
+var b64_ok = bayan_base64_decode("Zm9v", 4);
+assert_neq(b64_ok, 0, "base64: valid input still decodes");
+assert_eq(load64(b64_ok + 8), 3, "base64: with the right length");
+assert_eq(memeq(load64(b64_ok), "foo", 3), 1, "base64: and the right bytes");
+
+test_group("bigint: u256 multiply propagates carries");
+# The three-term inner sum detected overflow with ONE comparison, missing the
+# case where lo + carry wrapped on its own: 220 of 400 random 256-bit products
+# were wrong, and 53 of 100 mulmods under Curve25519's p. Single-limb inputs
+# were all correct, which is why the earlier tests never saw it.
+var bm_a = bayan_u256_zero();
+bayan_u256_set_limb(bm_a, 0, 0 - 1);              # 2^64 - 1
+var bm_b = bayan_u256_zero();
+bayan_u256_set_limb(bm_b, 0, 0 - 1);
+bayan_u256_set_limb(bm_b, 1, 1);                  # 2^65 - 1
+var bm_r = bayan_u256_zero();
+bayan_u256_mul(bm_r, bm_a, bm_b);
+# (2^64-1)(2^65-1) = 2^129 - 2^65 - 2^64 + 1. Pre-fix this was short by 2^128.
+assert_eq(bayan_u256_limb(bm_r, 0), 1, "u256: limb 0 of the cross-limb product");
+assert_eq(bayan_u256_limb(bm_r, 2), 1, "u256: limb 2 — the carry that used to vanish");
+
+test_group("bigint: u256_mod terminates and validates");
+var bd_r = bayan_u256_zero();
+# Repeated subtraction spun forever on p == 0 and needed up to 2^256
+# iterations for a small p. Now binary long division: 256 steps, always.
+assert_eq(bayan_u256_mod(bd_r, bayan_u256_from(12345), bayan_u256_zero()), 0 - 1,
+  "u256: mod by zero is refused instead of looping forever");
+var bd_big = bayan_u256_zero();
+bayan_u256_set_limb(bd_big, 3, 0 - 1);            # a very large dividend
+bayan_u256_mod(bd_r, bd_big, bayan_u256_from(1));
+assert_eq(bayan_u256_is_zero(bd_r), 1, "u256: a huge value mod 1 is 0, and returns promptly");
+bayan_u256_mod(bd_r, bayan_u256_from(17), bayan_u256_from(5));
+assert_eq(bayan_u256_limb(bd_r, 0), 2, "u256: and ordinary reduction still works");
+
+test_group("bigint: from_hex refuses what it cannot represent");
+assert_eq(bayan_u256_from_hex("hello world"), 0, "u256: a non-hex string is not a number");
+assert_eq(bayan_u256_from_hex("12-34"), 0, "u256: '-' is not a zero digit");
+assert_eq(bayan_u256_from_hex(""), 0, "u256: an empty string is not a number");
+assert_neq(bayan_u256_from_hex("deadbeef"), 0, "u256: valid hex still parses");
+assert_eq(bayan_u256_limb(bayan_u256_from_hex("deadbeef"), 0), 3735928559, "u256: to the right value");
+
+test_group("toml: an unterminated string cannot swallow the next line");
+# The scan ran to the end of the DOCUMENT looking for a closing quote, so a
+# malformed line absorbed the ones after it and silently deleted their keys.
+var tu_secs = bayan_toml_parse(str_from("a = \"oops\nadmin = false\nb = \"x\"\nc = 1\n"));
+var tu_pairs = bayan_toml_section_pairs(vec_get(tu_secs, 0));
+assert_neq(bayan_toml_get(tu_pairs, "admin"), 0, "toml: the key after an unterminated string survives");
+assert_neq(bayan_toml_get(tu_pairs, "c"), 0, "toml: and the one after that");
+var tu_ok = bayan_toml_parse(str_from("name = \"demo\"\nport = 8080\n"));
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(tu_ok, 0))), 2, "toml: well-formed input is unaffected");
+
+test_group("cyml: a leading blank line does not hide the first entry");
+# _cyml_is_entries only tested for a marker at byte 0 when pos == 0 and then
+# returned, so a document beginning with a newline never matched the marker at
+# byte 1 — one entry silently folded into the file header.
+var cz_a = bayan_cyml_parse("[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n", 46);
+var cz_src = "\n[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n";
+var cz_b = bayan_cyml_parse(cz_src, strlen(cz_src));
+assert_eq(bayan_cyml_doc_entry_count(cz_b), bayan_cyml_doc_entry_count(cz_a),
+  "cyml: a leading newline does not change the entry count");
+assert_eq(bayan_cyml_doc_entry_count(cz_b), 2, "cyml: and both entries are found");
+
+test_group("cyml: expansion preserves the text around a reference");
+# The old body returned the expansion ALONE, discarding everything before and
+# after it: "v${file:VERSION}-beta" became "1.5.0".
+var cx = bayan_cyml_expand_value("v${file:VERSION}-beta");
+assert_eq(load8(cx), 118, "cyml: the prefix before ${...} survives");
+assert_eq(memeq(cx + strlen(cx) - 5, "-beta", 5), 1, "cyml: and the suffix after it");
+assert_eq(streq(bayan_cyml_expand_value("plain value"), "plain value"), 1,
+  "cyml: a value with no reference is returned unchanged");
+
+test_group("yaml: unrepresentable and duplicate keys are refused");
+# Out-of-range integers wrapped silently: uid 18446744073709551616 became 0.
+# They now fall through to a string rather than becoming a different number.
+var yi = bayan_yaml_parse_buf("k: 18446744073709551616", 23);
+assert_eq(bayan_json_v_is_int(bayan_json_v_obj_get(yi, "k")), 0,
+  "yaml: an integer past i64 does not come back as a wrong int");
+assert_eq(bayan_json_v_is_int(bayan_json_v_obj_get(bayan_yaml_parse_buf("k: 42", 5), "k")), 1,
+  "yaml: an in-range integer still types as an int");
+# obj_set APPENDS, so bayan resolved duplicates to the FIRST while the
+# serialiser emitted both and every JSON reader took the LAST.
+assert_eq(bayan_yaml_parse_buf("role: admin\nrole: guest\n", 24), 0,
+  "yaml: a duplicate mapping key is rejected, not resolved two different ways");
+assert_neq(bayan_yaml_parse_buf("a: 1\nb:\n  a: 2\n", 15), 0,
+  "yaml: the same key at different nesting levels is not a duplicate");
+
 var r = assert_summary();

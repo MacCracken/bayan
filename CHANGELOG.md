@@ -2,6 +2,173 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.1] — 2026-08-21
+
+**P-1 security and hardening sweep.** Every module audited under five lenses
+(bounds, overflow, termination, byte accounting, silent wrong answers), each
+finding handed to a separate reviewer instructed to **refute** it, and each
+survivor fixed only after a reproducer measured it. Twenty defects confirmed
+and repaired, plus four found by hand while writing the first tests three
+modules had ever had.
+
+No API changed. Two behaviours are deliberately stricter and are called out
+below, because a caller relying on the old leniency will see a refusal where it
+previously got a plausible wrong answer — which is the point.
+
+### The context that made this necessary
+
+Eight of bayan's ten modules were carved byte-identical out of cyrius's stdlib
+at 1.0.0. Their tests stayed behind, and `cyrius coverage` reported
+`csv 0/3`, `cyml 0/17`, `bigint 0/20` — three modules referenced by no test in
+bayan's own suite, on the assumption their coverage still lived upstream. It
+did not: bayan has owned that code since the carve, and `lib/csv.cyr` no longer
+ships in cyrius at all. **Writing csv's first test found two heap buffer
+overflows within the hour.**
+
+The general form, now recorded in `state.md`: a carved module whose tests
+stayed behind is not "covered elsewhere", it is uncovered.
+
+### Fixed — memory safety
+
+- **`csv`: two heap buffer overflows (CWE-787).** `bayan_csv_parse_line` gave
+  each field a fixed `alloc(1024)` and wrote one byte per input byte with no
+  bound — a 4,000-byte field wrote **2,976 bytes past the end**, content and
+  length both attacker-controlled. `bayan_csv_write_line` did the same with a
+  fixed `alloc(4096)` — **5,912 stray bytes** from a 10 KB row. Both now
+  measure before allocating. Mutation-verified: restoring either fixed size
+  makes the new regression test report those exact counts.
+- **`base64`: a one-byte remote crash.** `bayan_base64_decode("=", 1)` computed
+  `out_len = -1`, `alloc(0)` returned 0, and the unconditional terminator wrote
+  through address `0xFFFFFFFFFFFFFFFF`. Verified SIGSEGV. Length and alphabet
+  are both validated now; non-base64 bytes used to decode as `0xFF` filler.
+- **`yaml`: an unchecked allocation.** `bayan_yaml_frontmatter_split_a` wrote
+  through the result of `alloc_via` without checking it — an exhausted caller
+  arena took SIGSEGV. Every other allocating entry in the module already
+  checked.
+- **`cyml`: an out-of-bounds read.** `bayan_cyml_doc_entry` was bare pointer
+  arithmetic with no bounds check and no null check; a negative index read
+  *before* the entry array and returned a garbage pointer the caller then
+  dereferenced. Found by the module's first-ever test.
+
+### Fixed — a remote memory-exhaustion DoS
+
+- **`json` allocated the whole remaining document for every string.** The
+  decode buffer was sized `len - pos + 1`, where `len` is the document length,
+  so heap use was quadratic in input size and nothing is ever freed on a bump
+  allocator. Measured: 40 KB of input took **200 MB**; 1 MB took **125 GB of
+  heap / 46 GB RSS**. Both parsers shared the helper, so the **streaming**
+  parser — whose documented purpose is bounded memory for multi-MB input — was
+  the most quadratic path in the module. Now pre-scans for the closing quote
+  and sizes from the string's own span: 40 KB of input takes 742 KB, and the
+  heap-per-byte ratio is flat instead of growing.
+
+### Fixed — wrong answers
+
+- **`bigint`: `bayan_u256_mul` dropped carries.** The three-term inner sum
+  detected overflow with a single comparison, missing the case where
+  `lo + carry` wrapped on its own. **220 of 400 random 256-bit products were
+  wrong**, and 53 of 100 `mulmod` results under Curve25519's p = 2^255-19.
+  Single-limb inputs were all correct, which is exactly why the existing tests
+  never saw it. Now verified against 201 vectors from Python's
+  arbitrary-precision integers; mutation-verified at 120/201 wrong when the old
+  logic is restored.
+- **`bigint`: `bayan_u256_mod` reduced by repeated subtraction.** It spun
+  **forever** on `p == 0` and needed up to 2^256 iterations for a small p
+  (measured: 2.06e7 iterations/second, so `a mod 1` on a 256-bit `a` would not
+  finish this century). Replaced with binary long division — 256 steps for any
+  input — and `p == 0` now returns `-1`.
+- **`json`: the flat parser ignored `\"` escapes, which let a value hide a
+  key.** For the valid document `{"note":"hi\"there","admin":"false"}` the
+  value ended at the escaped quote and the parser resynchronised mid-value,
+  producing `[note]=[hi\]` and `[,]=[false]` — with `admin` gone. A caller
+  checking a permission got a silent "not found" reachable through any string
+  field.
+- **`toml`: an unterminated string swallowed the following lines.** The scan
+  ran to the end of the *document* looking for a closing quote, so
+  `a = "oops` absorbed the next two lines and silently deleted their keys —
+  `admin` and `b` simply absent from a config parse. A basic string may not
+  contain a newline, so the newline now terminates it.
+- **`json` and `toml` file loaders truncated and reported success.** Fixed
+  16 KiB and 256 KiB read buffers, with the cut landing mid-token: a
+  52 KB / 2,001-key JSON object parsed to **630 pairs**, and a 300 KB /
+  15,000-key TOML file to **13,107** with `is_err_result() == 0`. Both now read
+  through a growing builder — no cap remains.
+- **`cyml`: `bayan_cyml_expand_value` discarded everything around the
+  reference.** `"v${file:VERSION}-beta"` returned `"1.5.0"`, dropping 16 of 21
+  bytes; `"https://${env:HOST}/api"` returned the host alone. It now
+  substitutes in place and handles multiple references. Expanded text is
+  deliberately not re-scanned, so a file containing `${...}` cannot drive an
+  expansion loop.
+- **`cyml`: a leading blank line hid the first entry.** `_cyml_is_entries`
+  tested only for a marker at byte 0 when `pos == 0` and returned, so the
+  marker at byte 1 was unreachable — one entry silently folded into the file
+  header.
+- **`cyml`: the entry scan capped at 256 and truncated silently.** 300
+  `[[entries]]` blocks parsed as 256, with 44 gone and no diagnostic. The scan
+  is now two-pass (count, allocate exactly, fill), which also retires the fixed
+  stack array whose mis-sizing was an out-of-bounds stack write in
+  CHANGELOG [6.0.79].
+- **`bigint`: `bayan_u256_from_hex` accepted anything.** It truncated
+  over-length input to its first 64 characters and treated every non-hex byte
+  as a zero digit, so `"hello world"` parsed to a number and `"12-34"` to
+  `0x12034`. Both now refuse.
+- **`json`: malformed numbers parsed.** A lone `-` became the integer 0
+  (`[-,-]` serialised back as `[0,0]`), as did `1.` and `1e`. And `_jp_atoi`
+  wrapped silently, so `9223372036854775808` came back as
+  `-9223372036854775808` — a value whose **sign** differs from the document's.
+  Digits are now required in every position and the i64 range is enforced.
+- **`json`: a JSON-pointer index wrapped mod 2^64.** Against a 3-element array,
+  `/1` followed by 64 zeros selected element 0. An out-of-range pointer now
+  resolves to nothing.
+- **`json`: a scalar constructor's OOM was silent.** The parse returned 0 with
+  `err_msg` empty, indistinguishable from a parse failure — measured on a real
+  arena, 9 of 31 failing capacities reported no error at all.
+
+### Fixed — portability
+
+- **`cyml` used raw x86_64 syscall numbers** (`syscall(2, …)` open,
+  `syscall(0, …)` read, `syscall(3, …)` close) for `${file:}` and `${env:}`
+  expansion. On another target those numbers are different calls: on agnos the
+  "open" returned the process's own pid, the `fd < 0` guard did not fire
+  because a pid is positive, and the following "read" **terminated the
+  process** (exit status 102 = pid mod 256). Now uses `lib/io.cyr`'s portable
+  wrappers, which bayan already depends on.
+
+### Changed — deliberately stricter
+
+Two inputs that used to produce a value now produce a refusal. Both were
+divergences rather than mere leniency:
+
+- **`yaml` rejects duplicate mapping keys.** `obj_set` appends, so
+  `role: admin` / `role: guest` built a two-entry object where
+  `bayan_json_v_obj_get` returned the **first** while the serialiser emitted
+  `{"role":"admin","role":"guest"}` and every downstream JSON reader took the
+  **last**. Two components reading one document disagreed about a role. YAML
+  1.2 makes duplicates an error.
+- **`yaml` no longer types an out-of-range integer as an int.**
+  `uid: 18446744073709551616` used to become the integer `0`. It now falls
+  through to a string, which is what an unrepresentable scalar is. (This one
+  came free with the json number fix — yaml delegates to json's scanner.)
+
+### Added — tests for three modules that had none
+
+`csv`, `bigint` and `cyml` had zero references in bayan's own suite. They now
+have full groups, alongside a regression guard for every defect above. The
+suite is **525 asserts + 19 in `pdf_flate.tcyr`**, up from 452.
+
+### Also
+
+- `scripts/check-widths.py` — verifies the standard-14 font metric tables using
+  only the Python stdlib, so the CI gate no longer depends on groff being
+  installed. `scripts/gen-widths.py` now discovers groff's font directory
+  instead of hardcoding a version path, and fails with an actionable message
+  rather than a traceback. This fixed a CI failure introduced in 1.5.0.
+- `bayan_toml_get`'s doc comment claimed the key could be a cstring **or** a
+  `Str`; it compares with `str_eq_cstr`, so a `Str` yields a silent "not found"
+  — the 1.4.1 trap. Comment corrected, and the asymmetry with
+  `bayan_json_get` (which takes a `Str`) recorded as a known gap, since
+  reconciling them is a breaking change rather than a patch.
+
 ## [1.5.0] — 2026-08-21
 
 **PDF read/write — `bayan_pdf_*`.** The roadmap's P2 item lands: a PDF writer

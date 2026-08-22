@@ -664,7 +664,20 @@ fn _yp_parse_mapping(ps, yc, indent): i64 {
             }
         }
         if (val == 0) { return 0; }
-        bayan_json_v_obj_set(obj, str_new(kptr, klen), val);
+        # DUPLICATE KEYS are rejected (1.5.1). YAML 1.2 makes them an error,
+        # and accepting them here produced a genuine divergence rather than a
+        # cosmetic one: obj_set APPENDS, so `role: admin` / `role: guest` built
+        # a two-entry object where bayan_json_v_obj_get returns the FIRST
+        # ("admin") while the serialiser emits {"role":"admin","role":"guest"}
+        # — and every downstream JSON reader takes the LAST. Two components
+        # reading the same document disagreeing about a role is exactly the
+        # shape a policy file must not have.
+        var dupk = str_new(kptr, klen);
+        if (bayan_json_v_obj_get_by_str(obj, dupk) != 0) {
+            _jp_set_err(ps, "duplicate mapping key", kptr - load64(ps));
+            return 0;
+        }
+        bayan_json_v_obj_set(obj, dupk, val);
     }
     return 0;
 }
@@ -834,7 +847,15 @@ fn _yfm_is_fence(buf, ls, le): i64 {
 
 # Allocator-threading variant of bayan_yaml_frontmatter_split.
 fn bayan_yaml_frontmatter_split_a(a, src): i64 {
+    # CHECK THE ALLOCATION (1.5.1). `a` may be a caller's arena, and an
+    # exhausted arena returns 0 — after which `store64(p, 0)` below wrote
+    # through a null pointer. Verified: a drained arena_allocator(64) took
+    # SIGSEGV here, and so did a 64 KiB per-request arena on a document large
+    # enough to fill it. Every other allocating entry in this module already
+    # checks; this one did not.
     var p = alloc_via(a, 16);
+    if (p == 0) { return 0; }
+    if (src == 0) { return 0; }
     var buf = str_data(src);
     var len = str_len(src);
     store64(p, 0);
