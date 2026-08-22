@@ -6,49 +6,44 @@
 
 ## Version
 
-**1.5.1** — **P-1 security and hardening sweep.** Twenty confirmed defects
-across every module, each reproduced before it was fixed, plus four found by
-hand while writing the first tests three modules had ever had. No API changed;
-two behaviours are deliberately stricter (see the CHANGELOG).
+**1.5.2** — **the testing gaps closed.** Reference coverage 51% → **100%**
+(450/450 public functions, every module), assertions 544 → **775**, and the CI
+floor pinned at 100 so a new public function without a test turns the build red.
 
-**The finding that reframes the rest.** Eight of ten modules were carved
-byte-identical out of cyrius's stdlib at 1.0.0. Their tests stayed behind, and
-`csv` (0/3), `cyml` (0/17) and `bigint` (0/20) were referenced by **no test in
-bayan's own suite** — on the standing assumption that their coverage still
-lived upstream. It does not. bayan has owned that code since the carve;
-`lib/csv.cyr` no longer ships in cyrius at all, and the fold is how a fix
-reaches it. Writing csv's first test found **two heap buffer overflows** in the
-first hour.
+Closing the gaps was not a formality. `u128` had 3 of 35 functions referenced;
+testing the remaining 32 found **`bayan_u64_mulmod` killing the process** on an
+ordinary 31-bit modulus. x86's `DIV` raises `#DE` when the *quotient* exceeds
+64 bits, not only on a zero divisor.
 
-> **A carved module whose tests stayed behind is not "covered elsewhere". It is
-> uncovered.** That sentence is the durable output of this release.
+Two things about that bug are worth keeping:
 
-What the sweep cost is worth recording next to what it found: the audit ran
-against modules that had built clean, linted clean, and passed every gate for
-five releases. Severity was not correlated with module size — the two overflows
-were in a **99-line** file.
+- **Its precondition was documented, and the 1.5.1 sweep still missed it.** A
+  reviewer refuted the finding because one counterexample did not trap. *A
+  refuter finding a non-triggering case does not clear a finding* — the trigger
+  has to be characterised, not sampled.
+- **The two architectures disagreed.** aarch64 went through the u128 pipeline
+  and returned the right answer for unreduced operands while x86 died, so code
+  written and tested on one target failed on the other. That divergence was the
+  real defect; the documented precondition merely hid it.
 
-The worst four, with their measurements:
+**The vectors are the durable part.** `tests/vectors.tcyr` runs 12,334 u128
+checks and 656 f64 checks whose expected values come from **Python**, not from
+bayan. That independence is the lesson of 1.5.1: `bayan_u256_mul` shipped five
+releases with 46% of its products wrong because every test compared bayan
+against bayan. The u128 vectors aim where fixed-width code breaks — the 2^64
+limb boundary from both sides, the low limb's sign bit, shift counts of 0 / 64 /
+128 / 200, and unreduced modular operands, which is what caught the fault.
 
-| Defect | Measured |
-|---|---|
-| `json` sized every string buffer from the whole remaining document | 1 MB input → **125 GB heap / 46 GB RSS**; quadratic, and worst on the *streaming* parser, whose stated purpose is bounded memory |
-| `bigint` `u256_mul` dropped carries | **220 of 400** random products wrong; 53/100 mulmods under Curve25519's p. Single-limb inputs were all correct, which is why the old tests passed |
-| `csv` wrote past fixed buffers | **2,976** and **5,912** bytes past the end, content and length attacker-controlled |
-| `base64_decode("=", 1)` | SIGSEGV — `out_len` went to −1, `alloc(0)` returned 0, terminator written through address −1 |
+**What 100% does and does not mean.** It means every public function is
+*called* by a test. It does not mean every function is *correct*; the oracle
+vectors and the mutation-verified regression guards are what check answers. The
+1.5.1 CHANGELOG is a list of what passing a 30% floor failed to catch.
 
-Method, since it is reusable: five lenses per module (bounds, overflow,
-termination, byte accounting, silent wrong answers), every finding handed to a
-separate reviewer told to **refute** it, and nothing fixed without a reproducer
-that produced a number. Six findings were correctly refuted. Every fix that
-could be is mutation-verified — revert it, watch the regression test report the
-original measurement.
-
-Before that: 1.5.0 added `bayan_pdf_*` (writer + reader) and moved the pin to
-6.5.33; 1.4.2 was toolchain + CI; 1.4.1 armed the Str→cstring diagnostic on
-`bayan_json_v_obj_get`; 1.4.0 completed the `_a` JSON surface; 1.3.0 renamed
-the cstr+len parse entries `_str` → `_buf`; 1.2.1 made float serialization
-round-trip-correct; 1.2.0 added `yaml`. Carved from cyrius stdlib at 1.0.0.
+Before that: 1.5.1 was the P-1 security sweep (20 confirmed defects, including
+two heap overflows and a 125 GB memory blowup); 1.5.0 added `bayan_pdf_*` and
+moved the pin to 6.5.33; 1.4.2 was toolchain + CI; 1.4.1 armed the Str→cstring
+diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
+1.0.0.
 
 ## Toolchain
 
@@ -179,7 +174,13 @@ global-bump growth; the assertion that pins this is mutation-verified.
   none — and a regression guard for all twenty sweep defects, each pinned to the
   measurement that confirmed it.
 
-  **525 asserts, green** on cycc 6.5.33.
+  **749 asserts, green** on cycc 6.5.33.
+- `tests/vectors.tcyr` — 12,334 u128 checks and 656 f64 checks driven from
+  `tests/fixtures/numeric/`, whose expected values come from Python rather than
+  from bayan. Kept in its own file so machine-generated checks do not swamp the
+  hand-written assertion counts; it contributes 7 asserts ("0 of 12,334 wrong")
+  rather than one per vector. Regenerate with `scripts/gen-numeric-vectors.py`;
+  CI requires the regeneration to be byte-identical.
 - `tests/pdf_flate.tcyr` — the compression path, isolated because it is the
   only test that pulls in `lib/sankoch.cyr`. The main suite proves the
   hook-ABSENT contract (valid uncompressed output, a loud reader error); this
@@ -209,29 +210,22 @@ global-bump growth; the assertion that pins this is mutation-verified.
 
 ### Coverage
 
-`cyrius coverage` — **167/456 fns (36%)**, 10/13 files referenced, against a
-`--min 30` gate. Reference coverage is a floor, not a correctness proof, and
-the deep per-module suite for the carved modules still lives upstream in
-cyrius — but pdf's own coverage is bayan's to keep, and 72 distinct
-`bayan_pdf_*` symbols are referenced by the two pdf test files.
-
-Adding 152 public functions in one release moves this number a long way, in
-both directions: the denominator grew by 121 while the numerator grew by 65.
-The gate held because the pdf block was written alongside the module rather
-than after it.
+`cyrius coverage` — **450/450 fns (100%)**, 13/13 files, gated at `--min 100`.
 
 | Module | Referenced |
 |---|---|
-| `pdf.cyr`    | 72/152 |
-| `yaml.cyr`   | 11/12 |
-| `json.cyr`   | 37/69 |
-| `toml.cyr`   | 6/17  |
-| `u128.cyr`   | 3/35  |
-| `base64.cyr` | 2/4   |
-| `dtoa.cyr`   | 2/3   |
-| `bigint.cyr` | covered (was 0/20) |
-| `cyml.cyr`   | covered (was 0/17) |
-| `csv.cyr`    | 12/3 → covered |
+| every module | 100% |
+
+The floor moved 30 → 100 at 1.5.2. Adding a public function without a test now
+fails CI, which is the pressure this project turned out to need: 1.5.1 found
+two heap buffer overflows, a 256-bit multiply that was wrong 46% of the time,
+and 18 other defects in modules that had built clean and passed every gate for
+five releases while being untested.
+
+**It is reference coverage.** A function being called is not a function being
+correct. The oracle-driven vectors in `tests/vectors.tcyr` (12,334 u128 checks
+and 656 f64 checks against Python) and the mutation-verified regression guards
+in `tests/bayan.tcyr` are what check answers.
 
 ## CI
 
@@ -378,10 +372,10 @@ were fixed in 1.4.2 (toml warnings, lint); **item 1 of this list was fixed in
    1.5.1, but reconciling the signatures is a breaking change and wants its own
    release. Both were hit while writing 1.5.1's probes, which is how the
    comment came to be checked.
-10. **`u128` (3/35), `toml` (6/17) and `dtoa` (2/3) remain thinly tested.**
-   1.5.1 closed the three modules at zero; these are the next tier, and the
-   sweep's own result argues they are worth doing before the next fold rather
-   than after.
+10. ~~**`u128` (3/35), `toml` (6/17) and `dtoa` (2/3) remain thinly tested.**~~
+   **Fixed in 1.5.2** — every module is at 100% and the CI floor is pinned
+   there. Doing it found `bayan_u64_mulmod` killing the process, so the tier
+   was worth clearing before the fold rather than after.
 
 ## Scripts
 

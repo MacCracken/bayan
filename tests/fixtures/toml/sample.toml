@@ -1,0 +1,14 @@
+title = "sample"
+count = 3
+enabled = true
+tags = ["a", "b", "c"]
+
+[server]
+host = "localhost"
+port = 8080
+
+[[entry]]
+id = 1
+
+[[entry]]
+id = 2

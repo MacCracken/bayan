@@ -1,0 +1,320 @@
+# vectors.tcyr — oracle-driven arithmetic vectors (v1.5.2).
+#
+# The expected values in tests/fixtures/numeric/ come from Python: its
+# arbitrary-precision integers for u128, and its shortest-round-trip float
+# formatter for f64. That independence is the point. bayan_u256_mul shipped for
+# five releases with 46% of its 256-bit products wrong while every test passed,
+# because every test compared bayan against bayan; the vectors that caught it
+# came from an outside implementation.
+#
+# Kept in its own file so ~13,000 machine-generated checks do not swamp the
+# hand-written assertion counts in bayan.tcyr. It contributes a handful of
+# asserts — "0 of 12,334 wrong" — rather than one per vector.
+#
+# Regenerate the vectors with:  python3 scripts/gen-numeric-vectors.py tests/fixtures/numeric
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/assert.cyr"
+
+include "src/u128.cyr"
+include "src/dtoa.cyr"
+
+alloc_init();
+
+
+fn u_say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+fn u_num(n): i64 { var b[24]; var l = fmt_int_buf(n, &b); print(&b, l); return 0; }
+
+var g_total = 0;
+var g_bad = 0;
+var g_first = 0;
+
+# Parse a lowercase hex field starting at `p`, stopping at space or newline.
+# Writes the value to out8 and returns the position after the field.
+fn hexf(buf, p, len, out8): i64 {
+    var v = 0;
+    while (p < len) {
+        var c = load8(buf + p);
+        var d = 0 - 1;
+        if (c >= 48 && c <= 57)  { d = c - 48; }
+        if (c >= 97 && c <= 102) { d = c - 87; }
+        if (d < 0) { break; }
+        v = (v << 4) | d;
+        p = p + 1;
+    }
+    store64(out8, v);
+    while (p < len && load8(buf + p) == 32) { p = p + 1; }
+    return p;
+}
+
+fn fail(op: cstring, idx): i64 {
+    g_bad = g_bad + 1;
+    if (g_first == 0) {
+        g_first = 1;
+        u_say("  first failure: "); u_say(op); u_say(" at vector "); u_num(idx); u_say("\n");
+    }
+    return 0;
+}
+
+fn check(op: cstring, idx, got_lo, got_hi, want_lo, want_hi): i64 {
+    g_total = g_total + 1;
+    if (got_lo != want_lo || got_hi != want_hi) { fail(op, idx); }
+    return 0;
+}
+
+fn run_u128(): i64 {
+    alloc_init();
+    var cap = 1 << 20;
+    var buf = alloc(cap);
+    var len = file_read_all("tests/fixtures/numeric/u128.vec", buf, cap);
+    if (len <= 0) { u_say("cannot read the vector file\n"); return 1; }
+
+    var a[16]; var b[16]; var r[16]; var q[16]; var m[16];
+    var f[8];
+    var pos = 0;
+    var idx = 0;
+
+    while (pos < len) {
+        # operation mnemonic
+        var ops = pos;
+        while (pos < len && load8(buf + pos) != 32) { pos = pos + 1; }
+        var oplen = pos - ops;
+        while (pos < len && load8(buf + pos) == 32) { pos = pos + 1; }
+        idx = idx + 1;
+
+        if (oplen == 2 && memeq(buf + ops, "MM", 2) == 1) {
+            pos = hexf(buf, pos, len, &f); var ma = load64(&f);
+            pos = hexf(buf, pos, len, &f); var mb = load64(&f);
+            pos = hexf(buf, pos, len, &f); var mm = load64(&f);
+            pos = hexf(buf, pos, len, &f); var mr = load64(&f);
+            g_total = g_total + 1;
+            if (bayan_u64_mulmod(ma, mb, mm) != mr) { fail("u64_mulmod", idx); }
+        } elif (oplen == 2 && memeq(buf + ops, "PM", 2) == 1) {
+            pos = hexf(buf, pos, len, &f); var pb = load64(&f);
+            pos = hexf(buf, pos, len, &f); var pe = load64(&f);
+            pos = hexf(buf, pos, len, &f); var pm = load64(&f);
+            pos = hexf(buf, pos, len, &f); var pr = load64(&f);
+            g_total = g_total + 1;
+            if (bayan_u64_powmod(pb, pe, pm) != pr) { fail("u64_powmod", idx); }
+        } elif (oplen == 3 && memeq(buf + ops, "SHL", 3) == 1) {
+            pos = hexf(buf, pos, len, &f); var slo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var shi = load64(&f);
+            pos = hexf(buf, pos, len, &f); var sn  = load64(&f);
+            pos = hexf(buf, pos, len, &f); var wlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var whi = load64(&f);
+            bayan_u128_set(&a, slo, shi);
+            bayan_u128_shl(&r, &a, sn);
+            check("shl", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), wlo, whi);
+            # the in-place form must agree with the out-of-place one
+            bayan_u128_set(&b, slo, shi);
+            bayan_u128_shleq(&b, sn);
+            check("shleq", idx, bayan_u128_lo(&b), bayan_u128_hi(&b), wlo, whi);
+        } elif (oplen == 3 && memeq(buf + ops, "SHR", 3) == 1) {
+            pos = hexf(buf, pos, len, &f); var rlo0 = load64(&f);
+            pos = hexf(buf, pos, len, &f); var rhi0 = load64(&f);
+            pos = hexf(buf, pos, len, &f); var rn   = load64(&f);
+            pos = hexf(buf, pos, len, &f); var rwlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var rwhi = load64(&f);
+            bayan_u128_set(&a, rlo0, rhi0);
+            bayan_u128_shr(&r, &a, rn);
+            check("shr", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), rwlo, rwhi);
+            bayan_u128_set(&b, rlo0, rhi0);
+            bayan_u128_shreq(&b, rn);
+            check("shreq", idx, bayan_u128_lo(&b), bayan_u128_hi(&b), rwlo, rwhi);
+        } elif (oplen == 3 && memeq(buf + ops, "NOT", 3) == 1) {
+            pos = hexf(buf, pos, len, &f); var nlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var nhi = load64(&f);
+            pos = hexf(buf, pos, len, &f);
+            pos = hexf(buf, pos, len, &f);
+            pos = hexf(buf, pos, len, &f); var nwlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var nwhi = load64(&f);
+            bayan_u128_set(&a, nlo, nhi);
+            bayan_u128_not(&r, &a);
+            check("not", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), nwlo, nwhi);
+        } elif (oplen == 3 && memeq(buf + ops, "CMP", 3) == 1) {
+            pos = hexf(buf, pos, len, &f); var clo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var chi = load64(&f);
+            pos = hexf(buf, pos, len, &f); var dlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var dhi = load64(&f);
+            pos = hexf(buf, pos, len, &f); var wgt = load64(&f);
+            pos = hexf(buf, pos, len, &f); var wge = load64(&f);
+            pos = hexf(buf, pos, len, &f); var wlt = load64(&f);
+            pos = hexf(buf, pos, len, &f); var wle = load64(&f);
+            bayan_u128_set(&a, clo, chi);
+            bayan_u128_set(&b, dlo, dhi);
+            g_total = g_total + 4;
+            if (bayan_u128_ugt(&a, &b) != wgt) { fail("ugt", idx); }
+            if (bayan_u128_uge(&a, &b) != wge) { fail("uge", idx); }
+            if (bayan_u128_ult(&a, &b) != wlt) { fail("ult", idx); }
+            if (bayan_u128_ule(&a, &b) != wle) { fail("ule", idx); }
+        } elif (oplen == 2 && memeq(buf + ops, "DV", 2) == 1) {
+            pos = hexf(buf, pos, len, &f); var vlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var vhi = load64(&f);
+            pos = hexf(buf, pos, len, &f); var wlo2 = load64(&f);
+            pos = hexf(buf, pos, len, &f); var whi2 = load64(&f);
+            pos = hexf(buf, pos, len, &f); var qlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var qhi = load64(&f);
+            pos = hexf(buf, pos, len, &f); var mlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var mhi = load64(&f);
+            bayan_u128_set(&a, vlo, vhi);
+            bayan_u128_set(&b, wlo2, whi2);
+            bayan_u128_divmod(&q, &m, &a, &b);
+            check("divmod-q", idx, bayan_u128_lo(&q), bayan_u128_hi(&q), qlo, qhi);
+            check("divmod-r", idx, bayan_u128_lo(&m), bayan_u128_hi(&m), mlo, mhi);
+            bayan_u128_div(&r, &a, &b);
+            check("div", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), qlo, qhi);
+            bayan_u128_mod(&r, &a, &b);
+            check("mod", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), mlo, mhi);
+        } else {
+            # the six binary ops share a layout
+            pos = hexf(buf, pos, len, &f); var xlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var xhi = load64(&f);
+            pos = hexf(buf, pos, len, &f); var ylo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var yhi = load64(&f);
+            pos = hexf(buf, pos, len, &f); var zlo = load64(&f);
+            pos = hexf(buf, pos, len, &f); var zhi = load64(&f);
+            bayan_u128_set(&a, xlo, xhi);
+            bayan_u128_set(&b, ylo, yhi);
+            if (memeq(buf + ops, "ADD", 3) == 1) {
+                bayan_u128_add(&r, &a, &b);
+                check("add", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+                bayan_u128_copy(&r, &a); bayan_u128_addeq(&r, &b);
+                check("addeq", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+            } elif (memeq(buf + ops, "SUB", 3) == 1) {
+                bayan_u128_sub(&r, &a, &b);
+                check("sub", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+                bayan_u128_copy(&r, &a); bayan_u128_subeq(&r, &b);
+                check("subeq", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+            } elif (memeq(buf + ops, "MUL", 3) == 1) {
+                bayan_u128_mul(&r, &a, &b);
+                check("mul", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+                bayan_u128_copy(&r, &a); bayan_u128_muleq(&r, &b);
+                check("muleq", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+            } elif (memeq(buf + ops, "AND", 3) == 1) {
+                bayan_u128_and(&r, &a, &b);
+                check("and", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+                bayan_u128_copy(&r, &a); bayan_u128_andeq(&r, &b);
+                check("andeq", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+            } elif (memeq(buf + ops, "OR", 2) == 1) {
+                bayan_u128_or(&r, &a, &b);
+                check("or", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+                bayan_u128_copy(&r, &a); bayan_u128_oreq(&r, &b);
+                check("oreq", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+            } elif (memeq(buf + ops, "XOR", 3) == 1) {
+                bayan_u128_xor(&r, &a, &b);
+                check("xor", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+                bayan_u128_copy(&r, &a); bayan_u128_xoreq(&r, &b);
+                check("xoreq", idx, bayan_u128_lo(&r), bayan_u128_hi(&r), zlo, zhi);
+            }
+        }
+        # advance past the newline
+        while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
+        pos = pos + 1;
+    }
+
+    u_say("u128 checks: "); u_num(g_total);
+    u_say("   wrong: "); u_num(g_bad); u_say("\n");
+    if (g_bad > 0) { return 1; }
+    return 42;
+}
+
+
+fn f_say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+fn f_num(n): i64 { var b[24]; var l = fmt_int_buf(n, &b); print(&b, l); return 0; }
+
+var g_rt = 0;      # to_json -> parse round-trips to identical bits
+var g_rt_bad = 0;
+var g_py = 0;      # bayan's parser agrees with Python's formatter
+var g_py_bad = 0;
+var g_shown = 0;
+
+fn show_fail(label: cstring, text, bits, got): i64 {
+    if (g_shown < 4) {
+        g_shown = g_shown + 1;
+        f_say("    "); f_say(label); f_say(" text=["); print(text, strlen(text));
+        f_say("] want_bits="); f_num(bits); f_say(" got="); f_num(got); f_say("\n");
+    }
+    return 0;
+}
+
+fn run_f64(): i64 {
+    alloc_init();
+    var cap = 1 << 18;
+    var buf = alloc(cap);
+    var len = file_read_all("tests/fixtures/numeric/f64.vec", buf, cap);
+    if (len <= 0) { f_say("cannot read tests/fixtures/numeric/f64.vec\n"); return 1; }
+
+    var out = alloc(64);
+    var pytext = alloc(64);
+    var pos = 0;
+
+    while (pos < len) {
+        # hex bits
+        var bits = 0;
+        while (pos < len) {
+            var c = load8(buf + pos);
+            var d = 0 - 1;
+            if (c >= 48 && c <= 57)  { d = c - 48; }
+            if (c >= 97 && c <= 102) { d = c - 87; }
+            if (d < 0) { break; }
+            bits = (bits << 4) | d;
+            pos = pos + 1;
+        }
+        while (pos < len && load8(buf + pos) == 32) { pos = pos + 1; }
+        # Python's repr, to end of line
+        var ts = pos;
+        while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
+        var tlen = pos - ts;
+        pos = pos + 1;
+        if (tlen <= 0) { break; }
+        if (tlen > 60) { tlen = 60; }
+        memcpy(pytext, buf + ts, tlen);
+        store8(pytext + tlen, 0);
+
+        # 1. bayan formats, bayan parses: the bits MUST come back identical.
+        #    This is the property that matters — Grisu2 is documented as
+        #    shortest-OR-NEAR-shortest, so its text may differ from Python's
+        #    while still being a faithful representation.
+        var n = bayan_f64_to_json(bits, out);
+        store8(out + n, 0);
+        var back = bayan_f64_parse(out, n);
+        g_rt = g_rt + 1;
+        if (back != bits) { g_rt_bad = g_rt_bad + 1; show_fail("round-trip", out, bits, back); }
+
+        # 2. bayan parses what Python formatted: an independent check that the
+        #    PARSER is right, not merely self-consistent with the formatter.
+        var pb = bayan_f64_parse(pytext, strlen(pytext));
+        g_py = g_py + 1;
+        if (pb != bits) { g_py_bad = g_py_bad + 1; show_fail("parse(py)", pytext, bits, pb); }
+    }
+
+    f_say("f64 to_json->parse round-trips: "); f_num(g_rt);
+    f_say("   wrong: "); f_num(g_rt_bad); f_say("\n");
+    f_say("f64 parse(python repr):         "); f_num(g_py);
+    f_say("   wrong: "); f_num(g_py_bad); f_say("\n");
+    if (g_rt_bad > 0) { return 1; }
+    if (g_py_bad > 0) { return 2; }
+    return 42;
+}
+
+
+test_group("vectors: u128 against Python's arbitrary-precision integers");
+var uv = run_u128();
+assert_eq(uv, 42, "u128: the vector file loaded and every check ran");
+assert_gt(g_total, 12000, "u128: the expected number of checks actually ran");
+assert_eq(g_bad, 0, "u128: zero disagreements with the oracle");
+
+test_group("vectors: f64 round-trip against Python's float formatter");
+var fv = run_f64();
+assert_eq(fv, 42, "f64: the vector file loaded and every check ran");
+assert_gt(g_rt, 300, "f64: the expected number of round-trips ran");
+assert_eq(g_rt_bad, 0, "f64: every value survives to_json -> parse unchanged");
+assert_eq(g_py_bad, 0, "f64: and bayan's parser agrees with Python's formatter");
+
+var r = assert_summary();

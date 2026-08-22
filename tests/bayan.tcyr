@@ -1478,4 +1478,490 @@ assert_eq(bayan_yaml_parse_buf("role: admin\nrole: guest\n", 24), 0,
 assert_neq(bayan_yaml_parse_buf("a: 1\nb:\n  a: 2\n", 15), 0,
   "yaml: the same key at different nesting levels is not a duplicate");
 
+# =============================================================================
+# u128 / dtoa / toml / base64 (v1.5.2)
+#
+# The three modules 1.5.1 left thin — u128 (3/35 functions referenced), toml
+# (6/17) and dtoa (2/3) — plus base64 (2/4). The bulk of the numeric coverage
+# is VECTOR-DRIVEN from tests/fixtures/numeric/, whose expected values come
+# from Python's arbitrary-precision integers and its shortest-round-trip float
+# formatter. Checking an implementation against itself proves only
+# self-consistency; that is how u256_mul shipped for five releases with 46% of
+# its products wrong. Regenerate with scripts/gen-numeric-vectors.py.
+#
+# The vector RUNNERS live in tests/vectors.tcyr — 12,334 u128 checks and 656
+# f64 checks would swamp this file's assert counts. What follows pins the
+# behaviours a vector file cannot express.
+# =============================================================================
+
+test_group("u128: construction, accessors and comparison (v1.5.2)");
+var u_a[16]; var u_b[16]; var u_r[16]; var u_q[16]; var u_m[16];
+bayan_u128_set(&u_a, 5, 0);
+assert_eq(bayan_u128_lo(&u_a), 5, "u128: set/lo");
+assert_eq(bayan_u128_hi(&u_a), 0, "u128: set/hi");
+bayan_u128_from_u64(&u_b, 5);
+assert_eq(bayan_u128_eq(&u_a, &u_b), 1, "u128: from_u64 matches set");
+assert_eq(bayan_u128_is_zero(&u_a), 0, "u128: 5 is not zero");
+bayan_u128_set(&u_r, 0, 0);
+assert_eq(bayan_u128_is_zero(&u_r), 1, "u128: zero is zero");
+bayan_u128_copy(&u_r, &u_a);
+assert_eq(bayan_u128_eq(&u_r, &u_a), 1, "u128: copy");
+# The unsigned comparisons are the classic signed/unsigned trap: a value with
+# bit 63 set in the low limb reads as negative under a signed compare.
+bayan_u128_set(&u_a, 1, 0);
+bayan_u128_set(&u_b, 0 - 1, 0);              # 2^64 - 1, "negative" as i64
+assert_eq(bayan_u128_ult(&u_a, &u_b), 1, "u128: 1 < 2^64-1 unsigned");
+assert_eq(bayan_u128_ugt(&u_b, &u_a), 1, "u128: and the reverse");
+assert_eq(bayan_u128_uge(&u_b, &u_b), 1, "u128: uge is reflexive");
+assert_eq(bayan_u128_ule(&u_b, &u_b), 1, "u128: ule is reflexive");
+assert_eq(bayan_u128_ugt(&u_b, &u_b), 0, "u128: ugt is not");
+
+test_group("u128: the limb boundary (where 128-bit code actually breaks)");
+bayan_u128_set(&u_a, 0 - 1, 0);              # 2^64 - 1
+bayan_u128_from_u64(&u_b, 1);
+bayan_u128_add(&u_r, &u_a, &u_b);
+assert_eq(bayan_u128_lo(&u_r), 0, "u128: adding 1 to a full low limb wraps it");
+assert_eq(bayan_u128_hi(&u_r), 1, "u128: and carries into the high limb");
+bayan_u128_sub(&u_r, &u_r, &u_b);
+assert_eq(bayan_u128_lo(&u_r), 0 - 1, "u128: subtracting borrows back down");
+assert_eq(bayan_u128_hi(&u_r), 0, "u128: leaving the high limb clear");
+# A shift count at or past the width: hardware shift instructions take the
+# count modulo the width, so this is where fixed-width shift code goes wrong.
+bayan_u128_from_u64(&u_a, 1);
+bayan_u128_shl(&u_r, &u_a, 64);
+assert_eq(bayan_u128_hi(&u_r), 1, "u128: shl 64 moves bit 0 to the high limb");
+assert_eq(bayan_u128_lo(&u_r), 0, "u128: clearing the low limb");
+bayan_u128_shl(&u_r, &u_a, 128);
+assert_eq(bayan_u128_is_zero(&u_r), 1, "u128: shl by the full width is zero, not a no-op");
+bayan_u128_shl(&u_r, &u_a, 200);
+assert_eq(bayan_u128_is_zero(&u_r), 1, "u128: nor does an over-wide shift wrap around");
+bayan_u128_set(&u_a, 0, 1);                  # 2^64
+bayan_u128_shr(&u_r, &u_a, 64);
+assert_eq(bayan_u128_lo(&u_r), 1, "u128: shr 64 brings the high limb down");
+bayan_u128_shr(&u_r, &u_a, 128);
+assert_eq(bayan_u128_is_zero(&u_r), 1, "u128: shr by the full width is zero");
+
+test_group("u128: division and modular arithmetic");
+bayan_u128_from_u64(&u_a, 17);
+bayan_u128_from_u64(&u_b, 5);
+bayan_u128_divmod(&u_q, &u_m, &u_a, &u_b);
+assert_eq(bayan_u128_lo(&u_q), 3, "u128: 17/5 quotient");
+assert_eq(bayan_u128_lo(&u_m), 2, "u128: 17%5 remainder");
+bayan_u128_div(&u_r, &u_a, &u_b);
+assert_eq(bayan_u128_lo(&u_r), 3, "u128: div agrees with divmod");
+bayan_u128_mod(&u_r, &u_a, &u_b);
+assert_eq(bayan_u128_lo(&u_r), 2, "u128: mod agrees with divmod");
+bayan_u128_copy(&u_r, &u_a); bayan_u128_diveq(&u_r, &u_b);
+assert_eq(bayan_u128_lo(&u_r), 3, "u128: diveq");
+bayan_u128_copy(&u_r, &u_a); bayan_u128_modeq(&u_r, &u_b);
+assert_eq(bayan_u128_lo(&u_r), 2, "u128: modeq");
+
+test_group("u128: u64_mulmod no longer kills the process (v1.5.2)");
+# x86's DIV raises #DE when the QUOTIENT does not fit in 64 bits, not only on a
+# zero divisor. With unreduced 64-bit operands over a 31-bit modulus the
+# quotient wants ~97 bits, and the process took SIGFPE. Worse, aarch64 went
+# through the u128 pipeline and returned the right answer, so the two targets
+# disagreed about what an unreduced call did. Measured killer:
+#   mulmod(0xfdec65fe72129737, 0x93548b905e5c7474, 0x7222d728)
+# 0xfdec65fe72129737 has bit 63 set, so it is also the signed-`%` trap.
+assert_eq(bayan_u64_mulmod(7, 9, 10), 3, "u64: mulmod on reduced operands");
+assert_eq(bayan_u64_mulmod(1000000, 1000000, 1000000007), 999993007,
+  "u64: mulmod with an unreduced product");
+assert_eq(bayan_u64_mulmod(0, 12345, 7), 0, "u64: mulmod by zero");
+assert_eq(bayan_u64_mulmod(12345, 6789, 1), 0, "u64: any product mod 1 is 0");
+assert_eq(bayan_u64_mulmod(5, 5, 0), 0, "u64: a zero modulus returns 0 instead of faulting");
+assert_eq(bayan_u64_powmod(3, 5, 7), 5, "u64: powmod 3^5 mod 7");
+assert_eq(bayan_u64_powmod(2, 10, 1000), 24, "u64: powmod 2^10 mod 1000");
+assert_eq(bayan_u64_powmod(12345, 0, 97), 1, "u64: anything to the zero power is 1");
+assert_eq(bayan_u64_powmod(3, 5, 0), 0, "u64: powmod with a zero modulus returns 0");
+assert_eq(bayan_u64_powmod(3, 5, 1), 0, "u64: and mod 1 is 0");
+
+test_group("dtoa: floats round-trip through JSON text (v1.5.2)");
+var d_buf = alloc(64);
+# The property that matters is that formatting then parsing returns the
+# IDENTICAL bits. Grisu2 is documented as shortest-or-NEAR-shortest, so the
+# text itself is not required to match another implementation's byte for byte.
+var d_n = bayan_f64_to_json(4614256656552045848, d_buf);      # 3.141592653589793
+store8(d_buf + d_n, 0);
+assert_eq(bayan_f64_parse(d_buf, d_n), 4614256656552045848, "dtoa: pi round-trips");
+d_n = bayan_f64_to_json(4607182418800017408, d_buf);          # 1.0
+store8(d_buf + d_n, 0);
+assert_eq(streq(d_buf, "1.0"), 1, "dtoa: 1.0 formats as 1.0");
+assert_eq(bayan_f64_parse("0.1", 3), 4591870180066957722, "dtoa: 0.1 parses to the right bits");
+assert_eq(bayan_f64_parse("1e308", 5), 9214871658872686752, "dtoa: 1e308");
+assert_eq(bayan_f64_parse("5e-324", 6), 1, "dtoa: the smallest denormal is bit pattern 1");
+assert_eq(bayan_f64_from_json("2.5"), 4612811918334230528, "dtoa: the cstring entry agrees");
+# Non-finite values have no JSON representation; the module emits null.
+d_n = bayan_f64_to_json(9218868437227405312, d_buf);          # +inf
+store8(d_buf + d_n, 0);
+assert_eq(streq(d_buf, "null"), 1, "dtoa: infinity serialises as null, since JSON has no inf");
+
+test_group("toml: sections, arrays and lookup (v1.5.2)");
+var t_doc = "top = 1\nname = \"demo\"\nlist = [1, 2, 3]\nstrs = [\"a\", \"b\"]\n\n[server]\nhost = \"h\"\nport = 80\n\n[[item]]\nid = 1\n\n[[item]]\nid = 2\n";
+var t_secs = bayan_toml_parse(str_from(t_doc));
+# Cross-checked against Python's tomllib: 4 sections, root has 4 pairs,
+# [server] has 2, and there are two [[item]] tables.
+assert_eq(vec_len(t_secs), 4, "toml: root + [server] + two [[item]] sections");
+var t_root = bayan_toml_section_pairs(vec_get(t_secs, 0));
+assert_eq(vec_len(t_root), 4, "toml: the root section's pairs");
+assert_eq(str_len(bayan_toml_section_name(vec_get(t_secs, 0))), 0, "toml: the root section is unnamed");
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(t_secs, 1)), "server"), 1, "toml: a named section");
+assert_eq(vec_len(bayan_toml_get_sections(t_secs, "item")), 2, "toml: both [[item]] tables are found");
+assert_eq(vec_len(bayan_toml_get_sections(t_secs, "absent")), 0, "toml: an absent section name gives none");
+# bayan_toml_get takes a CSTRING (it compares with str_eq_cstr); passing a Str
+# yields a silent not-found. See Known gaps 9.
+assert_neq(bayan_toml_get(t_root, "name"), 0, "toml: get finds a key");
+assert_eq(bayan_toml_get(t_root, "nope"), 0, "toml: and returns 0 for one that is absent");
+assert_eq(str_eq_cstr(bayan_toml_pair_key(vec_get(t_root, 0)), "top"), 1, "toml: pair_key");
+assert_neq(bayan_toml_pair_value(vec_get(t_root, 0)), 0, "toml: pair_value");
+# Array VALUES are stored verbatim; the element accessors split them.
+assert_eq(bayan_toml_is_array(bayan_toml_get(t_root, "list")), 1, "toml: an array value is recognised");
+assert_eq(bayan_toml_is_array(bayan_toml_get(t_root, "name")), 0, "toml: a scalar is not");
+var t_arr = bayan_toml_get_array(t_root, "list");
+assert_eq(vec_len(t_arr), 3, "toml: a numeric array splits into 3 elements");
+assert_eq(str_eq_cstr(vec_get(t_arr, 1), "2"), 1, "toml: element 1 is 2");
+var t_sarr = bayan_toml_get_array(t_root, "strs");
+assert_eq(vec_len(t_sarr), 2, "toml: a string array splits into 2");
+assert_eq(str_eq_cstr(vec_get(t_sarr, 0), "a"), 1, "toml: with quotes stripped");
+assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get(t_root, "list"))), 3,
+  "toml: array_parse on the raw value agrees");
+# Constructors round-trip through the accessors.
+var t_p = bayan_toml_pair_new(str_from("k"), str_from("v"));
+assert_eq(str_eq_cstr(bayan_toml_pair_key(t_p), "k"), 1, "toml: pair_new/key");
+var t_pv = vec_new();
+vec_push(t_pv, t_p);
+var t_s = bayan_toml_section_new(str_from("sec"), t_pv);
+assert_eq(str_eq_cstr(bayan_toml_section_name(t_s), "sec"), 1, "toml: section_new/name");
+assert_eq(vec_len(bayan_toml_section_pairs(t_s)), 1, "toml: section_new/pairs");
+
+test_group("base64: the URL-safe alphabet (v1.5.2)");
+# base64url swaps + / for - _ and omits padding, so a value that encodes to
+# either of those characters is the one that distinguishes the two alphabets.
+var b_raw = alloc(3);
+store8(b_raw, 255); store8(b_raw + 1, 254); store8(b_raw + 2, 253);
+assert_eq(streq(bayan_base64_encode(b_raw, 3), "//79"), 1, "base64: standard uses / and +");
+assert_eq(streq(bayan_base64url_encode(b_raw, 3), "__79"), 1, "base64url: uses _ and -");
+var b_d = bayan_base64url_decode("__79", 4);
+assert_neq(b_d, 0, "base64url: decodes its own output");
+assert_eq(load64(b_d + 8), 3, "base64url: to the right length");
+assert_eq(load8(load64(b_d)), 255, "base64url: and the right bytes");
+# Unpadded input is legal for base64url and must not be refused the way the
+# padded standard decoder refuses a non-multiple-of-4 length.
+var b_u = bayan_base64url_decode("Zm9v", 4);
+assert_eq(load64(b_u + 8), 3, "base64url: a full group");
+var b_u2 = bayan_base64url_decode("Zm8", 3);
+assert_eq(load64(b_u2 + 8), 2, "base64url: an unpadded partial group is accepted");
+assert_eq(bayan_base64url_decode("!!!!", 4), 0, "base64url: non-alphabet bytes are refused");
+
+test_group("toml/bigint/yaml: the last uncovered entry points (v1.5.2)");
+# These are the `_a` variants and file loaders — several of which 1.5.1 and
+# 1.5.2 CHANGED — so they are exactly the ones that should not have gone
+# untested. tests/fixtures/toml/sample.toml's shape is confirmed by Python's
+# tomllib: 4 root pairs, [server] with 2, two [[entry]] tables, tags of 3.
+var lc_arena = arena_allocator(65536);
+
+var lc_p = bayan_toml_pair_new_a(lc_arena, str_from("k"), str_from("v"));
+assert_eq(str_eq_cstr(bayan_toml_pair_key(lc_p), "k"), 1, "toml: pair_new_a");
+var lc_pv = vec_new_a(lc_arena);
+vec_push_a(lc_arena, lc_pv, lc_p);
+var lc_s = bayan_toml_section_new_a(lc_arena, str_from("s"), lc_pv);
+assert_eq(str_eq_cstr(bayan_toml_section_name(lc_s), "s"), 1, "toml: section_new_a");
+
+var lc_secs = bayan_toml_parse_file("tests/fixtures/toml/sample.toml");
+assert_eq(vec_len(lc_secs), 4, "toml: parse_file reads the fixture's four sections");
+var lc_root = bayan_toml_section_pairs(vec_get(lc_secs, 0));
+assert_eq(vec_len(lc_root), 4, "toml: with four root pairs");
+assert_eq(vec_len(bayan_toml_get_sections(lc_secs, "entry")), 2, "toml: and both [[entry]] tables");
+assert_eq(vec_len(bayan_toml_array_parse_a(lc_arena, bayan_toml_get(lc_root, "tags"))), 3,
+  "toml: array_parse_a splits the 3-element array");
+var lc_r = bayan_toml_parse_file_r("tests/fixtures/toml/sample.toml");
+assert_eq(is_err_result(lc_r), 0, "toml: parse_file_r succeeds on a readable file");
+assert_eq(vec_len(load64(lc_r + 8)), 4, "toml: and returns the same four sections");
+assert_eq(is_err_result(bayan_toml_parse_file_r("tests/fixtures/toml/does-not-exist.toml")), 1,
+  "toml: parse_file_r reports a missing file as an error");
+assert_eq(vec_len(bayan_toml_parse_file("tests/fixtures/toml/does-not-exist.toml")), 0,
+  "toml: while the non-Result form yields no sections");
+
+# 1.5.1 removed a fixed 256 KiB read buffer that TRUNCATED and reported
+# success — 1,893 keys silently vanished from a 300 KB file. Write one larger
+# than that cap and confirm every key survives. build/ is gitignored.
+var lc_sb = str_builder_new();
+var lc_i = 0;
+while (lc_i < 25000) {
+    str_builder_add_cstr(lc_sb, "k");
+    str_builder_add_int(lc_sb, lc_i);
+    str_builder_add_cstr(lc_sb, " = ");
+    str_builder_add_int(lc_sb, lc_i);
+    str_builder_putc(lc_sb, 10);
+    lc_i = lc_i + 1;
+}
+var lc_big = str_builder_build(lc_sb);
+assert_gt(str_len(lc_big), 262144, "toml: the fixture exceeds the old 256 KiB cap");
+file_write_all("build/big-generated.toml", str_data(lc_big), str_len(lc_big));
+var lc_bs = bayan_toml_parse_file("build/big-generated.toml");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(lc_bs, 0))), 25000,
+  "toml: a file past the old cap is read WHOLE, not truncated at 256 KiB");
+assert_neq(bayan_toml_get(bayan_toml_section_pairs(vec_get(lc_bs, 0)), "k24999"), 0,
+  "toml: including its very last key");
+
+var lc_a = bayan_u256_from(123456789);
+var lc_b = bayan_u256_zero();
+bayan_u256_copy(lc_b, lc_a);
+assert_eq(bayan_u256_eq(lc_b, lc_a), 1, "u256: copy");
+var lc_c = bayan_u256_clone(lc_a);
+assert_eq(bayan_u256_eq(lc_c, lc_a), 1, "u256: clone produces an equal value");
+bayan_u256_set_limb(lc_c, 0, 999);
+assert_eq(bayan_u256_limb(lc_a, 0), 123456789, "u256: and an independent one — mutating the clone leaves the original");
+var lc_sm = bayan_u256_zero();
+bayan_u256_submod(lc_sm, bayan_u256_from(3), bayan_u256_from(8), bayan_u256_from(10));
+assert_eq(bayan_u256_limb(lc_sm, 0), 5, "u256: submod wraps (3-8) mod 10 to 5, not to a negative");
+
+# 1.5.2 added the missing allocation check here; an exhausted arena used to
+# write through a null pointer.
+var lc_fm = bayan_yaml_frontmatter_split_a(lc_arena, str_from("---\nk: v\n---\nbody\n"));
+assert_neq(lc_fm, 0, "yaml: frontmatter_split_a splits a document");
+assert_neq(load64(lc_fm), 0, "yaml: returning the frontmatter half");
+var lc_tiny = arena_allocator(16);
+alloc_via(lc_tiny, 16);
+assert_eq(bayan_yaml_frontmatter_split_a(lc_tiny, str_from("---\nk: v\n---\nb\n")), 0,
+  "yaml: and an exhausted arena returns 0 rather than faulting");
+
+test_group("cyml: constructors, split and the Result loader (v1.5.2)");
+var cc_a = arena_allocator(16384);
+# Entries and docs are built from (ptr, len) spans into the caller's buffer —
+# the parser is zero-copy, so the constructors take spans rather than Strs.
+var cc_hdr = "k = 1";
+var cc_body = "text";
+var cc_e = bayan_cyml_entry_new_a(cc_a, cc_hdr, strlen(cc_hdr), cc_body, strlen(cc_body));
+assert_neq(cc_e, 0, "cyml: entry_new_a");
+assert_eq(bayan_cyml_entry_header_len(cc_e), 5, "cyml: its header span");
+assert_eq(bayan_cyml_entry_body_len(cc_e), 4, "cyml: and its body span");
+assert_eq(memeq(bayan_cyml_entry_header(cc_e), "k = 1", 5), 1, "cyml: the header points at the source bytes");
+var cc_e2 = bayan_cyml_entry_new(cc_hdr, strlen(cc_hdr), cc_body, strlen(cc_body));
+assert_eq(bayan_cyml_entry_body_len(cc_e2), 4, "cyml: entry_new (non-_a) agrees");
+var cc_d = bayan_cyml_doc_new_a(cc_a);
+assert_neq(cc_d, 0, "cyml: doc_new_a");
+assert_eq(bayan_cyml_doc_entry_count(cc_d), 0, "cyml: a fresh doc has no entries");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_doc_new()), 0, "cyml: doc_new (non-_a) likewise");
+
+# split() is the single-entry convenience: TOML above ---, markdown below.
+var cc_src = "a = 1\n---\nthe body\n";
+var cc_hp: i64[1]; var cc_hl: i64[1]; var cc_bp: i64[1]; var cc_bl: i64[1];
+assert_eq(bayan_cyml_split(cc_src, strlen(cc_src), &cc_hp, &cc_hl, &cc_bp, &cc_bl), 1,
+  "cyml: split finds the --- delimiter");
+assert_eq(load64(&cc_hl), 5, "cyml: the header is the trimmed text above it");
+assert_eq(memeq(load64(&cc_hp), "a = 1", 5), 1, "cyml: pointing into the caller's buffer");
+assert_eq(load64(&cc_bl), 8, "cyml: and the body is the text below");
+assert_eq(memeq(load64(&cc_bp), "the body", 8), 1, "cyml: also zero-copy");
+var cc_nod = "a = 1\nb = 2\n";
+assert_eq(bayan_cyml_split(cc_nod, strlen(cc_nod), &cc_hp, &cc_hl, &cc_bp, &cc_bl), 0,
+  "cyml: a document with no delimiter reports 0");
+
+var cc_r = bayan_cyml_parse_file_r("tests/fixtures/cyml/sample.cyml");
+assert_eq(is_err_result(cc_r), 0, "cyml: parse_file_r reads a real file");
+var cc_doc = load64(cc_r + 8);
+assert_eq(bayan_cyml_doc_entry_count(cc_doc), 1, "cyml: the single-entry file yields one entry");
+assert_gt(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(cc_doc, 0)), 0, "cyml: which carries a body");
+assert_neq(bayan_cyml_doc_entries(cc_doc), 0, "cyml: doc_entries exposes the backing array");
+assert_eq(is_err_result(bayan_cyml_parse_file_r("tests/fixtures/cyml/nope.cyml")), 1,
+  "cyml: and a missing file is an error, not an empty document");
+
+test_group("json: the flat key/value API (v1.5.2)");
+var jf_doc = "{\"name\": \"demo\", \"count\": 42, \"on\": true}";
+var jf = bayan_json_parse(str_from(jf_doc));
+assert_eq(vec_len(jf), 3, "json: the flat parser returns three pairs");
+assert_eq(str_eq_cstr(bayan_json_key(vec_get(jf, 0)), "name"), 1, "json: key");
+assert_eq(str_eq_cstr(bayan_json_value(vec_get(jf, 0)), "demo"), 1, "json: value");
+assert_eq(bayan_json_get_int(jf, str_from("count")), 42, "json: get_int");
+assert_eq(bayan_json_get_int(jf, str_from("absent")), 0, "json: get_int on a missing key is 0");
+var jf_p = bayan_json_pair_new(str_from("k"), str_from("v"));
+assert_eq(str_eq_cstr(bayan_json_key(jf_p), "k"), 1, "json: pair_new");
+var jf_arena = arena_allocator(8192);
+assert_eq(str_eq_cstr(bayan_json_key(bayan_json_pair_new_a(jf_arena, str_from("k2"), str_from("v2"))), "k2"), 1,
+  "json: pair_new_a");
+var jf_out = vec_new();
+vec_push(jf_out, bayan_json_pair_new(str_from("a"), str_from("1")));
+assert_gt(str_len(bayan_json_build(jf_out)), 0, "json: build emits a document");
+assert_eq(str_contains_cstr(bayan_json_build(jf_out), "\"a\""), 1, "json: containing the key");
+
+test_group("json: file loaders read the WHOLE file (v1.5.1 regression)");
+# A fixed 16 KiB buffer used to truncate mid-token and report success: a
+# 52 KB / 2,001-key object parsed to 630 pairs. build/ is gitignored.
+var jl_sb = str_builder_new();
+str_builder_putc(jl_sb, 123);
+var jl_i = 0;
+while (jl_i < 3000) {
+    if (jl_i > 0) { str_builder_putc(jl_sb, 44); }
+    str_builder_add_cstr(jl_sb, "\"k");
+    str_builder_add_int(jl_sb, jl_i);
+    str_builder_add_cstr(jl_sb, "\":");
+    str_builder_add_int(jl_sb, jl_i);
+    jl_i = jl_i + 1;
+}
+str_builder_putc(jl_sb, 125);
+var jl_big = str_builder_build(jl_sb);
+assert_gt(str_len(jl_big), 16384, "json: the fixture exceeds the old 16 KiB cap");
+file_write_all("build/big-generated.json", str_data(jl_big), str_len(jl_big));
+var jl_pairs = bayan_json_parse_file("build/big-generated.json");
+assert_eq(vec_len(jl_pairs), 3000, "json: parse_file reads every pair, not the first 630");
+assert_neq(bayan_json_get(jl_pairs, str_from("k2999")), 0, "json: including the last key");
+var jl_r = bayan_json_parse_file_r("build/big-generated.json");
+assert_eq(is_err_result(jl_r), 0, "json: parse_file_r succeeds");
+assert_eq(vec_len(load64(jl_r + 8)), 3000, "json: and returns every pair too");
+assert_eq(is_err_result(bayan_json_parse_file_r("build/does-not-exist.json")), 1,
+  "json: a missing file is an error");
+
+test_group("json: value-tree constructors and accessors (v1.5.2)");
+var jv_a = arena_allocator(16384);
+assert_eq(bayan_json_v_tag(bayan_json_v_null()), JTAG_NULL, "json: null/tag");
+assert_eq(bayan_json_v_tag(bayan_json_v_null_a(jv_a)), JTAG_NULL, "json: null_a");
+assert_eq(bayan_json_v_is_bool(bayan_json_v_bool_new(1)), 1, "json: bool_new/is_bool");
+assert_eq(bayan_json_v_bool(bayan_json_v_bool_new_a(jv_a, 0)), 0, "json: bool_new_a");
+assert_eq(bayan_json_v_is_str(bayan_json_v_str_new(str_from("s"))), 1, "json: str_new/is_str");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_str_new_a(jv_a, str_from("t"))), "t"), 1, "json: str_new_a");
+# A float carries an f64 BIT PATTERN, not a value — 1.0 is 4607182418800017408.
+var jv_f = bayan_json_v_float_new(4607182418800017408);
+assert_eq(bayan_json_v_float(jv_f), 4607182418800017408, "json: float_new round-trips its bits");
+assert_eq(bayan_json_v_tag(bayan_json_v_float_new_a(jv_a, 0)), JTAG_FLOAT, "json: float_new_a");
+var jv_arr = bayan_json_v_arr_new();
+bayan_json_v_arr_push(jv_arr, bayan_json_v_int_new(1));
+bayan_json_v_arr_push_a(jv_a, jv_arr, bayan_json_v_int_new(2));
+assert_eq(bayan_json_v_arr_len(jv_arr), 2, "json: arr_push and arr_push_a both append");
+var jv_obj = bayan_json_v_parse_buf("{\"x\":1,\"y\":2}", 13);
+assert_eq(str_eq_cstr(bayan_json_v_obj_key(jv_obj, 0), "x"), 1, "json: obj_key by index");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_val(jv_obj, 1)), 2, "json: obj_val by index");
+assert_eq(bayan_json_v_obj_key(jv_obj, 99), 0, "json: an out-of-range index returns 0 rather than aborting");
+# 1.4.1 added obj_get_by_str precisely because obj_get takes a CSTRING and
+# passing a Str made strlen walk the 16-byte header and return a silent
+# not-found. Until now the fix itself had no test.
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_str(jv_obj, str_from("y"))), 2,
+  "json: obj_get_by_str accepts a Str, which obj_get cannot");
+assert_eq(bayan_json_v_obj_get_by_str(jv_obj, str_from("nope")), 0, "json: and returns 0 when absent");
+
+test_group("json: the remaining parse and pointer entry points (v1.5.2)");
+var jp_ps[48];
+assert_neq(bayan_json_v_parse_ctx_str(&jp_ps, str_from("[1,2]")), 0, "json: parse_ctx_str takes a Str");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_parse_a(jv_a, str_from("[1,2,3]"))), 3, "json: parse_a");
+var jp_v = bayan_json_v_parse_buf("{\"a\":{\"b\":7}}", 13);
+assert_eq(bayan_json_v_int(bayan_json_v_pointer_cstr(jp_v, "/a/b", 4)), 7, "json: pointer_cstr");
+assert_eq(bayan_json_v_pointer_cstr(jp_v, "/a/zz", 5), 0, "json: and 0 for a path that does not exist");
+assert_eq(bayan_json_v_parse_buf("{bad", 4), 0, "json: a malformed document is rejected");
+assert_gt(bayan_json_last_error_pos(), 0 - 2, "json: last_error_pos is populated after a failure");
+
+test_group("pdf: object cells — the _a twins and the remaining accessors (v1.5.2)");
+var pa = arena_allocator(65536);
+assert_eq(bayan_pdf_obj_tag(bayan_pdf_obj_null_a(pa)), PTAG_NULL, "pdf: obj_null_a");
+assert_eq(bayan_pdf_obj_bool_value(bayan_pdf_obj_bool_new_a(pa, 1)), 1, "pdf: obj_bool_new_a");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_int_new_a(pa, 9)), 9, "pdf: obj_int_new_a");
+assert_eq(bayan_pdf_obj_real_places(bayan_pdf_obj_real_new_a(pa, 5, 1)), 1, "pdf: obj_real_new_a");
+assert_eq(str_eq_cstr(bayan_pdf_obj_name(bayan_pdf_obj_name_new_a(pa, "N")), "N"), 1, "pdf: obj_name_new_a");
+var ps_str = bayan_pdf_obj_string_new(str_from("hi"));
+assert_eq(bayan_pdf_obj_is_string(ps_str), 1, "pdf: obj_string_new/is_string");
+assert_eq(bayan_pdf_obj_is_hex(ps_str), 0, "pdf: a literal string is not a hex string");
+assert_eq(str_eq_cstr(bayan_pdf_obj_bytes(bayan_pdf_obj_string_new_a(pa, str_from("hi"))), "hi"), 1,
+  "pdf: obj_string_new_a");
+var ps_hex = bayan_pdf_obj_hex_new(str_from("hi"));
+assert_eq(bayan_pdf_obj_is_hex(ps_hex), 1, "pdf: obj_hex_new is flagged as hex");
+assert_eq(bayan_pdf_obj_is_hex(bayan_pdf_obj_hex_new_a(pa, str_from("hi"))), 1, "pdf: obj_hex_new_a");
+assert_eq(bayan_pdf_obj_is_num(bayan_pdf_obj_int_new(1)), 1, "pdf: an int is a number");
+assert_eq(bayan_pdf_obj_is_num(bayan_pdf_obj_real_new(1, 1)), 1, "pdf: so is a real");
+assert_eq(bayan_pdf_obj_is_num(ps_str), 0, "pdf: a string is not");
+assert_eq(bayan_pdf_obj_is_name(bayan_pdf_obj_name_new("X")), 1, "pdf: is_name");
+var pa_arr = bayan_pdf_obj_array_new_a(pa);
+bayan_pdf_obj_array_push_a(pa, pa_arr, bayan_pdf_obj_int_new_a(pa, 4));
+assert_eq(bayan_pdf_obj_array_len(pa_arr), 1, "pdf: obj_array_new_a + array_push_a");
+var pa_d = bayan_pdf_obj_dict_new_a(pa);
+bayan_pdf_obj_dict_set_a(pa, pa_d, "K", bayan_pdf_obj_int_new_a(pa, 5));
+assert_eq(bayan_pdf_obj_dict_len(pa_d), 1, "pdf: obj_dict_new_a + dict_set_a");
+assert_eq(str_eq_cstr(bayan_pdf_obj_dict_key(pa_d, 0), "K"), 1, "pdf: obj_dict_key by index");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_dict_value(pa_d, 0)), 5, "pdf: obj_dict_value by index");
+assert_eq(str_len(bayan_pdf_obj_dict_key(pa_d, 99)), 0,
+  "pdf: an out-of-range dict index gives an empty Str, never an abort");
+assert_eq(bayan_pdf_obj_int_value(bayan_pdf_obj_dict_get_by_str(pa_d, str_from("K"))), 5,
+  "pdf: obj_dict_get_by_str takes a Str where obj_dict_get takes a cstring");
+var pa_st = bayan_pdf_obj_stream_new_a(pa, pa_d, str_from("DATA"));
+assert_eq(bayan_pdf_obj_is_stream(pa_st), 1, "pdf: obj_stream_new_a/is_stream");
+assert_eq(bayan_pdf_obj_dict_len(bayan_pdf_obj_stream_dict(pa_st)), 1, "pdf: obj_stream_dict");
+# stream_raw is the ON-DISK form. A writer-built stream has none until it is
+# emitted — the payload lives in the decoded slot — so an empty Str here is the
+# documented state, not a loss.
+assert_eq(str_len(bayan_pdf_obj_stream_raw(pa_st)), 0,
+  "pdf: obj_stream_raw is empty for a stream the writer has not emitted yet");
+var pa_ref = bayan_pdf_obj_ref_new_a(pa, 3, 7);
+assert_eq(bayan_pdf_obj_ref_num(pa_ref), 3, "pdf: obj_ref_new_a number");
+assert_eq(bayan_pdf_obj_ref_gen(pa_ref), 7, "pdf: obj_ref_gen");
+assert_eq(str_eq_cstr(bayan_pdf_obj_to_bytes_a(pa, bayan_pdf_obj_int_new(8)), "8"), 1, "pdf: obj_to_bytes_a");
+
+test_group("pdf: measurement and transcoding entry points (v1.5.2)");
+assert_eq(bayan_pdf_text_width_buf(PDF_FONT_COURIER, 12000, "AAAA", 4), 28800, "pdf: text_width_buf");
+assert_gt(vec_len(bayan_pdf_wrap_a(pa, PDF_FONT_HELVETICA, 11000, 60000,
+      str_from("some words that will not fit on one short line"))), 1, "pdf: wrap_a");
+assert_eq(bayan_pdf_winansi_stats_size(), 16, "pdf: winansi_stats_size");
+var pw_st[16];
+assert_eq(str_len(bayan_pdf_winansi_a(pa, str_from("abc"), PDF_WINANSI_STRICT, &pw_st)), 3, "pdf: winansi_a");
+assert_eq(str_eq_cstr(bayan_pdf_from_winansi_a(pa, str_from("abc")), "abc"), 1, "pdf: from_winansi_a");
+
+test_group("pdf: the writer's text and graphics operators (v1.5.2)");
+var pw = bayan_pdf_new_a(pa);
+assert_neq(pw, 0, "pdf: new_a");
+bayan_pdf_set_version(pw, 14);
+bayan_pdf_set_id(pw, str_from("aaaa"), str_from("bbbb"));
+var pwp = bayan_pdf_add_page(pw, bayan_pdf_page_size_w(PDF_PAGE_A4), bayan_pdf_page_size_h(PDF_PAGE_A4));
+assert_eq(bayan_pdf_use_font(pw, pwp, PDF_FONT_HELVETICA) != 0, 1, "pdf: use_font returns a resource name");
+assert_eq(bayan_pdf_text_begin(pwp), 0, "pdf: text_begin");
+assert_eq(bayan_pdf_text_font(pwp, PDF_FONT_HELVETICA, 12000), 0, "pdf: text_font");
+assert_eq(bayan_pdf_text_leading(pwp, 14000), 0, "pdf: text_leading");
+assert_eq(bayan_pdf_text_char_spacing(pwp, 100), 0, "pdf: text_char_spacing");
+assert_eq(bayan_pdf_text_word_spacing(pwp, 200), 0, "pdf: text_word_spacing");
+assert_eq(bayan_pdf_text_pos(pwp, 72000, 700000), 0, "pdf: text_pos");
+assert_eq(bayan_pdf_text_show_line(pwp, str_from("one")), 0, "pdf: text_show_line");
+assert_eq(bayan_pdf_text_next_line(pwp), 0, "pdf: text_next_line");
+assert_eq(bayan_pdf_text_end(pwp), 0, "pdf: text_end");
+assert_eq(bayan_pdf_gsave(pwp), 0, "pdf: gsave");
+assert_eq(bayan_pdf_set_line_width(pwp, 500), 0, "pdf: set_line_width");
+assert_eq(bayan_pdf_set_gray(pwp, 500), 0, "pdf: set_gray");
+assert_eq(bayan_pdf_set_rgb(pwp, 100, 200, 300), 0, "pdf: set_rgb");
+assert_eq(bayan_pdf_move_to(pwp, 10000, 10000), 0, "pdf: move_to");
+assert_eq(bayan_pdf_line_to(pwp, 20000, 20000), 0, "pdf: line_to");
+assert_eq(bayan_pdf_stroke(pwp), 0, "pdf: stroke");
+assert_eq(bayan_pdf_grestore(pwp), 0, "pdf: grestore");
+assert_eq(bayan_pdf_raw_op(pwp, str_from("0 0 1 rg")), 0, "pdf: raw_op accepts a safe operator");
+assert_eq(bayan_pdf_doc_error_pos(pw), 0 - 1, "pdf: doc_error_pos is -1 for writer-side state");
+var pw_bytes = bayan_pdf_to_bytes_a(pa, pw);
+assert_gt(str_len(pw_bytes), 400, "pdf: to_bytes_a serialises the document");
+assert_eq(memeq(str_data(pw_bytes), "%PDF-1.4", 8), 1, "pdf: set_version selected the header");
+assert_eq(bayan_pdf_write_file(pw, "build/pdf-v152.pdf"), 0, "pdf: write_file succeeds");
+assert_neq(bayan_pdf_write_file(pw, "build/no-such-dir/x.pdf"), 0, "pdf: and reports a bad path");
+
+test_group("pdf: the remaining reader entry points (v1.5.2)");
+var pr = bayan_pdf_parse_a(pa, pw_bytes);
+assert_neq(pr, 0, "pdf: parse_a");
+assert_eq(bayan_pdf_version(pr), 14, "pdf: version reads the header");
+assert_gt(bayan_pdf_obj_count(pr), 0, "pdf: obj_count");
+assert_neq(bayan_pdf_trailer(pr), 0, "pdf: trailer");
+assert_neq(bayan_pdf_dict_lookup(pr, bayan_pdf_catalog(pr), "Pages"), 0, "pdf: dict_lookup resolves through a ref");
+assert_neq(bayan_pdf_resolve(pr, bayan_pdf_obj_dict_get(bayan_pdf_catalog(pr), "Pages")), 0, "pdf: resolve");
+var pr_pg = bayan_pdf_page(pr, 0);
+assert_neq(bayan_pdf_page_dict(pr_pg), 0, "pdf: page_dict");
+# page_number is the page dictionary's OBJECT number, not its index in the
+# document — a distinction worth pinning, since 0 would be a plausible guess.
+assert_gt(bayan_pdf_page_number(pr_pg), 0, "pdf: page_number is the page's object number");
+assert_gt(str_len(bayan_pdf_page_content(pr, pr_pg)), 0, "pdf: page_content");
+assert_gt(str_len(bayan_pdf_page_content_a(pa, pr, pr_pg)), 0, "pdf: page_content_a");
+assert_eq(str_contains_cstr(bayan_pdf_page_extract_text(pr, pr_pg), "one"), 1, "pdf: page_extract_text");
+assert_eq(str_contains_cstr(bayan_pdf_page_extract_text_a(pa, pr, pr_pg), "one"), 1, "pdf: page_extract_text_a");
+assert_eq(str_contains_cstr(bayan_pdf_extract_text_a(pa, pr), "one"), 1, "pdf: extract_text_a");
+var pr_ps[64];
+assert_neq(bayan_pdf_parse_ctx(&pr_ps, str_data(pw_bytes), str_len(pw_bytes)), 0, "pdf: parse_ctx");
+assert_neq(bayan_pdf_parse_ctx_a(pa, &pr_ps, str_data(pw_bytes), str_len(pw_bytes)), 0, "pdf: parse_ctx_a");
+assert_neq(bayan_pdf_parse_buf(str_data(pw_bytes), str_len(pw_bytes)), 0, "pdf: parse_buf");
+assert_eq(bayan_pdf_state_error_pos(&pr_ps), 0 - 1, "pdf: state_error_pos is -1 on a clean parse");
+assert_eq(is_err_result(bayan_pdf_parse_file_r("build/does-not-exist.pdf")), 1, "pdf: parse_file_r on a missing file");
+# A content stream is not an image; the predicate exists so a caller can tell.
+var pr_c = bayan_pdf_obj_dict_get(bayan_pdf_page_dict(pr_pg), "Contents");
+assert_eq(bayan_pdf_stream_is_image(pr, bayan_pdf_resolve(pr, pr_c)), 0, "pdf: stream_is_image is 0 for content");
+assert_gt(str_len(bayan_pdf_stream_data(pr, bayan_pdf_resolve(pr, pr_c))), 0, "pdf: stream_data");
+assert_gt(str_len(bayan_pdf_stream_data_a(pa, pr, bayan_pdf_resolve(pr, pr_c))), 0, "pdf: stream_data_a");
+assert_gt(bayan_pdf_last_error_pos(), 0 - 2, "pdf: last_error_pos is readable");
+
 var r = assert_summary();

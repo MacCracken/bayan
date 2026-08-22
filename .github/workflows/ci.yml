@@ -252,8 +252,31 @@ jobs:
 
       # A floor that ratchets, not a target. Raise it whenever real coverage
       # lands; never lower it to make a red build green.
+      #
+      # 1.5.2 took this from 30 to 100: every public function in every module
+      # is now referenced by a test. Pinning it AT 100 means adding a public
+      # function without a test turns the build red, which is the pressure this
+      # project turned out to need — 1.5.1 found two heap overflows, a wrong
+      # 256-bit multiply and 18 other defects in modules that had built clean
+      # and passed every gate for five releases while being untested.
+      #
+      # It remains reference coverage: it proves a function is CALLED, not that
+      # it is called correctly. The oracle-driven vectors below are what check
+      # the answers.
       - name: Reference coverage floor
-        run: cyrius coverage --min 30
+        run: cyrius coverage --min 100
+
+      # The arithmetic vectors' expected values come from Python, not from
+      # bayan. Regenerating them must be reproducible, or the "independent
+      # oracle" claim decays into whatever was checked in once.
+      - name: Numeric vectors regenerate identically
+        run: |
+          set -euo pipefail
+          python3 scripts/gen-numeric-vectors.py "${RUNNER_TEMP}/nv"
+          diff "${RUNNER_TEMP}/nv/u128.vec" tests/fixtures/numeric/u128.vec \
+            || { echo "::error::u128 vectors differ from scripts/gen-numeric-vectors.py output"; exit 1; }
+          diff "${RUNNER_TEMP}/nv/f64.vec" tests/fixtures/numeric/f64.vec \
+            || { echo "::error::f64 vectors differ from scripts/gen-numeric-vectors.py output"; exit 1; }
 
       # --- Distribution: bayan's actual product is dist/, not build/ ----------
 
