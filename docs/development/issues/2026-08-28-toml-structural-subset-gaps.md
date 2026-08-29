@@ -6,7 +6,15 @@
 repro against `src/toml.cyr` at that revision.
 **Severity**: Medium — no crashes and no memory errors, but each returns a
 wrong answer or drops data without saying so.
-**Status**: OPEN. Deliberately not fixed in 1.5.3.
+**Status**: ✅ **Resolved in bayan 1.5.4** (cyrius pin 6.5.36). All seven fixed.
+See the Resolution section at the end.
+
+> The "deliberately not fixed in 1.5.3" this line used to carry was a scoping
+> decision I made without asking, presented as a technical one. It was wrong
+> twice over: the maintainer's request had been to repair the TOML issue, and
+> the call belonged to them either way. The four decisions in 1.5.4 that move
+> data or change a struct were put to the maintainer before any of them was
+> written.
 
 ## Why this is a separate filing
 
@@ -170,3 +178,66 @@ tables with at least one pair each, so none of the seven currently bites it —
 but item 4 would the first time a vault entry is written with no fields, item 5
 the first time a config line is overridden by appending, and item 6 the first
 time a value is a literal string starting with `[`.
+
+---
+
+## Resolution (bayan 1.5.4, 2026-08-28)
+
+All seven fixed. Every expectation is Python `tomllib`'s, and each fix is
+mutation-verified — ten mutations, one per gap, each confirmed to turn the
+suite red.
+
+| # | Gap | Resolution |
+|---|---|---|
+| 1 | Quoted keys | Parsed. A `"` key is decoded like a basic string, a `'` key is verbatim. |
+| 2 | Dotted keys | `a.b.c = 1` names the table `a.b` with key `c` — identical to `[a.b]` + `c = 1`. Quoted segments and nesting under a header both work. |
+| 3 | Inline tables | `bayan_toml_inline_parse` / `_a`, `bayan_toml_get_inline`, `bayan_toml_is_inline`. The array splitter tracks brace depth, so an array of inline tables splits on the outer commas only. |
+| 4 | Empty tables | Emitted. The root table is now always `sections[0]`. |
+| 5 | Duplicate keys | Last wins, plus `bayan_toml_count` for a caller that wants to reject duplicates itself. |
+| 6 | `is_array` heuristic | The parser records the value KIND. `bayan_toml_pair_is_array` cannot be fooled by content; `bayan_toml_is_array` is kept and documented as the heuristic it is. |
+| 7 | Header names raw | Trimmed and unquoted through the same scanner keys use. |
+
+### The decisions, and who made them
+
+Four of these move data or change a struct, so they were put to the maintainer
+rather than chosen here. All four went the spec-correct way:
+
+- **Dotted keys nest into sections** rather than staying flat, accepting that a
+  root lookup of `"a.b.c"` now misses.
+- **The pair widened to 24 bytes** to carry the kind, rather than a parallel
+  kinds vec or leaving the heuristic alone.
+- **Last wins** on duplicates, rather than keeping first-wins and documenting
+  it.
+- **Empty tables are emitted**, accepting that indices move.
+
+### What the fix taught
+
+- **The value dispatch is one function now.** The inline-table accessor needed
+  the identical logic, and this module's history is a list of two scanners that
+  had to agree and stopped agreeing — `_toml_parse_str` / `_toml_str_end`, and
+  the three array quote-trackers, each of which cost a release. Copying it
+  would have been the third.
+- **The bare-value scanner had to learn `,` and `}`.** The same function parses
+  values inside an inline table, where there is no newline to stop at, so
+  `{ x = 3, y = 4 }` gave `x` the value `3, y = 4 }` until it did.
+- **The oracle vectors needed a structural record.** `S` and `A` vectors can
+  only see what a value decodes to. Six of these seven gaps are about WHERE a
+  pair lands, which no string vector can observe — hence the `P` kind, carrying
+  a table name and a key. Mutation testing confirmed the new records bite:
+  reverting the dotted-key routing turns 6 of them red, reverting the header
+  trim turns 5.
+
+### What is still a subset
+
+Two things, both stated in `src/toml.cyr`'s header and both verified to behave
+as described:
+
+- A dotted key whose QUOTED segment contains a dot (`a."b.c".d`) joins to a
+  table name indistinguishable from `a.b.c.d`'s. Table names are flat dotted
+  strings, so there is nowhere to record that one dot was quoted.
+- A `[[array-of-tables]]` under a dotted parent is not merged with a same-named
+  sibling — correct for array entries, surprising if you expected one table.
+
+Neither has a known consumer. They are recorded rather than assumed away,
+because the last time this file's subject described its own limits from memory
+instead of from the code, it was wrong about six of seven.

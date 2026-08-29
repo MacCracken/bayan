@@ -6,8 +6,30 @@
 
 ## Version
 
-**1.5.3** — **the TOML parser was returning wrong values, and had been since
-1.0.0.** mneme reported it
+**1.5.4** — **the seven structural TOML gaps, closed.** 1.5.3 fixed what a
+value *decodes to*; 1.5.4 fixes where a pair *lands*: quoted keys, dotted keys
+naming a table, inline tables, empty tables, duplicate keys, the value-kind
+record, and trimmed header names. `cyml`'s last two fixed read caps went with
+them, so there are no fixed read caps left in `src/`.
+
+Four of those changes move data — the root table is always `sections[0]`, an
+empty table is emitted, a dotted key names a table, and a duplicate resolves to
+the LAST value — and the pair struct is 24 bytes rather than 16. The CHANGELOG
+leads with a banner.
+
+**The scoping is the part worth keeping.** 1.5.3 filed these seven as "wants its
+own release" without asking, which was a scoping decision presented as a
+technical one and wrong twice over: the report was a repair request, and the
+call belonged to the maintainer. The four decisions here that move data or
+change a struct were put to the maintainer before any of them was written.
+
+Verification: 918 asserts (from 839), 1,494 oracle vectors (from 1,476, now
+including 18 STRUCTURAL records that check where a pair landed rather than what
+it decoded to), 466/466 reference coverage, and ten mutations — one per gap fix
+— each confirmed to turn the suite red.
+
+Before that: **1.5.3** — **the TOML parser was returning wrong values, and had
+been since 1.0.0.** mneme reported it
 ([2026-08-22](issues/2026-08-22-mneme-toml-basic-strings-not-unescaped.md)):
 basic-string escapes were never decoded, so `"say \"hi\""` came back with its
 backslashes. Measuring that properly turned up nine more defects of the same
@@ -52,7 +74,7 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.5.36` (`cyrius.cyml [package].cyrius`). `cyrius version`
+- **Cyrius pin**: `6.5.36`, unchanged at 1.5.4 (`cyrius.cyml [package].cyrius`). `cyrius version`
   reports `manifest-pin: 6.5.36` with no drift line; build and test emit
   neither the pin-drift nor the shadow-lib warning.
 - **`lib/` matches the pin exactly**: verified against the **released 6.5.36
@@ -91,23 +113,24 @@ is convention rather than necessity). Regenerated from the tree 2026-08-28:
 |--------|-------|-----------|------------------|
 | `src/pdf.cyr`    | 9527 | 152 | `bayan_pdf_*` |
 | `src/json.cyr`   | 1922 | 69 | `bayan_json_*` |
-| `src/toml.cyr`   | 1261 | 21 | `bayan_toml_*` |
+| `src/toml.cyr`   | 1632 | 33 | `bayan_toml_*` |
 | `src/yaml.cyr`   | 899  | 12 | `bayan_yaml_*` |
 | `src/dtoa.cyr`   | 573  | 3  | `bayan_f64_*` |
 | `src/u128.cyr`   | 567  | 35 | `bayan_u128_*` / `bayan_u64_*` |
-| `src/cyml.cyr`   | 546  | 17 | `bayan_cyml_*` |
+| `src/cyml.cyr`   | 576  | 17 | `bayan_cyml_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
 | `src/base64.cyr` | 214  | 4  | `bayan_base64_*` |
 | `src/csv.cyr`    | 149  | 3  | `bayan_csv_*` |
 
-`toml` gained 4 public functions at 1.5.3 (`bayan_toml_escape` /
-`bayan_toml_unescape` and their `_a` twins) and roughly doubled in size — the
-escape decoder, the literal-string parser, the rewritten multi-line scanner,
-and a good deal of comment recording *why*, since six of the ten defects it
-fixes were invisible to every test that existed.
+`toml` has gone 17 -> 21 -> **33** public functions across 1.5.3 and 1.5.4,
+and roughly tripled in size. 1.5.3 added the escape decoder, the literal-string
+parser and the rewritten multi-line scanner; 1.5.4 added the key-path scanner,
+the extracted value dispatch, the inline-table accessor and the value-kind
+record. A good deal of the growth is comment recording *why*, because most of
+the defects both releases fixed were invisible to every test that existed.
 
-**Allocator-threaded surface: 49 public `_a` functions** across the bundle —
-pdf 26, json 15, toml 5, cyml 2, yaml 1. (Measured. The "21" this file carried
+**Allocator-threaded surface: 51 public `_a` functions** across the bundle —
+pdf 26, json 15, toml 7, cyml 2, yaml 1. (Measured. The "21" this file carried
 from 1.4.0 predated pdf's entire `_a` surface and was stale for three releases;
 that is the hazard of writing a count into a file nobody re-measures.) The JSON
 value API is complete end to end — construct, mutate, parse and serialize. A consumer can run a whole parse → mutate → serialize cycle on an
@@ -116,8 +139,8 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **16,308**-line bundle, regenerated via `cyrius distlib`
-  at 1.5.3 with the **release** toolchain. This is the artifact folded into
+- `dist/bayan.cyr` — **16,709**-line bundle, regenerated via `cyrius distlib`
+  at 1.5.4 with the **release** toolchain. This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,527 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
@@ -131,21 +154,23 @@ this is mutation-verified.
   | `bayan-pdf`    | 9535 | 9 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
   | `bayan-yaml`   | 3408 | 10 (carries `json.cyr` — shared value tree / parser state) |
   | `bayan-json`   | 2506 | 10 |
-  | `bayan-toml`   | 1269 | 7 (+ `fmt`, undeclared — gap 2) |
+  | `bayan-toml`   | 1640 | 7 (+ `fmt`, undeclared — gap 2) |
   | `bayan-u128`   | 575  | 0 |
-  | `bayan-cyml`   | 554  | 7 (+ `fmt`, undeclared — gap 2) |
+  | `bayan-cyml`   | 584  | 7 (+ `fmt`, undeclared — gap 2) |
   | `bayan-bigint` | 458  | 2 |
   | `bayan-base64` | 222  | 2 |
   | `bayan-csv`    | 157  | 3 |
 
 ## Tests
 
-- `tests/bayan.tcyr` — **839 asserts, green**. base64, u128, alias parity, the
+- `tests/bayan.tcyr` — **918 asserts, green**. base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
 
-  **1.5.3 adds seven toml groups** (up from 749 asserts at 1.5.2): basic-string
+  **1.5.4 adds seven more groups** — quoted keys, dotted keys, inline tables,
+  empty tables, duplicates, value kinds, header names, plus one for cyml's
+  removed read caps. **1.5.3 added seven toml groups** (up from 749 asserts at 1.5.2): basic-string
   escapes, single-line literal strings, multi-line conformance, array-element
   escape rules, the public escape/unescape helpers, and the value arms
   (comments, CRLF, keyless lines, document-swallowing). Plus a **truncation
@@ -153,14 +178,24 @@ this is mutation-verified.
   or section name reaches past its source buffer — the guard for the
   memory-safety bug the fix itself introduced.
 
-  **Mutation-verified.** Ten mutations, one per part of the 1.5.3 fix, each
-  turns the suite red. Two did not at first: the delimiter-run rule and the
-  escaped-quote rule in the multi-line scan **mask each other** on the reported
-  input, so the test written for the filed repro passed with either one removed.
-  A test that cannot fail is a test that has stopped being a test.
+  **Mutation-verified, both releases.** Ten mutations at 1.5.3 and ten more at
+  1.5.4, one per fix, each turns the suite red — including two run against the
+  structural vectors specifically, to check the new records bite rather than
+  merely run. At 1.5.3 two mutations did not fail at first: the delimiter-run
+  rule and the escaped-quote rule in the multi-line scan **mask each other** on
+  the reported input, so the test written for the filed repro passed with
+  either one removed. A test that cannot fail is a test that has stopped being
+  a test.
 - `tests/vectors.tcyr` — **oracle-driven, expected values from Python**:
-  12,334 u128 checks, 656 f64 checks, and **1,476 TOML string vectors** (new at
-  1.5.3, from `tomllib`). Kept in its own file so machine-generated checks do
+  12,334 u128 checks, 656 f64 checks, and **1,494 TOML vectors** from `tomllib`
+  (1,476 string + **18 structural**, the latter new at 1.5.4). A string vector
+  can only see what a value decodes to; a structural one carries a table name
+  and a key and checks WHERE the pair landed, which is what quoted keys, dotted
+  keys and header trimming are all about.
+
+  Duplicate keys are deliberately absent: `tomllib` rejects the document
+  outright, so there is no oracle answer and last-wins is bayan policy, pinned
+  by hand where the reasoning sits next to the assertion. Kept in its own file so machine-generated checks do
   not swamp the hand-written assertion counts; **10 asserts**, green.
   Regenerate with `scripts/gen-numeric-vectors.py` and
   `scripts/gen-toml-vectors.py`; CI requires both regenerations to be
@@ -172,7 +207,7 @@ this is mutation-verified.
   see a byte-accounting bug, and an independent strict parser can.
 - `tests/bayan.fcyr` — a real fuzz harness. **671 inputs, 219 of which still
   parse, 269 page walks** — re-measured at 1.5.3 by instrumenting a copy and
-  running it. The 582/183/245 this file carried since 1.5.0 was stale on all
+  running it. The 576/183/245 this file carried since 1.5.0 was stale on all
   three counts; `cyrius fuzz` prints only `fuzz: ok`, so nothing in the tree
   reports these numbers and nothing would have caught the drift. Note honestly
   what it did NOT catch: the `/Length` overflow that segfaulted the reader
@@ -184,7 +219,7 @@ this is mutation-verified.
 
 ### Coverage
 
-`cyrius coverage` — **454/454 fns (100%)**, 13/13 files, gated at `--min 100`.
+`cyrius coverage` — **466/466 fns (100%)**, 13/13 files, gated at `--min 100`.
 
 **It is reference coverage.** A function being called is not a function being
 correct — and 1.5.3 is the sharpest available demonstration: `src/toml.cyr` sat
@@ -261,19 +296,17 @@ The 1.5.0 gate lessons still hold and generalise:
 
 ## Known gaps
 
-1. **The TOML parser is a documented SUBSET, and seven structural gaps degrade
-   silently.** Quoted keys, dotted keys, inline tables, empty tables (which
-   shift array-of-table indices), duplicate keys (lookup returns the FIRST where
-   the ecosystem takes the last), untrimmed header names, and
-   `bayan_toml_is_array` being a byte heuristic that classifies a bracketed
-   STRING as an array — which 1.5.3 made reachable for literal strings too, by
-   correctly stripping the quotes that used to hide the `[`. New at 1.5.3:
-   each is now stated in `src/toml.cyr`'s header — an undocumented gap is how a
-   downstream repo ends up hand-rolling a second parser — and all six are filed
-   together in
-   [2026-08-28](issues/2026-08-28-toml-structural-subset-gaps.md).
-   Deliberately not fixed in 1.5.3: each changes the parser's data model, and
-   several want `bayan_toml_parse` to stop returning a flat vec.
+1. ~~**The TOML parser is a documented SUBSET, and seven structural gaps
+   degrade silently.**~~ **Fixed in 1.5.4** — all seven.
+   [2026-08-28](issues/2026-08-28-toml-structural-subset-gaps.md) is resolved.
+
+   What remains of the subset is narrower and stated in `src/toml.cyr`'s
+   header: a dotted key whose QUOTED segment contains a literal dot
+   (`a."b.c".d`) joins into a name indistinguishable from `a.b.c.d`, and a
+   `[[array-of-tables]]` under a dotted parent is not merged with a same-named
+   sibling. Both are edge cases with no known consumer, and both are recorded
+   rather than assumed away.
+
 2. **Two sublib `.deps` sidecars under-declare.** `bayan-toml` and `bayan-cyml`
    both need `+fmt` (`fmt_int_buf` *and* `fmt_int`). Upstream — the sidecars are
    generated by `cyrius distlib`, which does not close over the stdlib's own
@@ -316,20 +349,25 @@ The 1.5.0 gate lessons still hold and generalise:
    symptom has changed since filing: it no longer segfaults, it returns a silent
    0, which defers the fault to whatever the caller does with it. Annotated on
    [2026-08-04](issues/2026-08-04-agnosai-json-obj-get-takes-cstr-while-obj-set-takes-str.md).
-8. **`src/cyml.cyr` carries the project's two remaining fixed read caps**, both
-   truncating silently and reporting success — the shape 1.5.1 removed from
-   toml, where it had lost 1,893 keys from a 300 KB file. `bayan_cyml_parse_file_r`
-   caps at 256 KiB and returns `Ok(...)` on a truncated document;
-   `_cyml_read_file_trimmed` declares `var buf[4096]` and cuts a
-   `${file:PATH}` expansion at 4,095 bytes. Three unchecked allocations in
-   `bayan_cyml_parse` fault under exhaustion rather than returning 0. All
-   documented in the module as of 1.5.3, not fixed.
+8. ~~**`src/cyml.cyr` carries the project's two remaining fixed read caps.**~~
+   **Both removed in 1.5.4** — `bayan_cyml_parse_file_r` and
+   `_cyml_read_file_trimmed` slurp into a growing `str_builder`, a mid-file read
+   ERROR is no longer folded into clean EOF, and an empty file is a legal empty
+   document rather than `Err`. **There are no fixed read caps left in `src/`**
+   — and that sentence has been wrong twice in this file, so here is how it was
+   checked: `grep -rn '262144' src/` and `grep -n 'var buf\[' src/*.cyr`, both
+   re-run at 1.5.4.
 
-   *A first draft of this entry called the 256 KiB one "the last fixed cap in
-   the project" — in the same release whose CHANGELOG says each doc fix "was
-   verified against the code it documents". It was not; an adversarial review
-   found the 4 KiB one 173 lines above it. Recorded because the failure is
-   the exact one this file keeps warning about.*
+   What remains in cyml: three unchecked allocations in `bayan_cyml_parse`
+   fault under exhaustion rather than returning 0. Documented in the module,
+   not fixed.
+
+   *A 1.5.3 draft called the 256 KiB one "the last fixed cap in the project" —
+   in the release whose CHANGELOG says each doc fix "was verified against the
+   code it documents". It was not; an adversarial review found the 4 KiB one
+   173 lines above it. Recorded because the failure is the exact one this file
+   keeps warning about.*
+
 9. **`src/csv.cyr` is an RFC 4180 subset**, not RFC 4180: a trailing empty
    field is not emitted (`a,` parses to one field where the RFC has two, so a
    round trip loses a column), records are LF-terminated where the RFC says
@@ -367,7 +405,12 @@ No sibling `[deps.NAME]` entries, so `cyrius deps` writes no `cyrius.lock`.
   issue. ⚠ **`_cfg_toml_unesc` in `src/core_config.cyr` must be removed on
   re-pin, or mneme will double-decode**; its `tests/core_config.tcyr` has
   assertions written to fail loudly at that moment. `_cfg_toml_esc` can go too
-  — `bayan_toml_escape` replaces it. Separately, mneme still ships a hand-rolled
+  — `bayan_toml_escape` replaces it. **1.5.4 adds a second thing to check**:
+  mneme's config uses `[[vault]]` tables, and an empty one is now EMITTED
+  rather than dropped, so any index-based walk over `bayan_toml_get_sections`
+  results should be re-read. That change is in the safe direction — it stops a
+  vault entry with no fields from shifting every later index — but it is a
+  change. Separately, mneme still ships a hand-rolled
   PDF writer in `src/io_export_pdf.cyr` (**485** lines — it has grown since the
   443 this file recorded at 1.5.0) that 1.5.0 supersedes, and two bugs found in
   that file while reading it are mneme's to fix.
@@ -384,16 +427,19 @@ milestone (driver: the **mneme** port), and it pairs naturally with the PDF
 work: a markdown AST plus `bayan_pdf_wrap` is the whole "notes to a laid-out
 PDF" story.
 
-Two things 1.5.3 argues should come first, or at least alongside:
+Two things the TOML work argues should come first, or at least alongside:
 
-- **A tagged-tree TOML parser** (`bayan_toml_v_parse` into json's existing
-  value tree, the way yaml already does). It is the answer to Known gaps 1 and
-  6 at once — dotted keys and inline tables both want nesting, and it gives the
-  TOML surface the same shape as the JSON and YAML ones.
 - **Escape handling in `yaml.cyr` and `cyml.cyr`.** The mneme issue noted both
-  also have no unescape. That was true and is still true; 1.5.3 fixed only the
-  module that was reported. The reasoning that forced the fix into the parser
-  applies unchanged to both.
+  also have no unescape. That was true and is still true: 1.5.3 and 1.5.4 fixed
+  only the module that was reported. The reasoning that forced the fix into the
+  parser rather than into an accessor — only the parser knows which quote
+  produced the string — applies unchanged to both, and neither has been
+  measured against an oracle the way toml now has.
+- **A tagged-tree TOML parser** (`bayan_toml_v_parse` into json's existing
+  value tree, the way yaml already does). Less urgent than it was: 1.5.4 gave
+  dotted keys and inline tables real answers inside the flat model. It is still
+  the right shape for the surface, and it is the answer to Known gap 6 (the two
+  flat lookup APIs disagreeing about their key type).
 
 Known follow-ons for pdf: encrypted documents are detected and rejected rather
 than handled; `LZWDecode` is rejected by name; there is no layout/flow API.

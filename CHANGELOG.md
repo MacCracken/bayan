@@ -2,6 +2,144 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.4] — 2026-08-28
+
+**The seven structural TOML gaps, closed.** 1.5.3 fixed what a value *decodes
+to*; these are about where a pair *lands* — what a key is, whether a table can
+be empty, what a duplicate means. They were filed rather than fixed at 1.5.3
+([2026-08-28](docs/development/issues/2026-08-28-toml-structural-subset-gaps.md)),
+and deferring them was the wrong call: the report was a repair request, not a
+survey. Also removes the project's last two fixed read caps, both in `cyml`.
+
+Toolchain unchanged at **cyrius 6.5.36**.
+
+> ### ⚠ BEHAVIOUR CHANGE — `bayan_toml_parse`'s RESULT SHAPE
+>
+> Four changes move data. All four make it correct; all four can move an index
+> or a lookup that worked before.
+>
+> - **The root table is always `sections[0]`, even empty.** It used to be
+>   emitted only if it had pairs, so a file opening with `[a]` made
+>   `sections[0]` the section `a` — and a consumer reading `sections[0]` as
+>   "the root pairs" silently got `a`'s. If you index sections, re-check.
+> - **An empty table is emitted.** `[a]` with nothing under it used to vanish.
+> - **A dotted key names a table.** `a.b.c = 1` lands in section `a.b` as key
+>   `c`, not in the root as the flat key `a.b.c`. This is what `[a.b]` +
+>   `c = 1` has always produced — the two spellings finally agree — but a
+>   lookup of `"a.b.c"` in the root now misses.
+> - **A duplicate key resolves to the LAST value**, not the first.
+>
+> **The pair struct is 24 bytes, not 16.** Reading through the accessors is
+> unaffected and `bayan_toml_pair_new` keeps its signature; anything that
+> allocated a pair by hand, or assumed the size, must be re-checked.
+
+### Fixed — the seven gaps
+
+Every expectation below is Python `tomllib`'s.
+
+- **Quoted keys.** `"key one" = 1` was **dropped entirely**: the key scan
+  stopped at the space inside the quotes, the next byte was not `=`, and that
+  test has no `else`. `"key" = 2` survived but kept its quotes, so every lookup
+  missed. A `"` key is now decoded like a basic string, a `'` key is verbatim.
+- **Dotted keys.** `a . b = 1` was dropped for the same reason. `a.b.c = 1`
+  stored one flat key, disagreeing with `[a.b]` + `c = 1` for the same data.
+  Both now name a table, including quoted segments (`a."b c".d`) and nesting
+  under a header (`a.b = 1` inside `[t]` names `t.a`).
+- **Inline tables.** `k = { a = 1 }` had no accessor and was not listed as a
+  subset limit anywhere a caller reads — so a consumer needing one had to
+  hand-roll a splitter, the outcome bayan exists to prevent. Now
+  `bayan_toml_inline_parse` / `_a`, `bayan_toml_get_inline` and
+  `bayan_toml_is_inline`. As an **array element** the splitter cut on every
+  comma inside the braces and returned four syntactic fragments where there
+  were two elements; it tracks brace depth now.
+- **Empty tables.** A header with no pairs vanished, shifting the index of
+  every later `[[array-of-table]]` entry: three `[[s]]` blocks with an empty
+  middle one returned **two** sections, so `s[1]` was the third record.
+- **Duplicate keys.** Both pairs were stored and the lookup returned the
+  **first**, which no other TOML implementation does. The direction is the
+  point: `secure = true` then `secure = false` returned `true` for a file whose
+  last word is `false`. `bayan_toml_count` is there for a caller that wants the
+  spec's "a duplicate is an error" — this parser has no error channel to report
+  one through, so the check has to be the caller's.
+- **`bayan_toml_is_array` could be fooled by content.** It sniffs the value's
+  first byte, by which point the quotes are gone, so `format = '[ $host ]($style)'`
+  — an ordinary prompt template — classified as an array. The parser now
+  **records the kind** it actually saw.
+- **Header names are trimmed and unquoted.** `[ a ]` named the section `" a "`,
+  spaces included, so `bayan_toml_get_sections("a")` returned an empty vec —
+  silently, which is the worst way to be told.
+
+### Fixed — cyml's last two fixed read caps
+
+Both truncated silently and reported success, the shape 1.5.1 removed from
+toml's loader after it lost 1,893 keys from a 300 KB file.
+
+- `bayan_cyml_parse_file_r` stopped at 262,144 bytes and still returned
+  `Ok(...)`, with the cut landing mid-line.
+- `_cyml_read_file_trimmed` declared `var buf[4096]` and cut a `${file:PATH}`
+  expansion at 4,095 bytes — in the one path whose whole job is to substitute a
+  file's contents verbatim.
+
+Both slurp into a growing `str_builder` now, and a mid-file read **error** is
+no longer folded into clean EOF. An empty file is a legal empty document rather
+than `Err(CymlIoErr)`, the same correction toml's loader got at 1.5.3.
+
+There are no fixed read caps left in `src/`.
+
+### Added
+
+- `bayan_toml_pair_kind` and the `TOML_K_*` constants; `bayan_toml_pair_is_array`
+  / `_is_inline` / `_is_string`; `bayan_toml_pair_new_kind` / `_a`. A pair built
+  by hand reports `TOML_K_UNKNOWN` — a caller supplying only a key and a value
+  has not said what form the value took, and a guess would be worse than an
+  honest "unknown".
+- `bayan_toml_get_pair` (the pair, so the kind is reachable) and
+  `bayan_toml_count`.
+- `bayan_toml_inline_parse` / `_a`, `bayan_toml_get_inline`,
+  `bayan_toml_is_inline`.
+- **18 structural oracle vectors** (`P` records) alongside the 1,476 string
+  ones. `S` and `A` records can only see what a value decodes to; `P` carries a
+  table name and a key and checks **where the pair landed**, which is what all
+  of quoted keys, dotted keys and header trimming are about. Total: **1,494**,
+  regenerated byte-identically in CI.
+
+  Duplicate keys are deliberately NOT among them: `tomllib` rejects the
+  document outright, so there is no oracle answer and last-wins is bayan
+  policy. It is pinned by hand instead, where the reasoning sits next to the
+  assertion.
+
+### Changed — internals worth knowing about
+
+- **The value dispatch is one function now** (`_toml_parse_value_a`), called by
+  both the top-level parser and the inline-table accessor. This module's
+  history is a list of two scanners that had to agree and stopped agreeing —
+  `_toml_parse_str` / `_toml_str_end`, and the three array quote-trackers, each
+  of which cost a release. Copying it into the inline parser would have been
+  the third.
+- The string parsers gained `_a` twins, so an inline table parsed into an arena
+  allocates its decoded values there too.
+- A bare value now ends at `,` and `}` as well as at a newline and a comment.
+  Nothing bare can contain either — numbers, booleans and dates are made of
+  digits, letters and `_ . + - :` — and the same function parses the values
+  inside an inline table, where there is no newline to stop at.
+
+### Verification
+
+918 asserts (from 839), 1,494 oracle vectors (from 1,476), 466/466 reference
+coverage. `dist/bayan.cyr` is **16,709** lines, up from 16,308 at 1.5.3;
+`src/toml.cyr` is 1,632 lines with 33 public functions, up from 1,261 and 21. **Ten mutations, one per gap fix, each confirmed to turn the suite
+red** — including two against the structural vectors specifically, to check
+that the new `P` records bite rather than merely run.
+
+### On how this release came to be scoped
+
+1.5.3 filed these seven as "wants its own release" without asking. That was a
+scoping decision presented as a technical one, and it was wrong twice: the
+report was a repair request, and the call belonged to the maintainer. The four
+decisions in this release that move data or change a struct — the dotted-key
+model, the pair widening, last-wins, and emitting empty tables — were put to
+the maintainer before any of them was written.
+
 ## [1.5.3] — 2026-08-28
 
 **The TOML parser returned wrong values, and had since 1.0.0.** Reported by

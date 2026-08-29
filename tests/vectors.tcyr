@@ -323,7 +323,10 @@ fn run_f64(): i64 {
 # it with bayan_toml_get_array and takes element 0, so the element splitter —
 # which keeps its own quote-tracking state and got the escaped-quote rule wrong
 # independently of the scalar parsers — is checked against the oracle too
-# rather than assumed to agree with them.
+# rather than assumed to agree with them. A `P` (1.5.4) carries a table name
+# and a key as well, and checks WHERE the pair landed: quoted keys, dotted keys
+# naming a table, and trimmed header names are all invisible to S and A,
+# because all three are about placement rather than value.
 
 fn t_say(m: cstring): i64 { print(m, strlen(m)); return 0; }
 fn t_num(n): i64 { var b[24]; var l = fmt_int_buf(n, &b); print(&b, l); return 0; }
@@ -407,13 +410,29 @@ fn run_toml(): i64 {
     var nout[8];
     var pos = 0;
 
+    var tbuf = alloc(8192);
+    var kbuf = alloc(8192);
     while (pos < len) {
         var kind = load8(buf + pos);
-        if (kind != 83 && kind != 65) { break; }      # 'S' / 'A'
+        if (kind != 83 && kind != 65 && kind != 80) { break; }   # 'S' / 'A' / 'P'
         pos = pos + 2;                                 # kind + the space
         pos = t_hexfield(buf, pos, len, dbuf, &nout);
         var dn = load64(&nout);
         pos = pos + 1;                                 # the separating space
+        var tn = 0;
+        var kn = 0;
+        if (kind == 80) {
+            # P <doc> <table> <key> <value> — the structural kind (1.5.4).
+            # S and A can only see what a value decodes to; P sees WHERE the
+            # pair landed, which is what quoted keys, dotted keys naming a
+            # table, and trimmed header names are all about.
+            pos = t_hexfield(buf, pos, len, tbuf, &nout);
+            tn = load64(&nout);
+            pos = pos + 1;
+            pos = t_hexfield(buf, pos, len, kbuf, &nout);
+            kn = load64(&nout);
+            pos = pos + 1;
+        }
         pos = t_hexfield(buf, pos, len, vbuf, &nout);
         var vn = load64(&nout);
         while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
@@ -422,7 +441,17 @@ fn run_toml(): i64 {
 
         var secs = bayan_toml_parse(str_new(dbuf, dn));
         var got = 0;
-        if (vec_len(secs) > 0) {
+        if (kind == 80) {
+            # Look the table up by NAME. The root table is named "", and it is
+            # always sections[0] as of 1.5.4.
+            store8(tbuf + tn, 0);
+            store8(kbuf + kn, 0);
+            var tsecs = bayan_toml_get_sections(secs, tbuf);
+            if (vec_len(tsecs) > 0) {
+                got = bayan_toml_get(bayan_toml_section_pairs(vec_get(tsecs, 0)), kbuf);
+            }
+        }
+        elif (vec_len(secs) > 0) {
             var pairs = bayan_toml_section_pairs(vec_get(secs, 0));
             if (kind == 65) {
                 var els = bayan_toml_get_array(pairs, "x");
@@ -466,7 +495,7 @@ assert_eq(g_py_bad, 0, "f64: and bayan's parser agrees with Python's formatter")
 test_group("vectors: toml string decoding against Python's tomllib");
 var tv = run_toml();
 assert_eq(tv, 42, "toml: the vector file loaded and every check ran");
-assert_gt(g_tv, 1400, "toml: the expected number of vectors actually ran");
+assert_gt(g_tv, 1480, "toml: the expected number of vectors actually ran");
 assert_eq(g_tv_bad, 0, "toml: zero disagreements with the oracle");
 
 var r = assert_summary();

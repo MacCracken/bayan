@@ -12,15 +12,18 @@ stdlib floor. Written in [Cyrius](https://github.com/MacCracken/cyrius).
 
 ## Status
 
-**1.5.3** — ten modules, 16,349 lines of `src/`, 336 public functions.
+**1.5.4** — ten modules, 16,750 lines of `src/`, 348 public functions.
 Zero cross-module dependencies except `yaml`, which parses into `json`'s
 value tree by design. Folded into `cyrius/lib/bayan.cyr`.
 
-> ⚠ **1.5.3 changes TOML string values.** They are now decoded per the spec;
-> they used to be the raw bytes between the quotes, and a literal string came
-> back wearing its quotes. **If your code compensated for that, remove the
-> compensation or you will double-decode** — see the
-> [CHANGELOG](CHANGELOG.md) banner.
+> ⚠ **1.5.3 and 1.5.4 both change TOML behaviour.** 1.5.3 decodes string
+> values per the spec (they used to be the raw bytes between the quotes, and a
+> literal string came back wearing its quotes) — **if your code compensated for
+> that, remove the compensation or you will double-decode**. 1.5.4 changes the
+> shape of `bayan_toml_parse`'s result: the root table is always `sections[0]`,
+> empty tables are emitted, a dotted key names a table, a duplicate key
+> resolves to the LAST value, and the pair struct is 24 bytes rather than 16.
+> Both banners are in the [CHANGELOG](CHANGELOG.md).
 
 Current version, surface area, dependency gaps and in-flight work live in
 [`docs/development/state.md`](docs/development/state.md); this file stays
@@ -33,7 +36,7 @@ short on purpose.
 | `pdf`    | `bayan_pdf_*`    | PDF writer + reader: pages, standard-14 fonts with real AFM metrics, text and graphics operators, metric word wrap, xref tables **and** 1.5 xref streams, object streams, text extraction |
 | `json`   | `bayan_json_*`   | parser + tagged value tree + builder + streaming + JSON-pointer |
 | `yaml`   | `bayan_yaml_*`   | pragmatic YAML subset into json's value tree, plus frontmatter split |
-| `toml`   | `bayan_toml_*`   | sections + key/value parse, spec-correct string decoding (basic, literal, both multi-line forms), escape/unescape helpers, array-value access. A [documented subset](docs/development/issues/2026-08-28-toml-structural-subset-gaps.md) — no quoted or dotted keys, no inline tables |
+| `toml`   | `bayan_toml_*`   | tables + key/value parse, quoted and dotted keys, inline tables, spec-correct string decoding (basic, literal, both multi-line forms), escape/unescape helpers, array-value access, per-value kind |
 | `cyml`   | `bayan_cyml_*`   | Cyrius config (entries/docs, env expansion) |
 | `csv`    | `bayan_csv_*`    | line parse / escape / write |
 | `base64` | `bayan_base64_*` | standard + URL alphabet, encode/decode |

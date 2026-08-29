@@ -13,15 +13,22 @@ Mirrors scripts/gen-numeric-vectors.py in shape: a line-oriented text file
 tests/vectors.tcyr reads at run time, so the vector count can grow without the
 .tcyr file growing with it.
 
-Format, one vector per line, a kind tag and two hex-encoded fields:
+Format, one vector per line: a kind tag and hex-encoded fields.
 
-    S <hex of the whole TOML document> <hex of the expected value of key `x`>
-    A <hex of the whole TOML document> <hex of the expected FIRST ELEMENT>
+    S <hex doc> <hex expected value of key `x`>
+    A <hex doc> <hex expected FIRST ELEMENT of array `x`>
+    P <hex doc> <hex table name> <hex key> <hex expected value>
 
 `S` reads the value with `bayan_toml_get`; `A` reads it with
 `bayan_toml_get_array` and takes element 0, so the element splitter — which
 keeps its own quote-tracking state — is checked against the same oracle as the
 scalar parsers rather than assumed to agree with them.
+
+`P` (1.5.4) checks STRUCTURE: it looks the table up by name with
+`bayan_toml_get_sections` and then the key inside it. That is what covers
+quoted keys, dotted keys naming a table, and trimmed/unquoted header names —
+none of which the S/A kinds can see, because all three are about WHERE a pair
+lands rather than what its value is.
 
 Hex rather than the text itself because both fields routinely contain
 newlines, quotes, backslashes and non-UTF-8-looking bytes — an encoding that
@@ -251,6 +258,55 @@ def delimiter_run_cases():
     ]
 
 
+def structural_cases():
+    """(document, table, key) triples for the `P` kind — 1.5.4.
+
+    Every one is a shape that landed the pair in the WRONG PLACE, or nowhere,
+    before 1.5.4:
+
+      * a quoted key containing a space was dropped entirely; one without a
+        space kept its quotes, so every lookup missed;
+      * `a . b = 1` was dropped for the same reason;
+      * `a.b.c = 1` stored one flat key instead of naming the table `a.b`,
+        disagreeing with `[a.b]` + `c = 1` for the same data;
+      * `[ a ]` named the table " a ", spaces included.
+
+    The oracle resolves the expected value by walking tomllib's nested dicts
+    along the table path, so the expectation is Python's answer to "what is at
+    a.b.c", not a transcription of what bayan does.
+    """
+    return [
+        # quoted keys
+        ('"key one" = 1\n',                     "",       "key one"),
+        ('"key" = 2\n',                         "",       "key"),
+        ("'lit key' = 3\n",                     "",       "lit key"),
+        ('"esc\\tkey" = 4\n',                    "",       "esc\tkey"),
+        # dotted keys name a table
+        ("a.b.c = 1\n",                         "a.b",    "c"),
+        ("a . b = 2\n",                         "a",      "b"),
+        ("x.y = 3\nz = 4\n",                     "x",      "y"),
+        ("x.y = 3\nz = 4\n",                     "",       "z"),
+        ('a."b c".d = 5\n',                     "a.b c",  "d"),
+        ("[t]\na.b = 6\n",                      "t.a",    "b"),
+        ("[t]\na.b = 6\nx = 7\n",                "t",      "x"),
+        # header names are trimmed and unquoted
+        ("[ a ]\nx = 1\n",                      "a",      "x"),
+        ('[ "b c" ]\ny = 2\n',                  "b c",    "y"),
+        ("[ 'd' ]\nz = 3\n",                    "d",      "z"),
+        ("[a.b]\nc = 4\n",                      "a.b",    "c"),
+        ("[ a . b ]\nc = 5\n",                  "a.b",    "c"),
+        # a header and a dotted key naming the same table agree
+        ("[q]\nr.s = 1\n",                      "q.r",    "s"),
+        # the root table is reachable even when the file opens with a header
+        ("[a]\nx = 1\n",                        "a",      "x"),
+    ]
+    # NOT here: duplicate keys. tomllib REJECTS `secure = true` followed by
+    # `secure = false` outright, so there is no oracle answer to record —
+    # last-wins is bayan POLICY, chosen because it is what every implementation
+    # that does not error does. It is pinned by hand in tests/bayan.tcyr
+    # instead, where the reasoning can sit next to the assertion.
+
+
 def crlf_cases():
     """CRLF after the opening delimiter must be trimmed as a unit."""
     return [
@@ -258,6 +314,16 @@ def crlf_cases():
         'x = """\r\nline1\r\n"""\n',
         "x = '''\r\nline1'''\n",
     ]
+
+
+def _split_table(name):
+    """Split a dotted table name into segments.
+
+    A quoted segment may itself contain a dot; none of the fixtures here does,
+    and the generator asserts that rather than pretending to handle it.
+    """
+    assert '"' not in name and "'" not in name, name
+    return name.split(".")
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +365,26 @@ def main():
         lines.append(
             "%s %s %s" % (kind, doc.encode().hex(), got.encode().hex())
         )
+
+    # `P` vectors: structure rather than value. The expected value is resolved
+    # by walking tomllib's nested dicts along the table path.
+    for doc, table, key in structural_cases():
+        try:
+            got = tomllib.loads(doc)
+        except Exception as e:                       # pragma: no cover
+            raise SystemExit("structural case tomllib rejects:\n%r\n%s" % (doc, e))
+        node = got
+        if table:
+            for seg in _split_table(table):
+                node = node[seg]
+        val = node[key]
+        if isinstance(val, bool):
+            val = "true" if val else "false"
+        else:
+            val = str(val)
+        lines.append("P %s %s %s %s" % (
+            doc.encode().hex(), table.encode().hex(),
+            key.encode().hex(), val.encode().hex()))
 
     path = os.path.join(outdir, "strings.vec")
     with open(path, "w") as f:

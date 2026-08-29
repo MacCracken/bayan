@@ -484,13 +484,18 @@ assert_eq(str_eq_cstr(bayan_toml_get(vc3, "k"), "1"), 1, "toml: and the real key
 var vc4 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("a = [\"oops\nadmin = false\nb = 1\n")), 0));
 assert_eq(bayan_toml_get(vc4, "admin") != 0, 1, "toml: an unterminated quote in an array does not delete the next key");
 assert_eq(str_eq_cstr(bayan_toml_get(vc4, "b"), "1"), 1, "toml: ...nor the one after that");
+# sections[0] is the ROOT table as of 1.5.4 — always present, even empty — so
+# a header is at index 1. Before that, a file opening with `[a]` made
+# sections[0] the section `a`, and a consumer reading sections[0] as "the root
+# pairs" silently got `a`'s.
 var vc5 = bayan_toml_parse(str_from("[abc\nx = 1\ny = 2\n"));
-var vc5p = bayan_toml_section_pairs(vec_get(vc5, 0));
-assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(vc5, 0)), "abc"), 1, "toml: an unclosed [header stops at the newline");
+assert_eq(str_len(bayan_toml_section_name(vec_get(vc5, 0))), 0, "toml: sections[0] is the root table, not the first header");
+var vc5p = bayan_toml_section_pairs(vec_get(vc5, 1));
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(vc5, 1)), "abc"), 1, "toml: an unclosed [header stops at the newline");
 assert_eq(vec_len(vc5p), 2, "toml: and does not swallow the keys under it");
 var vc6 = bayan_toml_parse(str_from("[[abc\nx = 1\n"));
-assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(vc6, 0)), "abc"), 1, "toml: same bound on the [[header]] branch");
-assert_eq(vec_len(bayan_toml_section_pairs(vec_get(vc6, 0))), 1, "toml: and its key survives");
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(vc6, 1)), "abc"), 1, "toml: same bound on the [[header]] branch");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(vc6, 1))), 1, "toml: and its key survives");
 
 # 5. An EMPTY file is a legal TOML document with no pairs. Reporting it as
 #    Err(TomlIoErr) made it indistinguishable from a file that does not exist,
@@ -550,6 +555,215 @@ assert_eq(vec_len(bayan_toml_get_array(oa, "n")), 3, "toml: a plain array still 
 assert_eq(str_eq_cstr(vec_get(bayan_toml_get_array(oa, "s"), 1), "b]c"), 1, "toml: a ] inside a literal element is still preserved");
 assert_eq(str_eq_cstr(bayan_toml_get(oa, "zz"), "4"), 1, "toml: an empty multi-line element does not derail the capture");
 
+test_group("cyml: both fixed read caps are gone (1.5.4)");
+# src/cyml.cyr carried the project's last two fixed read buffers, and both
+# truncated SILENTLY and reported success — the shape 1.5.1 removed from toml's
+# loader after it lost 1,893 keys from a 300 KB file.
+#
+#   * bayan_cyml_parse_file_r stopped at 262,144 bytes and still returned
+#     Ok(...), with the cut landing mid-line.
+#   * _cyml_read_file_trimmed declared `var buf[4096]` and cut a
+#     `${file:PATH}` expansion at 4,095 bytes — in the one path whose whole job
+#     is to substitute a file's contents verbatim.
+#
+# Both now slurp into a growing str_builder. build/ is gitignored.
+var cyb_sb = str_builder_new();
+str_builder_add_cstr(cyb_sb, "title = \"big\"\n");
+var cyb_i = 0;
+while (cyb_i < 25000) {
+    str_builder_add_cstr(cyb_sb, "k");
+    str_builder_add_int(cyb_sb, cyb_i);
+    str_builder_add_cstr(cyb_sb, " = ");
+    str_builder_add_int(cyb_sb, cyb_i);
+    str_builder_putc(cyb_sb, 10);
+    cyb_i = cyb_i + 1;
+}
+str_builder_add_cstr(cyb_sb, "---\nbody text\n");
+var cyb_big = str_builder_build(cyb_sb);
+assert_gt(str_len(cyb_big), 262144, "cyml: the fixture exceeds the old 256 KiB cap");
+file_write_all("build/big-generated.cyml", str_data(cyb_big), str_len(cyb_big));
+var cyb_r = bayan_cyml_parse_file_r("build/big-generated.cyml");
+assert_eq(is_err_result(cyb_r), 0, "cyml: parse_file_r reads a file past the old cap");
+var cyb_doc = load64(cyb_r + 8);
+var cyb_e0 = bayan_cyml_doc_entry(cyb_doc, 0);
+assert_neq(cyb_e0, 0, "cyml: it parses to one entry");
+# A truncated read would cut the header short, so the `---` delimiter and
+# everything after it would simply not exist.
+assert_gt(bayan_cyml_entry_header_len(cyb_e0), 262144,
+  "cyml: the WHOLE header survived, not 256 KiB of it");
+assert_gt(bayan_cyml_entry_body_len(cyb_e0), 0,
+  "cyml: and the body past the old cap is still found");
+
+# An EMPTY file is a legal document, not Err — the same correction toml's
+# loader got at 1.5.3. Reporting it as Err made it indistinguishable from a
+# file that does not exist, the one distinction this variant exists to draw.
+file_write_all("build/empty-generated.cyml", str_data(str_from("x")), 0);
+var cyb_e = bayan_cyml_parse_file_r("build/empty-generated.cyml");
+assert_eq(is_err_result(cyb_e), 0, "cyml: an empty file is a legal empty document");
+assert_eq(is_err_result(bayan_cyml_parse_file_r("build/does-not-exist.cyml")), 1,
+  "cyml: while a MISSING file is still an error — the two are distinguishable");
+
+# ${file:PATH} expansion past the old 4 KiB buffer.
+var cyb_fb = str_builder_new();
+var cyb_j = 0;
+while (cyb_j < 900) {
+    str_builder_add_cstr(cyb_fb, "0123456789");
+    cyb_j = cyb_j + 1;
+}
+var cyb_fill = str_builder_build(cyb_fb);
+assert_gt(str_len(cyb_fill), 4096, "cyml: the expansion fixture exceeds the old 4 KiB buffer");
+file_write_all("build/big-expand.txt", str_data(cyb_fill), str_len(cyb_fill));
+var cyb_exp = bayan_cyml_expand_value("${file:build/big-expand.txt}");
+assert_eq(strlen(cyb_exp), str_len(cyb_fill),
+  "cyml: a ${file:...} expansion past 4 KiB is substituted WHOLE, not truncated");
+
+test_group("toml: quoted keys (1.5.4)");
+# `"key one" = 1` was DROPPED ENTIRELY before 1.5.4: the key scan stopped at
+# the space inside the quotes, the next byte was not `=`, and the test for it
+# has no `else`. `"key" = 2` survived but kept its quotes, so every lookup
+# missed. A `"` key is decoded like a basic string; a `'` key is verbatim.
+var q4 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("\"key one\" = 1\n\"key\" = 2\n'lit key' = 3\n\"esc\\tkey\" = 4\nplain = 5\n")), 0));
+assert_eq(vec_len(q4), 5, "toml: all five keys parse");
+assert_eq(str_eq_cstr(bayan_toml_get(q4, "key one"), "1"), 1, "toml: a quoted key containing a space");
+assert_eq(str_eq_cstr(bayan_toml_get(q4, "key"), "2"), 1, "toml: a quoted key without one loses its quotes");
+assert_eq(str_eq_cstr(bayan_toml_get(q4, "lit key"), "3"), 1, "toml: a literal-quoted key");
+assert_eq(str_eq_cstr(bayan_toml_get(q4, "esc\tkey"), "4"), 1, "toml: escapes in a quoted key are decoded");
+assert_eq(str_eq_cstr(bayan_toml_get(q4, "plain"), "5"), 1, "toml: and a bare key still works");
+
+test_group("toml: dotted keys name a table (1.5.4)");
+# `a.b.c = 1` now lands in section `a.b` as key `c` — identical to what
+# `[a.b]` + `c = 1` has always produced, so the two spellings finally agree.
+# The spaced form `a . b = 2` used to be DISCARDED ENTIRELY, for the same
+# reason quoted keys were. Inside `[t]`, `a.b = 1` lands in `t.a`.
+var dk = bayan_toml_parse(str_from("a.b.c = 1\na . b = 2\nd = 3\n"));
+assert_eq(str_len(bayan_toml_section_name(vec_get(dk, 0))), 0, "toml: sections[0] is the root");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(dk, 0)), "d"), "3"), 1, "toml: an undotted key stays in the root");
+var dk_ab = bayan_toml_get_sections(dk, "a.b");
+assert_eq(vec_len(dk_ab), 1, "toml: a.b.c created the table a.b");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(dk_ab, 0)), "c"), "1"), 1, "toml: with c as its key");
+var dk_a = bayan_toml_get_sections(dk, "a");
+assert_eq(vec_len(dk_a), 1, "toml: the spaced form a . b = 2 is no longer discarded");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(dk_a, 0)), "b"), "2"), 1, "toml: and names the table a with key b");
+# Under a header the dotted table is nested beneath it.
+var dk2 = bayan_toml_parse(str_from("[t]\na.b = 1\nx = 2\n"));
+assert_eq(vec_len(bayan_toml_get_sections(dk2, "t.a")), 1, "toml: `a.b = 1` inside [t] names t.a");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections(dk2, "t.a"), 0)), "b"), "1"), 1, "toml: with b as its key");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections(dk2, "t"), 0)), "x"), "2"), 1, "toml: and [t]'s own key is unaffected");
+# A quoted segment inside a dotted path is unquoted before joining.
+var dk3 = bayan_toml_parse(str_from("a.\"b c\".d = 9\n"));
+assert_eq(vec_len(bayan_toml_get_sections(dk3, "a.b c")), 1, "toml: a quoted dotted segment is unquoted in the table name");
+
+test_group("toml: inline tables (1.5.4)");
+# `k = { a = 1 }` was captured verbatim with no accessor and was not listed
+# as a subset limit anywhere a caller reads — so a consumer needing one had
+# to hand-roll a splitter, the outcome bayan exists to prevent. Worse, as an
+# array element the splitter cut on every comma INSIDE the braces and
+# returned four syntactic fragments that look structured and are not.
+#
+# The keys and values come from the same _toml_scan_key and
+# _toml_parse_value_a the top-level parser uses, so escapes, quoted keys and
+# nested arrays decode identically inside an inline table and outside one.
+var it = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("pts = [ { x = 1, y = 2 }, { x = 3, y = 4 } ]\nsrv = { host = \"a#b\", port = 8080 }\nnest = { a = { b = 2 }, c = [1, 2] }\nzz = 1\n")), 0));
+var it_pts = bayan_toml_get_array(it, "pts");
+assert_eq(vec_len(it_pts), 2, "toml: an array of inline tables splits on the OUTER commas only");
+var it_p1 = bayan_toml_inline_parse(vec_get(it_pts, 1));
+assert_eq(vec_len(it_p1), 2, "toml: and each element decomposes into its pairs");
+assert_eq(str_eq_cstr(bayan_toml_get(it_p1, "x"), "3"), 1, "toml: pts[1].x == 3");
+assert_eq(str_eq_cstr(bayan_toml_get(it_p1, "y"), "4"), 1, "toml: pts[1].y == 4");
+var it_srv = bayan_toml_get_inline(it, "srv");
+assert_eq(vec_len(it_srv), 2, "toml: get_inline decomposes a scalar inline table");
+assert_eq(str_eq_cstr(bayan_toml_get(it_srv, "host"), "a#b"), 1, "toml: a # inside a quoted value is not a comment");
+assert_eq(str_eq_cstr(bayan_toml_get(it_srv, "port"), "8080"), 1, "toml: and the bare value after it stops at the comma");
+var it_nest = bayan_toml_get_inline(it, "nest");
+assert_eq(str_eq_cstr(bayan_toml_get(it_nest, "a"), "{ b = 2 }"), 1, "toml: a nested inline table is kept whole for re-parsing");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_inline_parse(bayan_toml_get(it_nest, "a")), "b"), "2"), 1, "toml: ...and re-parses");
+assert_eq(str_eq_cstr(bayan_toml_get(it_nest, "c"), "[1, 2]"), 1, "toml: an array inside an inline table is kept whole");
+assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get(it_nest, "c"))), 2, "toml: ...and splits");
+assert_eq(str_eq_cstr(bayan_toml_get(it, "zz"), "1"), 1, "toml: the key after an inline table is unaffected");
+assert_eq(bayan_toml_is_inline(bayan_toml_get(it, "srv")), 1, "toml: is_inline sniffs a brace");
+assert_eq(bayan_toml_is_inline(bayan_toml_get(it, "zz")), 0, "toml: and a bare value is not one");
+assert_eq(bayan_toml_get_inline(it, "nope"), 0, "toml: get_inline on an absent key -> 0");
+assert_eq(vec_len(bayan_toml_inline_parse(bayan_toml_get(it, "zz"))), 0, "toml: inline_parse of a non-table -> empty vec");
+assert_eq(vec_len(bayan_toml_inline_parse(0)), 0, "toml: inline_parse of 0 -> empty vec");
+var it_ar = arena_allocator(16384);
+assert_eq(vec_len(bayan_toml_inline_parse_a(it_ar, bayan_toml_get(it, "srv"))), 2, "toml: inline_parse_a threads an arena");
+
+test_group("toml: empty tables and the root table (1.5.4)");
+# An empty table used to VANISH, which shifted the index of every later
+# [[array-of-table]] entry: three [[s]] blocks with an empty middle one
+# returned two sections, so s[1] was the third record. And the root was
+# emitted only if it had pairs, so a file opening with `[a]` made
+# sections[0] the section `a` — every consumer reading sections[0] as "the
+# root pairs" silently got `a`'s, with no way to tell.
+var et = bayan_toml_parse(str_from("[a]\n[b]\nx = 1\n"));
+assert_eq(vec_len(et), 3, "toml: root + [a] + [b], with [a] empty");
+assert_eq(str_len(bayan_toml_section_name(vec_get(et, 0))), 0, "toml: sections[0] is the root even when the file opens with a header");
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(et, 1)), "a"), 1, "toml: the empty table is emitted");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(et, 1))), 0, "toml: with zero pairs");
+var aot = bayan_toml_parse(str_from("[[s]]\nname = \"a\"\n[[s]]\n[[s]]\nname = \"c\"\n"));
+var aot_s = bayan_toml_get_sections(aot, "s");
+assert_eq(vec_len(aot_s), 3, "toml: three [[s]] blocks give THREE sections, empty middle included");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(aot_s, 1))), 0, "toml: the middle one is empty");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(aot_s, 2)), "name"), "c"), 1, "toml: so s[2] is the THIRD record, not the second");
+
+test_group("toml: duplicate keys take the LAST value (1.5.4)");
+# This returned the FIRST match until 1.5.4, which no other TOML
+# implementation does. The direction matters: with first-wins,
+#     secure = true
+#     secure = false
+# returned `true` for a file whose last word is `false`. bayan_toml_count
+# lets a caller that wants the spec's "duplicate is an error" enforce it,
+# since this parser has no error channel to report one through.
+var du = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("secure = true\nsecure = false\nsolo = 1\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(du, "secure"), "false"), 1, "toml: the LAST value wins");
+assert_eq(bayan_toml_count(du, "secure"), 2, "toml: count sees both");
+assert_eq(bayan_toml_count(du, "solo"), 1, "toml: and one for a unique key");
+assert_eq(bayan_toml_count(du, "absent"), 0, "toml: zero for an absent one");
+assert_eq(vec_len(du), 3, "toml: both pairs are still stored");
+
+test_group("toml: the parser records the value KIND (1.5.4)");
+# bayan_toml_is_array sniffs the value bytes, by which point the quotes are
+# gone — so a STRING whose content starts with `[` classified as an array.
+# `format = '[ $host ]($style)'`, an ordinary prompt template, is the case
+# that made it concrete. The kind is the parser's own answer and cannot be
+# fooled by content; the heuristic is kept, and documented as one.
+var vk = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("format = '[ $host ]($style)'\nbas = \"x\"\nml = \"\"\"y\"\"\"\nmll = '''z'''\narr = [1, 2]\ntbl = { a = 1 }\nnum = 42\n")), 0));
+assert_eq(bayan_toml_is_array(bayan_toml_get(vk, "format")), 1, "toml: the byte heuristic still says ARRAY for a bracketed string");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(vk, "format")), 0, "toml: the recorded kind says it is not");
+assert_eq(bayan_toml_pair_is_string(bayan_toml_get_pair(vk, "format")), 1, "toml: it says STRING");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "format")), TOML_K_LITERAL, "toml: specifically a literal string");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "bas")), TOML_K_BASIC, "toml: kind BASIC");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "ml")), TOML_K_ML_BASIC, "toml: kind ML_BASIC");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "mll")), TOML_K_ML_LIT, "toml: kind ML_LIT");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "arr")), TOML_K_ARRAY, "toml: kind ARRAY");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "tbl")), TOML_K_INLINE, "toml: kind INLINE");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "num")), TOML_K_BARE, "toml: kind BARE");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(vk, "arr")), 1, "toml: pair_is_array on a real array");
+assert_eq(bayan_toml_pair_is_inline(bayan_toml_get_pair(vk, "tbl")), 1, "toml: pair_is_inline on a real inline table");
+assert_eq(bayan_toml_pair_is_inline(bayan_toml_get_pair(vk, "arr")), 0, "toml: and not on an array");
+assert_eq(bayan_toml_get_pair(vk, "absent"), 0, "toml: get_pair on an absent key -> 0");
+# A HAND-BUILT pair reports UNKNOWN. A caller supplying only a key and a
+# value has not said what form the value took, and a guess would be worse
+# than an honest "unknown".
+var hp = bayan_toml_pair_new(str_from("k"), str_from("[1]"));
+assert_eq(bayan_toml_pair_kind(hp), TOML_K_UNKNOWN, "toml: a hand-built pair is UNKNOWN");
+assert_eq(bayan_toml_pair_is_array(hp), 0, "toml: so pair_is_array reports 0, not a guess");
+assert_eq(bayan_toml_pair_is_string(hp), 0, "toml: and pair_is_string too");
+var kp2 = bayan_toml_pair_new_kind(str_from("k"), str_from("[1]"), TOML_K_ARRAY);
+assert_eq(bayan_toml_pair_is_array(kp2), 1, "toml: pair_new_kind records what the caller states");
+var kar = arena_allocator(4096);
+assert_eq(bayan_toml_pair_kind(bayan_toml_pair_new_kind_a(kar, str_from("k"), str_from("1"), TOML_K_BARE)), TOML_K_BARE, "toml: pair_new_kind_a threads an arena");
+
+test_group("toml: table header names are trimmed and unquoted (1.5.4)");
+# `[ a ]` named the section " a ", spaces included, so
+# bayan_toml_get_sections("a") silently returned nothing — an empty vec
+# rather than an error, which is the worst way to be told.
+var hn = bayan_toml_parse(str_from("[ a ]\nx = 1\n[ \"b c\" ]\ny = 2\n[ 'd' ]\nz = 3\n"));
+assert_eq(vec_len(bayan_toml_get_sections(hn, "a")), 1, "toml: [ a ] is the section a");
+assert_eq(vec_len(bayan_toml_get_sections(hn, "b c")), 1, "toml: [ \"b c\" ] is the section b c, unquoted");
+assert_eq(vec_len(bayan_toml_get_sections(hn, "d")), 1, "toml: [ 'd' ] too");
+assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections(hn, "b c"), 0)), "y"), "2"), 1, "toml: and its pairs are intact");
+
 test_group("toml: no value may escape its source buffer (1.5.3)");
 # A property, not an example. bayan_toml_parse hands back Strs that VIEW the
 # source, so a scanner that advances one byte too far produces a Str claiming
@@ -590,8 +804,12 @@ while (oob_i < vec_len(oob_docs)) {
             var oob_nm = bayan_toml_section_name(oob_sec);
             if (oob_nm != 0) {
                 if (str_len(oob_nm) > 0) {
+                    # Same "starts inside" bound as the value check below. A
+                    # section NAME is a fresh copy as of 1.5.4 (segments are
+                    # trimmed, unquoted and re-joined), so it legitimately sits
+                    # outside the source span — only a VIEW can overrun.
                     var oob_ne = str_data(oob_nm) + str_len(oob_nm);
-                    if (str_data(oob_nm) >= oob_lo && oob_ne > oob_hi) { oob_bad = oob_bad + 1; }
+                    if (str_data(oob_nm) >= oob_lo && str_data(oob_nm) < oob_hi && oob_ne > oob_hi) { oob_bad = oob_bad + 1; }
                 }
             }
             var oob_pairs = bayan_toml_section_pairs(oob_sec);
@@ -610,8 +828,9 @@ while (oob_i < vec_len(oob_docs)) {
                 var oob_k = bayan_toml_pair_key(oob_p);
                 if (oob_k != 0) {
                     if (str_len(oob_k) > 0) {
+                        # A quoted key is decoded, so it is a copy too (1.5.4).
                         var oob_ke = str_data(oob_k) + str_len(oob_k);
-                        if (str_data(oob_k) >= oob_lo && oob_ke > oob_hi) { oob_bad = oob_bad + 1; }
+                        if (str_data(oob_k) >= oob_lo && str_data(oob_k) < oob_hi && oob_ke > oob_hi) { oob_bad = oob_bad + 1; }
                     }
                 }
                 oob_pi = oob_pi + 1;
