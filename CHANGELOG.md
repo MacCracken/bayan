@@ -2,6 +2,245 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.3] — 2026-08-28
+
+**The TOML parser returned wrong values, and had since 1.0.0.** Reported by
+mneme ([2026-08-22](docs/development/issues/2026-08-22-mneme-toml-basic-strings-not-unescaped.md));
+the repair grew because measuring the reported defect properly turned up nine
+more of the same shape. Toolchain moves to **cyrius 6.5.36**.
+
+> ### ⚠ BEHAVIOUR CHANGE — read this if you consume `bayan_toml_*`
+>
+> **String values are now decoded per the TOML spec.** They used to be the raw
+> bytes between the quotes.
+>
+> - `"say \"hi\""` was `say \"hi\"`, is now `say "hi"`.
+> - `'hello'` (literal string) was `'hello'` — **with its quotes** — and is now
+>   `hello`.
+> - `"""` bodies keep their trailing newline, which they used to lose.
+>
+> **If you compensated for any of this in your own code, remove the
+> compensation now or you will double-decode.** mneme's `_cfg_toml_unesc` is
+> the known case; its `tests/core_config.tcyr` has assertions written to fail
+> loudly at this moment rather than corrupt data quietly. `bayan_toml_escape` /
+> `bayan_toml_unescape` are now public so the writing half can go too.
+>
+> **One knock-on:** `bayan_toml_is_array` is a byte heuristic on the stored
+> value, and stripping a literal string's quotes exposes what they were hiding.
+> `format = '[ $host ]($style)'` classified as a string before and classifies as
+> an ARRAY now — the same way `format = "[ $host ]"` always has. If you branch
+> on `is_array`, check for this shape. Filed with the structural gaps; fixing it
+> means recording the value's kind on the pair.
+>
+> This is shipped as a patch release because a wrong answer becoming a right
+> answer is a bug fix, which is how 1.5.1 shipped `bayan_u256_mul` being wrong
+> 46% of the time. The behaviour change is real regardless of the version
+> number, hence this banner.
+
+### Why fix 1 and not fix 2
+
+The report offered three shapes and asked for none of them specifically. It had
+to be fix 1 — decoding **at parse time** — because a `bayan_toml_unescape` a
+caller applies to a returned value cannot work. By then the string kind is
+gone: a basic string resolves escapes and a literal string must not, so the
+same bytes decode two different ways depending on which quote produced them,
+and a `Str` from `bayan_toml_get` no longer records which. Fix 2's helpers ship
+too, for callers writing TOML by hand; fix 3's documentation is in the module
+header. But only the parser has the information.
+
+### Fixed — string values
+
+Every expected value below is Python `tomllib`'s. Nine of ten string forms
+disagreed with it before this release.
+
+- **Basic-string escapes are decoded** — `\b \t \n \f \r \" \\ \uXXXX` and
+  TOML's 8-hex `\UXXXXXXXX`, which JSON has no equivalent of. An **unknown**
+  escape is preserved verbatim rather than deleted: this parser has no error
+  channel, and keeping the bytes beats losing them.
+- **Single-line literal strings `'...'` are parsed at all.** There was no such
+  branch: a literal string fell through to the "unquoted value, read to end of
+  line" arm and came back **wearing its quotes**. `'hello'` was seven bytes
+  where the spec says five, and `'C:\tmp'` — the form literal strings exist FOR
+  — was wrong twice over. Every literal string bayan has ever parsed carried
+  two stray bytes.
+- **The multi-line closing-delimiter scan** had two independent bugs, and
+  either one alone masks the other:
+  - it did not skip a backslash-escaped quote, so `"""he said \"hi\""""`
+    stopped one byte early and **dropped a character** (the filed repro 2);
+  - it took the FIRST three quotes of a run where TOML says the closer is the
+    **last** three, so `"""a""""` lost the `"` and `'''a''''` lost the `'`.
+
+  Mutation testing is what separated them: a test for the reported case passes
+  with either fix in place.
+- **A trailing newline before the closing delimiter is no longer trimmed.** The
+  spec trims the newline *after* the opening delimiter and says nothing about
+  the one before the closer, so `"""\nline1\n"""` is `line1\n`. bayan dropped
+  that byte from every such value.
+- **The line-ending backslash** in a `"""` body now folds the newline and the
+  next line's indent, as the spec requires.
+- **CRLF** after an opening delimiter is trimmed as a unit, and a raw CRLF
+  inside a multi-line body normalises to LF. An **escaped** `\r` is not
+  normalised — the author asked for that byte by name.
+- **The escaped-quote rule reached all three array scanners.** The value
+  capture, the element splitter and the content-end walk each tracked quotes
+  without it, so `["a\"b"]` read the escaped quote as closing, the `]` then
+  landed "inside a string", and the capture **ran to the end of the document**.
+
+### Fixed — the value arms return the value and nothing else
+
+Found by an adversarial review of the above, in the most ordinary lines a TOML
+file contains.
+
+- **An inline comment is no longer part of the value.** `port = 8080 # default`
+  yielded the 14-byte string `8080 # default`; a consumer converting that to an
+  integer got a different number.
+- **CRLF and tabs are trimmed from unquoted values.** The trim removed spaces
+  only, so every unquoted value in every file written on Windows carried a
+  stray CR — invisible when printed, unequal to the obvious literal.
+- **Two more scanners no longer swallow the rest of the document**, the shape
+  1.5.1 called the worst one this can take. An unterminated quote inside an
+  array value, and a table header with no closing `]`, each ran to EOF and took
+  every key below them with it.
+- **A backslash-escaped newline** ends a single-line basic string. 1.5.1 closed
+  the bare-newline hole and the escaped one stayed open, because the scan
+  stepped over "the escaped byte" without looking at it.
+- **A line beginning with `=`** produces no pair, instead of a phantom one with
+  a zero-length key.
+- **`_toml_slurp` no longer folds a read ERROR into clean EOF** — silent
+  truncation reported as success, the same shape 1.5.1 removed from the fixed
+  256 KiB buffer, arriving by a different route.
+- **An empty file is a legal empty document**, not `Err(TomlIoErr)`. It used to
+  be indistinguishable from a file that does not exist, which is the one
+  distinction that Result variant exists to draw.
+
+### Added
+
+- **`bayan_toml_unescape` / `bayan_toml_escape`** (+ `_a` allocator twins).
+  Values from `bayan_toml_get` are already decoded; these are for a consumer
+  writing TOML by hand, so mneme's `_cfg_toml_esc` / `_cfg_toml_unesc` can both
+  be deleted rather than only the reading half. A round-trip test asserts
+  escape → parse returns the original bytes, which is the property mneme needs.
+- **`tests/fixtures/toml/strings.vec` — 1,476 vectors from `tomllib`**,
+  generated by `scripts/gen-toml-vectors.py` and regenerated byte-identically
+  in CI (`tomllib` is stdlib from Python 3.11, so the gate installs nothing —
+  the rule the pdf metric-table gate was rewritten to obey).
+
+  This module is exactly why that discipline is worth paying for a third time.
+  It shipped wrong from 1.0.0 to 1.5.2 with a green suite, because every TOML
+  assertion in that suite had been written by reading bayan's output and
+  writing it down. `tomllib` does not care what bayan does.
+- **A truncation property test**: eight documents, cut at every length,
+  asserting no key, value or section name reaches past its source buffer.
+
+### Fixed — two CI gates that ran and proved less than they claimed
+
+- **`scripts/consumer-check.sh` dropped the first compiler warning.** It matched
+  `grep '^warning:'`, and cyrius prints warning #1 concatenated onto the
+  `compile <src> -> <out> [arch] ` prefix line. So a bundle whose **only**
+  defect was one undefined function was scored `ok`, and every `ok` this gate
+  printed meant no more than "no warnings after the first". It had been hiding
+  half of the real under-declaration in
+  [2026-08-19](docs/development/issues/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md)
+  — both `bayan-toml` and `bayan-cyml` are missing `fmt_int_buf` as well as
+  `fmt_int`, and that issue's table is corrected accordingly.
+
+  Now matches anywhere, and subtracts a **measured** harness floor
+  (`lib/syscalls.cyr` alone emits `undefined function 'alloc'`, which belongs to
+  the scaffold, not to any bundle) — asserting that floor is exactly that one
+  warning, so the exemption cannot widen silently. Only scaffold warnings are
+  subtracted, never a declared leaf's: a leaf's unresolved call is precisely the
+  under-declaration this gate exists to catch. Verified by injecting a single
+  undefined call into a bundle and watching `ok` become `FAIL`.
+- **`.github/workflows/ci.yml` had the same anchor** on its build and test
+  warning gates. Same fix. Same family as the `lint`-always-exits-0 and
+  `cyrfmt`-reads-only-argv[1] traps already recorded in `state.md`.
+
+### Fixed — documentation that misstated the code
+
+A doc comment that lies is how a consumer ends up hand-rolling a second
+implementation, which is the outcome bayan exists to prevent. Each of these was
+verified against the code it documents.
+
+- `src/toml.cyr`'s supported-forms list omitted `[section]` headers (supported
+  since v6.0.62) and `"""` strings, and it now carries an explicit
+  **NOT SUPPORTED** block — quoted keys, dotted keys, inline tables, empty
+  tables, duplicate keys, untrimmed header names — all filed together in
+  [2026-08-28](docs/development/issues/2026-08-28-toml-structural-subset-gaps.md).
+- `bayan_toml_parse_file` was still headed "Reads up to 256KB" eleven lines
+  above the block explaining that 1.5.1 removed the cap.
+- `bayan_toml_get_sections` now states the cstring key contract that 1.5.1
+  wrote onto `bayan_toml_get` and did not carry to its neighbour, which has the
+  identical silent-empty-result trap. Same for `bayan_toml_get_array`.
+- `bayan_json_parse` now states at the entry point that the flat API captures
+  values verbatim and does NOT decode escapes. That contract existed only
+  fourteen lines inside the function body, in a historical note.
+- `bayan_json_get_int` was documented as returning 0 for a non-numeric value.
+  It does not: `str_to_int` skips every non-digit byte, so `"1.5.1"` is 151 and
+  `"12abc"` is 12. There is no "not an integer" signal, and the old comment
+  invited a sentinel check that never fires.
+- `src/cyml.cyr` claimed `bayan_cyml_parse` "can't really fail". True of input,
+  not of memory: three unchecked allocations fault under exhaustion. Its 256 KiB
+  read cap claimed to match a convention "used elsewhere" that no longer exists,
+  and exceeding it truncates silently into an `Ok(...)`. It is also not the
+  module's only fixed buffer: `_cyml_read_file_trimmed` cuts a `${file:PATH}`
+  expansion at 4,095 bytes, equally silently. The first draft of that comment
+  called the 256 KiB one "the last fixed cap in the project" and was refuted by
+  a review of this release's own paperwork — in the release whose doc-fix
+  section claims each of these "was verified against the code it documents".
+- `src/csv.cyr` was billed as an RFC 4180 parser. It is a line-oriented subset:
+  a trailing empty field is not emitted (`a,` parses to one field, not two),
+  records are LF-terminated where the RFC says CRLF, and CR does not trigger
+  quoting.
+
+### Changed
+
+- Cyrius pin **6.5.33 → 6.5.36**; `lib/` re-synced (11 files) and verified
+  byte-for-byte against the **released** 6.5.36 tarball, not the local
+  snapshot. They agreed this time; that was established by checking.
+- `dist/` regenerated with the release toolchain. The full bundle is **16,308**
+  lines, up from **15,598** at 1.5.2. (An earlier draft of this line said "was
+  14,905" — the 1.5.0 figure, which `state.md` had carried unmeasured through
+  two releases. Copying a number is not measuring it.)
+
+### A note on what this release did NOT catch on its own
+
+Three defects in this release's own work were found by adversarially reviewing
+it, after the suite, the 1,476 vectors and every CI gate were green. All three
+are fixed and guarded; they are recorded because "the tests passed" is exactly
+the evidence that was available each time.
+
+1. **A one-byte over-read.** The new escaped-quote rule in the array capture
+   shipped without a bound and read past the end of a document ending in
+   `a = ["x\`. The guard is now a truncation property test — eight documents cut
+   at every length — which fails with three violations when the bound is removed.
+2. **The inline-comment rule truncated inline tables.** It broke on `#`
+   unconditionally, justified by "a `#` cannot occur inside an unquoted value
+   (they are numbers, booleans and dates)". That enumeration omits the inline
+   table, which is the one unquoted value carrying arbitrary string bytes:
+   `srv = { host = "a#b" }` became `{ host = "a`. The break is now quote-aware.
+3. **The array newline rule turned string content into document structure.** It
+   fired on a raw newline seen inside a quote, to stop an unterminated quote
+   swallowing the file — but the scanner toggles its quote state three times
+   across a `"""` delimiter, so it fired on a multi-line element's own first
+   newline. The array was truncated to `["""` and the parser resumed inside the
+   string body, reading it as TOML: an array element containing the text
+   `[boom]` **forged a section named `boom`** and relocated the following root
+   key into it. The capture now tracks triple-quoted elements separately.
+
+   This one was strictly worse than the bug the rule was added to fix, and it
+   went in as a two-line change with a confident comment.
+
+Ten mutations — one per part of this fix — were each confirmed to turn the
+suite red. Two initially did not, and closing those gaps found that the
+hand-written test for the *reported* multi-line defect could not actually
+detect the bug it was written for.
+
+Six documented numbers were also found to be wrong, all copied forward rather
+than measured: the previous bundle size, the fuzz harness's input / parse /
+page counts, ganita's version, mneme's PDF-writer line count, the `bin/`
+correspondence, and the "last fixed cap in the project" claim. Each is now the
+measured value, and the drift is noted where it happened.
+
 ## [1.5.2] — 2026-08-21
 
 **Testing gaps closed, and one more defect found by closing them.** Reference

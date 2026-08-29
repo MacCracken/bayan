@@ -5,6 +5,33 @@
 **Version**: bayan 1.4.x (as vendored by `cyrius deps` at cyrius 6.5.6)
 **Severity**: Low — no wrong answers, but the failure mode is a segfault rather
 than an error return.
+**Status**: OPEN, and the header line above is now inaccurate — see the
+2026-08-28 re-measurement below.
+
+> **Re-measured 2026-08-28 at bayan 1.5.3 / cyrius 6.5.36. Still open, but the
+> symptom has CHANGED and the 1.4.1 mitigation does not cover this issue's own
+> reproduction.**
+>
+> **The crash is gone; a silent wrong answer took its place.** Running this
+> file's own repro today returns 0 ("not found") rather than faulting: `strlen`
+> terminates a few bytes into the `Str` header on the data pointer's zero high
+> bytes and yields a junk length, so the length compare simply misses. Nothing
+> faults at the call. That is *worse* to diagnose, not better — the fault is
+> deferred to whatever the caller does with the 0 (`bayan_json_v_str(0)` ->
+> `str_len(0)` is the path named in the in-code banner), which is somewhere
+> else entirely. Anyone triaging from the "SIGSEGV" in the header above will be
+> looking for the wrong thing.
+>
+> **The armed diagnostic misses the inline form — which is the form this issue
+> reproduces with.** The `: cstring` annotation added in 1.4.1 fires when the
+> argument is a named `Str`-typed local (`var key = str_from("k");` then
+> `obj_get(o, key)` warns). It does NOT fire on
+> `bayan_json_v_obj_get(o, str_from("name"))`, the inline spelling in the
+> Reproduction section of this very file: that compiles with zero warnings and
+> returns 0. So the mitigation misses the case it was written to catch.
+>
+> Reconciling the two signatures is still a breaking change and still wants its
+> own release. Recorded in `docs/development/state.md` under Known gaps.
 
 ## What happens
 

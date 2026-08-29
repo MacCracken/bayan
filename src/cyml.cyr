@@ -11,8 +11,14 @@
 
 # v5.8.30 — Result-returning *_r variant for the file-loading
 # parser (`bayan_cyml_parse_file_r`). Bare `bayan_cyml_parse(data, len)` keeps
-# its current shape — it can't really fail (always returns a doc
-# with entry_count >= 0), so no Result variant is needed for it.
+# its current shape — it cannot fail on any INPUT (any byte string yields a
+# doc with entry_count >= 0), so no Result variant was added.
+#
+# That claim is about input, not about memory. bayan_cyml_doc_new returns 0
+# on OOM and the result is stored through unchecked, as are two later
+# allocations — so under allocator exhaustion this faults rather than
+# returning anything. `entry_starts` already has the `if (x == 0)` guard the
+# other three want. Recorded here in 1.5.3 rather than silently relied on.
 
 # v5.8.30 — CymlError variants. Same shape as Json/TomlError:
 # `CymlIoErr` for any IoError raised while reading the source
@@ -321,6 +327,12 @@ fn bayan_cyml_parse(data, len): i64 {
 # ${env:HOME}     → reads environment variable HOME
 # Plain strings without ${...} returned as-is.
 
+# ⚠ TRUNCATES SILENTLY AT 4,095 BYTES. `var buf[4096]` with a 4095-byte read
+# and no short-read signal, so a `${file:PATH}` expansion of a larger file
+# yields a prefix and reports nothing — the same silent-truncation shape 1.5.1
+# removed from toml's loader, at a smaller size. Documented at 1.5.3, not
+# fixed: converting it to the str_builder slurp is a cyml change with its own
+# consumers, and this is a toml release.
 fn _cyml_read_file_trimmed(path): i64 {
     var buf[4096];
     # PORTABLE WRAPPERS, not raw syscall numbers (fixed in 1.5.1). This used
@@ -495,7 +507,21 @@ fn bayan_cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len): i6
 
 # v5.8.30 — Result variant of file-loading parser. Reads the file
 # via file_open_r / file_read_r, wraps any IoError as Err(CymlIoErr).
-# Buffer cap matches the conservative 256KB used elsewhere; vidya's
+# THE LAST FIXED CAP IN THE *SLURP* PATHS. toml (1.5.1) and json both slurp
+# into an unbounded str_builder now, so the "matches the conservative 256KB
+# used elsewhere" this comment claimed until 1.5.3 pointed at a convention
+# that no longer exists.
+#
+# It is NOT the last fixed buffer in this module, let alone the project — a
+# first draft of this very note said so and was refuted by an adversarial
+# review of it. `_cyml_read_file_trimmed` above declares `var buf[4096]` and
+# truncates a `${file:PATH}` expansion at 4,095 bytes, silently, which is the
+# same shape at a smaller size. A larger file is
+# TRUNCATED and still returned as Ok(...), with the cut landing mid-line —
+# the same silent-truncation-reported-as-success shape 1.5.1 removed from
+# toml, where it had lost 1,893 keys from a 300 KB file. Converting this to
+# the str_builder slurp is its own change; the cap is documented, not fixed.
+# Original note follows: vidya's
 # largest current .cyml entries fit comfortably.
 fn bayan_cyml_parse_file_r(path): i64 {
     var fd_r = file_open_r(path, 0, 0);

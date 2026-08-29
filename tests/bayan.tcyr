@@ -221,8 +221,18 @@ assert_eq(json_stream_parse(jd_deep, strlen(jd_deep), sh), 0 - 1, "alias json_st
 test_group("toml: triple-quoted strings — \"\"\" (basic) + ''' (literal)");
 # Regression guard for the """-drops-body bug: a """...""" value used to fall
 # through to the single-line `"` branch and parse to "" (body silently lost).
-# Both triple forms are captured verbatim (bayan does not expand \escapes).
-# One optional leading newline is skipped; one trailing newline is trimmed.
+# One optional leading newline after the opening delimiter is skipped.
+#
+# 1.5.3 changed two expectations in this block, and both were bayan being
+# WRONG, not the test being rewritten to match new code. Checked against
+# Python `tomllib`, which is the oracle for every value below:
+#   * `mk` ends its first line with a backslash — the multi-line line-ending
+#     backslash, which trims the newline and the next line's indent. bayan
+#     used to keep all of it, so the value carried a stray `\` and a newline.
+#   * `lit` used to lose its TRAILING newline. The spec trims the newline
+#     AFTER the opening delimiter and says nothing about the one before the
+#     closer, so `'''\nraw$stuff\n'''` is `raw$stuff\n`. bayan trimmed it
+#     anyway, silently dropping a byte from every such value.
 var tdoc = "title = \"cfg\"\nmk = \"\"\"\ncargo build \\\n  --release\n\"\"\"\nlit = '''\nraw$stuff\n'''\nafter = \"tail\"\nq = \"\"\"a\"b\"c\"\"\"\ne = \"\"\n";
 var tsecs = bayan_toml_parse(str_from(tdoc));
 assert_eq(vec_len(tsecs) >= 1, 1, "toml: parsed a section");
@@ -230,14 +240,391 @@ var tp = bayan_toml_section_pairs(vec_get(tsecs, 0));
 var mk = bayan_toml_get(tp, "mk");
 assert_eq(mk != 0, 1, "toml: \"\"\" key present");
 assert_eq(str_len(mk) > 0, 1, "toml: \"\"\" body not dropped (the fix)");
-assert_eq(str_eq_cstr(mk, "cargo build \\\n  --release"), 1, "toml: \"\"\" body verbatim, backslash preserved");
-assert_eq(str_eq_cstr(bayan_toml_get(tp, "lit"), "raw$stuff"), 1, "toml: ''' body verbatim (regression)");
+assert_eq(str_eq_cstr(mk, "cargo build --release\n"), 1, "toml: \"\"\" line-ending backslash folds the newline + indent (1.5.3)");
+assert_eq(str_eq_cstr(bayan_toml_get(tp, "lit"), "raw$stuff\n"), 1, "toml: ''' body verbatim INCLUDING the trailing newline (1.5.3)");
 assert_eq(str_eq_cstr(bayan_toml_get(tp, "title"), "cfg"), 1, "toml: single-line \" before a triple");
 assert_eq(str_eq_cstr(bayan_toml_get(tp, "after"), "tail"), 1, "toml: key after a triple parses");
 assert_eq(str_eq_cstr(bayan_toml_get(tp, "q"), "a\"b\"c"), 1, "toml: embedded \" inside \"\"\" preserved");
 var ev = bayan_toml_get(tp, "e");
 assert_eq(ev != 0, 1, "toml: empty-string key present");
 assert_eq(str_len(ev), 0, "toml: \"\" stays empty single-line, not mis-read as triple");
+
+test_group("toml: basic-string escapes are DECODED (1.5.3 — mneme 2026-08-22)");
+# Every expected value below is Python `tomllib`'s answer for the same
+# document, generated rather than hand-derived — the same oracle discipline
+# tests/vectors.tcyr uses. Before 1.5.3 each came back with its backslashes
+# intact, which is a WRONG ANSWER and not a documented subset limit:
+# nothing on bayan_toml_parse or bayan_toml_get said so, and a value with no
+# escapes round-tripped perfectly, so the gap only showed once a user typed
+# a quote.
+var e3doc = "q = \"say \\\"hi\\\"\"\nbs = \"C:\\\\tmp\"\ntb = \"a\\tb\"\nnl = \"a\\nb\"\ncr = \"a\\rb\"\nff = \"a\\fb\"\nbp = \"a\\bb\"\nu4 = \"\\u00e9!\"\nu8 = \"\\U0001F600!\"\n";
+var e3s = bayan_toml_parse(str_from(e3doc));
+var e3p = bayan_toml_section_pairs(vec_get(e3s, 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "q"), "say \"hi\""), 1, "toml: escaped quote");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "bs"), "C:\\tmp"), 1, "toml: escaped backslash");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "tb"), "a\tb"), 1, "toml: tab escape");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "nl"), "a\nb"), 1, "toml: newline escape");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "cr"), "a\rb"), 1, "toml: carriage-return escape");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "ff"), "a\fb"), 1, "toml: form-feed escape");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "bp"), "a\bb"), 1, "toml: backspace escape");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "u4"), "\xC3\xA9!"), 1, "toml: 4-hex escape -> UTF-8 e-acute");
+assert_eq(str_eq_cstr(bayan_toml_get(e3p, "u8"), "\xF0\x9F\x98\x80!"), 1, "toml: 8-hex escape -> UTF-8 astral (TOML-only form)");
+
+# TOML has no `\/` escape (JSON does), and tomllib REJECTS a document
+# containing one — so this expectation is bayan POLICY, stated here, not an
+# oracle value. bayan has no error channel in this parser, so an unknown
+# escape is preserved VERBATIM rather than deleted: a caller can still see
+# what was written, and a mis-escaped path is a recoverable annoyance
+# instead of silent data loss.
+var e3sl = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\/b\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3sl, "x"), "a\\/b"), 1, "toml: unknown escape preserved verbatim");
+
+# Degenerate escapes. None may read out of bounds, emit invalid UTF-8, or
+# lose the rest of the value — a lone surrogate in particular must never
+# reach _toml_emit_utf8, which would encode it as valid-looking CESU-8.
+var e3h1 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\uZZZZb\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3h1, "x"), "a\\uZZZZb"), 1, "toml: bad hex digits");
+var e3h2 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\u00\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3h2, "x"), "a\\u00"), 1, "toml: too few hex digits before the closing quote");
+var e3h3 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\ud800b\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3h3, "x"), "a\\ud800b"), 1, "toml: lone surrogate is never encoded");
+var e3h4 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\U0011FFFFb\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3h4, "x"), "a\\U0011FFFFb"), 1, "toml: codepoint past U+10FFFF");
+var e3h5 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\\\\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3h5, "x"), "a\\"), 1, "toml: trailing escaped backslash is a real escape");
+var e3h6 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(e3h6, "x"), ""), 1, "toml: a lone trailing backslash leaves the string unterminated");
+
+test_group("toml: single-line LITERAL strings '...' (1.5.3)");
+# There was no '...' branch at all before 1.5.3: a literal string fell
+# through to the "unquoted value, read to end of line" arm and came back
+# WITH ITS QUOTES. `'hello'` was 7 bytes where the spec says 5, and
+# `'C:\tmp'` — the form literal strings exist FOR — was wrong twice over.
+# A literal string has no escapes, so nothing here is decoded.
+var l3doc = "a = 'C:\\tmp'\nb = 'hello'\nc = ''\nd = 'say \"hi\"'\ne = 'tail'\n";
+var l3p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from(l3doc)), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(l3p, "a"), "C:\\tmp"), 1, "toml: a backslash in '...' is an ordinary byte");
+assert_eq(str_eq_cstr(bayan_toml_get(l3p, "b"), "hello"), 1, "toml: quotes are stripped, body kept");
+assert_eq(str_eq_cstr(bayan_toml_get(l3p, "c"), ""), 1, "toml: '' is empty, not two bytes");
+assert_eq(str_eq_cstr(bayan_toml_get(l3p, "d"), "say \"hi\""), 1, "toml: a double quote inside '...' is an ordinary byte");
+assert_eq(str_eq_cstr(bayan_toml_get(l3p, "e"), "tail"), 1, "toml: the key after a literal string still parses");
+assert_eq(str_len(bayan_toml_get(l3p, "c")), 0, "toml: '' has length 0");
+
+test_group("toml: multi-line string conformance (1.5.3)");
+# Four separate defects, each measured against `tomllib`:
+#  a — an escaped quote next to the closer made the delimiter scan stop ONE
+#      BYTE EARLY, so the value lost its final character. That is a DROPPED
+#      character, not merely an undecoded one (mneme repro 2).
+#  b/c — TOML lets a body end in one or two delimiter chars unescaped; the
+#      closer is the LAST three of the run. bayan took the first three.
+#  d — the newline BEFORE the closer is part of the string. bayan trimmed
+#      it, dropping a byte from every such value ever parsed.
+#  f — the line-ending backslash (trim the newline and the next line's
+#      indent) was not implemented, so the backslash survived into the value.
+var m3doc = "a = \"\"\"he said \\\"hi\\\"\"\"\"\nb = \"\"\"he said \"hi\"\"\"\"\nc = '''a''''\nd = \"\"\"\nline1\n\"\"\"\ne = \"\"\"\nline1\"\"\"\nf = \"\"\"\\\n     foo \\\n     bar\"\"\"\ng = \"\"\"\"\"\"\nh = '''raw \\n stays'''\n";
+var m3p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from(m3doc)), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(m3p, "a"), "he said \"hi\""), 1, "toml: escaped quote adjacent to the closer (mneme repro 2)");
+assert_eq(str_eq_cstr(bayan_toml_get(m3p, "b"), "he said \"hi\""), 1, "toml: the closer is the LAST three of a quote run");
+assert_eq(str_eq_cstr(bayan_toml_get(m3p, "c"), "a'"), 1, "toml: the same run rule applies to '''");
+assert_eq(str_eq_cstr(bayan_toml_get(m3p, "d"), "line1\n"), 1, "toml: a trailing newline is part of the value");
+assert_eq(str_eq_cstr(bayan_toml_get(m3p, "e"), "line1"), 1, "toml: ...and absent when the source has none");
+assert_eq(str_eq_cstr(bayan_toml_get(m3p, "f"), "foo bar"), 1, "toml: the line-ending backslash folds newline + indent");
+assert_eq(str_eq_cstr(bayan_toml_get(m3p, "h"), "raw \\n stays"), 1, "toml: a ''' body is verbatim — literals decode nothing");
+assert_eq(str_len(bayan_toml_get(m3p, "g")), 0, "toml: an empty multi-line string is empty");
+# Case `a` above does NOT actually isolate the delimiter scan's backslash rule:
+# with the rule removed, the last-3-of-the-run rule lands on the same body by
+# coincidence and the value still comes out right. Mutation testing found that;
+# this is the shape where the two cannot mask each other. Without the backslash
+# rule the scan sees the escaped quote plus the two raw ones as a closing run
+# and the body stops at `a\`, which the run rule cannot rescue.
+var m3b = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"\"\"a\\\"\"\"b\"\"\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(m3b, "x"), "a\"\"\"b"), 1, "toml: an escaped quote before two raw ones is not a closing run");
+# CRLF after the opening delimiter is trimmed as a UNIT (1.5.3). A file
+# written on Windows used to keep a stray leading CR in every """ value.
+var m3c = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"\"\"\r\nline1\"\"\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(m3c, "x"), "line1"), 1, "toml: CRLF after the opening delimiter is trimmed");
+# A raw CRLF INSIDE the body normalises to LF — a different code path from the
+# opening-delimiter trim above, and a deliberate choice: TOML lets a parser
+# normalise newlines, and every mainstream implementation does. An ESCAPED \r
+# is NOT normalised, because the author asked for that byte by name.
+var m3n = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"\"\"a\r\nb\"\"\"\ny = \"\"\"a\\r\\nb\"\"\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(m3n, "x"), "a\nb"), 1, "toml: a raw CRLF in a multi-line body normalises to LF");
+assert_eq(str_eq_cstr(bayan_toml_get(m3n, "y"), "a\r\nb"), 1, "toml: an ESCAPED \\r survives normalisation");
+
+# 1.5.1 stopped an unterminated string swallowing the next line; the
+# BACKSLASH-ESCAPED newline was the hole left in that rule, because the scan
+# stepped over "the escaped byte" without looking at it. That is the exact
+# shape 1.5.1 called the worst one this can take: a malformed line silently
+# removing a security-relevant key two lines later.
+var xn = bayan_toml_parse(str_from("a = \"oops\\\nadmin = false\nb = \"x\"\nc = 1\n"));
+var xnp = bayan_toml_section_pairs(vec_get(xn, 0));
+assert_eq(bayan_toml_get(xnp, "admin") != 0, 1, "toml: an escaped newline does not delete the next key");
+assert_eq(str_eq_cstr(bayan_toml_get(xnp, "c"), "1"), 1, "toml: parsing resynchronises after it");
+# _toml_parse_str and _toml_str_end BOTH have to stop at the escaped newline,
+# and the document above cannot tell them apart: with the guard removed from
+# _toml_parse_str alone, the scan crosses one line and is then stopped by the
+# NEXT newline, so the value comes out empty either way and every assertion
+# stays green. Mutation testing surfaced that. This document puts a closing
+# quote on the following line, which is the only shape where the value the
+# scan returns differs — `oops` + newline + `zzz` if the guard is gone,
+# nothing if it holds.
+var xn2 = bayan_toml_parse(str_from("a = \"oops\\\nzzz\"\nadmin = false\nc = 1\n"));
+var xn2p = bayan_toml_section_pairs(vec_get(xn2, 0));
+assert_eq(str_len(bayan_toml_get(xn2p, "a")), 0, "toml: an escaped newline leaves the value unterminated, not spliced");
+assert_eq(str_eq_cstr(bayan_toml_get(xn2p, "c"), "1"), 1, "toml: and the keys after it still parse");
+
+test_group("toml: array elements follow the same escape rules (1.5.3)");
+# The issue named bayan_toml_get_array among the affected entry points, so
+# the element splitter decodes a basic-quoted element and leaves a
+# literal-quoted one verbatim, exactly as the scalar parsers do.
+var a3p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("xs = [\"a\\\"b\", 'c\\d', \"plain\"]\n")), 0));
+var a3 = bayan_toml_get_array(a3p, "xs");
+assert_eq(vec_len(a3), 3, "toml: the array splits into 3 elements");
+# Three separate loops track quote state over an array — the VALUE capture in
+# bayan_toml_parse, the element splitter, and the content-end walk in
+# _toml_arr_flush_a — and all three needed the escaped-quote rule. The splitter
+# and the walk are covered by the element assertions below; the CAPTURE is only
+# visible from outside when the value runs past its own `]`, because a `"` read
+# as closing leaves the real `]` "inside a string", depth never returns to 0,
+# and the capture eats the rest of the document. So the guard is that the NEXT
+# KEY still exists. (Found by mutation testing: without this, reverting the
+# capture fix alone left the whole suite green.)
+var a3c = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("xs = [\"a\\\"b\"]\nafter = \"tail\"\nn = 7\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(a3c, "after"), "tail"), 1, "toml: an escaped quote in an array does not swallow the next key");
+assert_eq(str_eq_cstr(bayan_toml_get(a3c, "n"), "7"), 1, "toml: ...or the one after that");
+assert_eq(str_eq_cstr(vec_get(a3, 0), "a\"b"), 1, "toml: a basic element is decoded");
+assert_eq(str_eq_cstr(vec_get(a3, 1), "c\\d"), 1, "toml: a literal element is verbatim");
+assert_eq(str_eq_cstr(vec_get(a3, 2), "plain"), 1, "toml: an escape-free element is unchanged");
+
+test_group("toml: bayan_toml_escape / bayan_toml_unescape (1.5.3)");
+# The other half of the mneme report. Values from bayan_toml_get are now
+# decoded, but a consumer WRITING TOML still needs the escaping direction.
+# mneme hand-rolled both (`_cfg_toml_esc` / `_cfg_toml_unesc`) after finding
+# it was emitting malformed TOML whenever a vault name held a quote —
+# reading it back through bayan cancelled the error out, so the round trip
+# looked correct while the file on disk was invalid. Shipping both halves is
+# what makes that hand-roll deletable.
+var esc_in = "say \"hi\"\\\ttab\nnl";
+var esc_out = bayan_toml_escape(str_from(esc_in));
+assert_eq(str_eq_cstr(esc_out, "say \\\"hi\\\"\\\\\\ttab\\nnl"), 1, "toml: escape produces a TOML basic-string body");
+# The round trip is the assertion mneme actually needs to hold: escape ->
+# wrap in quotes -> parse -> the original bytes back.
+var rt_sb = str_builder_new();
+str_builder_add(rt_sb, str_from("k = \""));
+str_builder_add(rt_sb, esc_out);
+str_builder_add(rt_sb, str_from("\"\n"));
+var rt_p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_builder_build(rt_sb)), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(rt_p, "k"), esc_in), 1, "toml: escape -> parse round-trips to the original bytes");
+# Python agrees the escaped form is valid TOML carrying the same value;
+# the generator for this file asserted it before writing the line.
+# C0 controls and DEL take the 4-hex form.
+assert_eq(str_eq_cstr(bayan_toml_escape(str_from("a\x01b\x7Fc")), "a\\u0001b\\u007Fc"), 1, "toml: escape emits a 4-hex escape for C0 and DEL");
+# Bytes >= 128 pass through: a UTF-8 sequence must not be split per byte.
+assert_eq(str_eq_cstr(bayan_toml_escape(str_from("\xC3\xA9")), "\xC3\xA9"), 1, "toml: escape leaves UTF-8 alone");
+assert_eq(str_len(bayan_toml_escape(str_from(""))), 0, "toml: escape of the empty string is empty");
+# `\\c` is an ESCAPED BACKSLASH followed by `c`, so the decoded tail is
+# `\c` and not `c` — the expected value here is tomllib's, after the
+# hand-written one got it wrong and this assertion caught it.
+assert_eq(str_eq_cstr(bayan_toml_unescape(str_from("a\\tb\\u00e9\\\\c")), "a\tb\xC3\xA9\\c"), 1, "toml: unescape is the inverse");
+assert_eq(str_len(bayan_toml_unescape(str_from(""))), 0, "toml: unescape of the empty string is empty");
+# The _a twins thread an allocator and must agree byte for byte.
+var esc_ar = arena_allocator(4096);
+assert_eq(str_eq(bayan_toml_escape_a(esc_ar, str_from(esc_in)), esc_out), 1, "toml: escape_a matches escape");
+assert_eq(str_eq(bayan_toml_unescape_a(esc_ar, esc_out), str_from(esc_in)), 1, "toml: unescape_a matches unescape");
+
+# Decoding needs a destination, so a value carrying a backslash is now a
+# COPY. A value WITHOUT one must still be a zero-copy VIEW into the source —
+# that is the property the whole module is built on, and a decode step added
+# carelessly would have silently ended it for every string in every file.
+var zc_src = str_from("plain = \"nothing to decode\"\nesc = \"has \\\"one\\\"\"\n");
+var zc_p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(zc_src), 0));
+var zc_lo = str_data(zc_src);
+var zc_hi = zc_lo + str_len(zc_src);
+var zc_v = str_data(bayan_toml_get(zc_p, "plain"));
+assert_eq((zc_v >= zc_lo) && (zc_v < zc_hi), 1, "toml: an escape-free value is still a view into the source");
+var zc_e = str_data(bayan_toml_get(zc_p, "esc"));
+assert_eq((zc_e >= zc_lo) && (zc_e < zc_hi), 0, "toml: a decoded value is a fresh copy, not a view");
+
+test_group("toml: the value arms return the VALUE and nothing else (1.5.3)");
+# Four silent wrong answers found by an adversarial review of the 1.5.3 escape
+# work, all in the most ordinary lines a TOML file contains. Each expectation
+# is Python `tomllib`'s, except where noted.
+
+# 1. A comment may follow a value on the same line. The unquoted arm read to
+#    the newline, so `port = 8080 # default` was the 14-byte string
+#    `8080 # default`. A consumer converting that to an integer got a
+#    different number.
+var vc1 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("port = 8080 # default\nname = 5#c\nk = \"a # b\"\na = [1, 2] # c\nz = 9\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(vc1, "port"), "8080"), 1, "toml: an inline comment is not part of the value");
+assert_eq(str_eq_cstr(bayan_toml_get(vc1, "name"), "5"), 1, "toml: ...with or without a space before the #");
+assert_eq(str_eq_cstr(bayan_toml_get(vc1, "k"), "a # b"), 1, "toml: a # INSIDE a string is an ordinary byte");
+assert_eq(str_eq_cstr(bayan_toml_get(vc1, "a"), "[1, 2]"), 1, "toml: a # after an array value is not captured");
+assert_eq(str_eq_cstr(bayan_toml_get(vc1, "z"), "9"), 1, "toml: and the following keys still parse");
+
+# 2. CRLF. The trailing-trim removed SPACES only, so every unquoted value in a
+#    file written on Windows carried a stray CR — invisible when printed and
+#    unequal to the obvious literal. Tabs were never trimmed either.
+var vc2 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("flag = true\r\nport = 80\r\nn = 5\t\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(vc2, "flag"), "true"), 1, "toml: a CRLF line ending leaves no CR on the value");
+assert_eq(str_eq_cstr(bayan_toml_get(vc2, "port"), "80"), 1, "toml: ...on any of them");
+assert_eq(str_eq_cstr(bayan_toml_get(vc2, "n"), "5"), 1, "toml: a trailing tab is trimmed too");
+
+# 3. A line beginning with `=` pushed a pair with a ZERO-LENGTH key that every
+#    later lookup had to walk past. tomllib rejects the document; bayan has no
+#    error channel, so it degrades to "no pair", which is what it already does
+#    for every other malformed line.
+var vc3 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("= 5\nk = 1\n")), 0));
+assert_eq(vec_len(vc3), 1, "toml: a keyless `= value` line produces no pair");
+assert_eq(str_eq_cstr(bayan_toml_get(vc3, "k"), "1"), 1, "toml: and the real key is unaffected");
+
+# 4. Document-swallowing, the shape 1.5.1 called the worst one this can take.
+#    Two scanners that fix did not reach: the array capture (a quote opened
+#    inside `[` ran to the end of the FILE) and the table-header name scan (an
+#    unclosed `[abc` made every following line part of the section name).
+var vc4 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("a = [\"oops\nadmin = false\nb = 1\n")), 0));
+assert_eq(bayan_toml_get(vc4, "admin") != 0, 1, "toml: an unterminated quote in an array does not delete the next key");
+assert_eq(str_eq_cstr(bayan_toml_get(vc4, "b"), "1"), 1, "toml: ...nor the one after that");
+var vc5 = bayan_toml_parse(str_from("[abc\nx = 1\ny = 2\n"));
+var vc5p = bayan_toml_section_pairs(vec_get(vc5, 0));
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(vc5, 0)), "abc"), 1, "toml: an unclosed [header stops at the newline");
+assert_eq(vec_len(vc5p), 2, "toml: and does not swallow the keys under it");
+var vc6 = bayan_toml_parse(str_from("[[abc\nx = 1\n"));
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(vc6, 0)), "abc"), 1, "toml: same bound on the [[header]] branch");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(vc6, 0))), 1, "toml: and its key survives");
+
+# 5. An EMPTY file is a legal TOML document with no pairs. Reporting it as
+#    Err(TomlIoErr) made it indistinguishable from a file that does not exist,
+#    which is the one distinction this Result variant exists to draw.
+var vc7 = bayan_toml_parse_file_r("tests/fixtures/toml/empty.toml");
+assert_eq(is_err_result(vc7), 0, "toml: parse_file_r reads an empty file as a legal empty document");
+assert_eq(vec_len(load64(vc7 + 8)), 0, "toml: with zero sections");
+assert_eq(is_err_result(bayan_toml_parse_file_r("tests/fixtures/toml/does-not-exist.toml")), 1,
+  "toml: while a MISSING file is still an error — the two are distinguishable again");
+
+test_group("toml: the 1.5.3 value-arm fixes did not break the values they pass over");
+# Both guards below are for regressions this release INTRODUCED and an
+# adversarial review of the finished work caught before it shipped. They are
+# the cases where a narrowly-correct rule was applied one branch too widely.
+
+# The inline-comment break has to be QUOTE-AWARE. The first cut said "a # cannot
+# occur inside an unquoted value (they are numbers, booleans and dates)" and
+# broke unconditionally — but bayan has no `{` branch, so an INLINE TABLE lands
+# in that arm too, and it is the one unquoted value carrying arbitrary string
+# bytes. `srv = { host = "a#b" }` truncated to `{ host = "a`.
+var ic = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("srv = { host = \"a#b\", port = 1 }\nlt = { p = 'x#y' }\nafter = 9\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(ic, "srv"), "{ host = \"a#b\", port = 1 }"), 1, "toml: a # inside a quoted string in an inline table is not a comment");
+assert_eq(str_eq_cstr(bayan_toml_get(ic, "lt"), "{ p = 'x#y' }"), 1, "toml: ...in a literal-quoted one either");
+assert_eq(str_eq_cstr(bayan_toml_get(ic, "after"), "9"), 1, "toml: and the following key is unaffected");
+
+# The array capture's newline rule has to know about TRIPLE quotes. The
+# single-quote state machine toggles three times across `"""`, so it believed
+# it was inside a string for the whole multi-line body and fired the
+# unterminated-string break on the element's OWN first newline.
+#
+# The third assertion is the one that matters most. Truncating the array left
+# the parser resuming inside the string body, which it then read as ordinary
+# TOML — so a `[boom]` written INSIDE A STRING became a real section and the
+# keys after it were relocated into it. String content becoming document
+# structure is the worst outcome available to a config parser, and it is a
+# far more dangerous shape than the swallowing bug the newline rule was added
+# to fix. Expected values are tomllib's.
+var ml1 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = [\"\"\"\na\"\"\"]\nzz = \"s\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(ml1, "x"), "[\"\"\"\na\"\"\"]"), 1, "toml: an array holding a multi-line string is captured WHOLE");
+assert_eq(str_eq_cstr(bayan_toml_get(ml1, "zz"), "s"), 1, "toml: and the key after it survives");
+var ml2 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = ['''\na=''', \"b\"]\nzz = \"s\"\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(ml2, "zz"), "s"), 1, "toml: same for a ''' element containing a `=`");
+var forge = bayan_toml_parse(str_from("files = [\"\"\"\n[boom]\nevil = 1\n\"\"\"]\nreal = \"yes\"\n\n[app]\nname = \"x\"\n"));
+assert_eq(vec_len(forge), 2, "toml: a [header] inside a string does NOT forge a section");
+var f0 = bayan_toml_section_pairs(vec_get(forge, 0));
+assert_eq(str_eq_cstr(bayan_toml_get(f0, "real"), "yes"), 1, "toml: the root key stays in the root table");
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(forge, 1)), "app"), 1, "toml: and the real section is still the second one");
+assert_eq(bayan_toml_get(f0, "evil"), 0, "toml: nothing from inside the string leaked out as a pair");
+
+# The newline rule it replaced must still do its job: a SINGLE-quoted element
+# left open still stops at the newline rather than eating the document.
+var ut = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("a = [\"oops\nadmin = false\nb = 1\n")), 0));
+assert_eq(str_eq_cstr(bayan_toml_get(ut, "admin"), "false"), 1, "toml: an unterminated single quote in an array still stops at the newline");
+# And ordinary arrays are untouched by the triple-quote tracking.
+var oa = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("n = [1, 2, 3] # c\ns = [\"a\", 'b]c']\ne = [\"\"\"\"\"\", 1]\nzz = 4\n")), 0));
+assert_eq(vec_len(bayan_toml_get_array(oa, "n")), 3, "toml: a plain array still splits into 3");
+assert_eq(str_eq_cstr(vec_get(bayan_toml_get_array(oa, "s"), 1), "b]c"), 1, "toml: a ] inside a literal element is still preserved");
+assert_eq(str_eq_cstr(bayan_toml_get(oa, "zz"), "4"), 1, "toml: an empty multi-line element does not derail the capture");
+
+test_group("toml: no value may escape its source buffer (1.5.3)");
+# A property, not an example. bayan_toml_parse hands back Strs that VIEW the
+# source, so a scanner that advances one byte too far produces a Str claiming
+# bytes the caller does not own — it reads fine locally and faults, or leaks,
+# somewhere else entirely.
+#
+# 1.5.3 shipped exactly that bug for a few hours: the new escaped-quote rule in
+# the array capture had no bound, so a document ending in `a = ["x\` advanced
+# past the end and the captured value was 5 bytes of a 4-byte remainder. An
+# adversarial review of the fix caught it; this is the guard that would have.
+#
+# Truncating each document at EVERY length is what makes this a real check —
+# every scanner in the module gets to run off the end of a buffer that stops
+# mid-construct, which is the only place the bound matters.
+var oob_docs = vec_new();
+vec_push(oob_docs, str_from("a = [\"x\\"));
+vec_push(oob_docs, str_from("a = [\"x\\\"y\", 'z'] # c"));
+vec_push(oob_docs, str_from("a = \"x\\"));
+vec_push(oob_docs, str_from("a = \"\"\"x\\"));
+vec_push(oob_docs, str_from("a = '''x"));
+vec_push(oob_docs, str_from("[s]\nk = \"v\\\"w\"\nj = '''m'''\n"));
+vec_push(oob_docs, str_from("a = \"\"\"\r\nx\\\ny\"\"\"\nb = 1"));
+vec_push(oob_docs, str_from("[[t]]\nn = [1, \"a\\\"\", '''q''']\n"));
+var oob_bad = 0;
+var oob_runs = 0;
+var oob_i = 0;
+while (oob_i < vec_len(oob_docs)) {
+    var oob_full = vec_get(oob_docs, oob_i);
+    var oob_cut = 0;
+    while (oob_cut <= str_len(oob_full)) {
+        var oob_src = str_new(str_data(oob_full), oob_cut);
+        var oob_lo = str_data(oob_src);
+        var oob_hi = oob_lo + oob_cut;
+        var oob_secs = bayan_toml_parse(oob_src);
+        var oob_si = 0;
+        while (oob_si < vec_len(oob_secs)) {
+            var oob_sec = vec_get(oob_secs, oob_si);
+            var oob_nm = bayan_toml_section_name(oob_sec);
+            if (oob_nm != 0) {
+                if (str_len(oob_nm) > 0) {
+                    var oob_ne = str_data(oob_nm) + str_len(oob_nm);
+                    if (str_data(oob_nm) >= oob_lo && oob_ne > oob_hi) { oob_bad = oob_bad + 1; }
+                }
+            }
+            var oob_pairs = bayan_toml_section_pairs(oob_sec);
+            var oob_pi = 0;
+            while (oob_pi < vec_len(oob_pairs)) {
+                var oob_p = vec_get(oob_pairs, oob_pi);
+                var oob_v = bayan_toml_pair_value(oob_p);
+                if (oob_v != 0) {
+                    if (str_len(oob_v) > 0) {
+                        # Only a VIEW can overrun; a decoded value is a fresh
+                        # copy and legitimately sits outside the source span.
+                        var oob_ve = str_data(oob_v) + str_len(oob_v);
+                        if (str_data(oob_v) >= oob_lo && str_data(oob_v) < oob_hi && oob_ve > oob_hi) { oob_bad = oob_bad + 1; }
+                    }
+                }
+                var oob_k = bayan_toml_pair_key(oob_p);
+                if (oob_k != 0) {
+                    if (str_len(oob_k) > 0) {
+                        var oob_ke = str_data(oob_k) + str_len(oob_k);
+                        if (str_data(oob_k) >= oob_lo && oob_ke > oob_hi) { oob_bad = oob_bad + 1; }
+                    }
+                }
+                oob_pi = oob_pi + 1;
+            }
+            oob_si = oob_si + 1;
+        }
+        oob_runs = oob_runs + 1;
+        oob_cut = oob_cut + 1;
+    }
+    oob_i = oob_i + 1;
+}
+assert_gt(oob_runs, 120, "toml: the truncation sweep actually ran (one parse per prefix of every document)");
+assert_eq(oob_bad, 0, "toml: no key, value or section name reaches past its source buffer");
 
 test_group("toml: array VALUE element access (v1.1.0)");
 # bayan_toml_parse stores an array value verbatim (raw `[...]`); these helpers

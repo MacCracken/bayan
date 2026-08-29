@@ -51,6 +51,13 @@ fn bayan_json_value(p): i64 { return load64(p + 8); }
 # Parse a JSON object string into a vec of key-value pairs.
 # Handles: {"key": "value", "key2": "value2", "num": 42}
 # Returns vec of json_pair pointers.
+#
+# VALUES ARE THE RAW SOURCE BYTES — escapes are NOT decoded. `\"` stays two
+# bytes and `\u00e9` stays six. That is a deliberate split, not an oversight:
+# the TAGGED-TREE parser in this same file (bayan_json_v_parse_str) resolves
+# them at parse time, and a caller who needs decoded values should use it.
+# The statement of this contract used to live fourteen lines inside this
+# function's body, in a historical note, where no caller would ever read it.
 fn bayan_json_parse(src): i64 {
     var pairs = vec_new();
     var data = str_data(src);
@@ -160,7 +167,14 @@ fn bayan_json_get(pairs, key): i64 {
     return 0;
 }
 
-# Get value as integer (0 if not found or not numeric)
+# Get value as integer.
+#
+# Returns 0 if the key is absent OR the value contains no digits at all.
+# It does NOT return 0 for a non-numeric value: str_to_int walks the whole Str
+# and silently skips every byte outside 48..57, so "1.5.1" is 151, "1e3" is
+# 13, "12abc" is 12 and "v2" is 2. There is no way to detect "not an integer"
+# through the return value — the old "0 if not found or not numeric" comment
+# invited exactly the sentinel check that never fires.
 fn bayan_json_get_int(pairs, key): i64 {
     var v = bayan_json_get(pairs, key);
     if (v == 0) { return 0; }

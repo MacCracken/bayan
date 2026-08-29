@@ -22,6 +22,39 @@ For two profiles that is not true:
 | `bayan-toml` | `alloc io vec str result` | + `string` `fmt` | `memcpy`, `memeq`, `fmt_int_buf`, `fmt_int` |
 | `bayan-cyml` | `string alloc io result` | + `fmt` | `fmt_int` |
 
+**Re-measured 2026-08-28 at bayan 1.5.3 / cyrius 6.5.36 — still reproduces,
+and the table above is now stale in both directions.**
+
+| Sublib | Declares today | Still missing | Undefined symbols |
+|---|---|---|---|
+| `bayan-toml` | `syscalls string alloc io vec str result` | + `fmt` | `fmt_int_buf`, `fmt_int` |
+| `bayan-cyml` | `syscalls string alloc io vec str result` | + `fmt` | `fmt_int_buf`, `fmt_int` |
+
+Two corrections. First, both sidecars have since gained `string` (and
+`bayan-cyml` gained `vec` + `str`), so `memcpy` / `memeq` now resolve and what
+is left is `fmt` alone — the same single leaf for both. Second, `bayan-cyml` is
+missing `fmt_int_buf` as well as `fmt_int`; the original entry listed only the
+latter.
+
+That second correction was not a transcription slip. `scripts/consumer-check.sh`
+matched warnings with `grep '^warning:'`, and **cyrius prints the first warning
+concatenated onto the `compile <src> -> <out> [arch] ` prefix line**, so warning
+#1 never matched. The gate reported one missing symbol per bundle when there
+were two — and, far worse, a bundle whose *only* defect was a single undefined
+function was scored `ok`. Every `ok` verdict this gate printed before 1.5.3 meant
+no more than "no warnings after the first".
+
+Fixed in 1.5.3 by matching `warning:` anywhere and subtracting a measured
+harness floor (`lib/syscalls.cyr` alone emits `undefined function 'alloc'`,
+which belongs to the scaffold rather than to any bundle, and the script now
+asserts that floor is exactly that one warning so the exemption cannot widen).
+Verified by injecting a single undefined call into a bundle and watching the
+gate go from `ok` to `FAIL`.
+
+This is the same family as the `lint`-always-exits-0 and `cyrfmt`-reads-only-
+argv[1] traps in `docs/development/state.md`: a gate that ran, stayed green, and
+proved less than it claimed.
+
 The other seven bundles (`bayan`, `bayan-json`, `bayan-yaml`, `bayan-csv`,
 `bayan-base64`, `bayan-u128`, `bayan-bigint`) are correct.
 

@@ -30,11 +30,16 @@ ORDER="syscalls string alloc io vec str fmt tagged result fnptr assert bench"
 # --- Known-incomplete sidecars ------------------------------------------------
 # `cyrius distlib` generates each sidecar from the leaves BAYAN's own code
 # touches; it does not close over the stdlib's own unincluded dependencies.
-# `lib/str.cyr` calls memcpy/memeq (string) and fmt_int (fmt) with no include
-# lines of its own, `lib/result.cyr` calls fmt_int, and `lib/io.cyr` calls
-# memcpy — so any bundle whose sidecar names str/result/io but not string/fmt
-# under-declares. Verified minimal fix: bayan-toml needs +string +fmt,
-# bayan-cyml needs +fmt.
+# `lib/str.cyr` calls memcpy/memeq (string) and fmt_int/fmt_int_buf (fmt) with
+# no include lines of its own, `lib/result.cyr` calls both fmt entry points, and
+# `lib/io.cyr` calls memcpy — so any bundle whose sidecar names str/result/io
+# but not string/fmt under-declares.
+#
+# 1.5.3 re-measured this. Since the issue was filed both sidecars gained
+# `string` (and bayan-cyml gained vec/str), so memcpy/memeq now resolve and the
+# issue file's table is stale: what BOTH are missing today is `fmt` alone —
+# fmt_int_buf AND fmt_int, the second of which this gate could not see until the
+# `^warning:` fix below.
 #
 # The sidecars are generated, so editing them here would be undone by the next
 # `cyrius distlib --all`. Until the generator closes the transitive set these
@@ -42,6 +47,42 @@ ORDER="syscalls string alloc io vec str fmt tagged result fnptr assert bench"
 # passing, so the exemption cannot outlive the bug.
 # See docs/development/issues/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md
 EXPECTED_FAIL="bayan-toml bayan-cyml"
+
+# --- The harness's own warning floor ---------------------------------------
+# This script includes lib/syscalls.cyr unconditionally (its consumer body
+# exits through SYS_EXIT), and syscalls.cyr references `alloc` without
+# including lib/alloc.cyr — so a consumer with ZERO declared leaves already
+# emits one warning that has nothing to do with any bundle. That warning is
+# subtracted below.
+#
+# Only warnings the SCAFFOLD produces are subtracted, never ones a declared
+# leaf produces: a leaf's unresolved call is precisely the under-declaration
+# this gate exists to catch (see EXPECTED_FAIL above), so subtracting a
+# per-bundle baseline would define the bug out of existence.
+#
+# The floor is asserted, not assumed. If it ever stops being exactly this one
+# warning the script fails rather than widening the exemption silently — the
+# same reason EXPECTED_FAIL fails when a known-bad bundle starts passing.
+HARNESS_EXPECT="warning: undefined function 'alloc'"
+hbase="$OUT/_harness.cyr"
+{
+    echo 'include "lib/syscalls.cyr"'
+    echo
+    echo 'fn main(): i64 { return 0; }'
+    echo 'var r = main();'
+    echo 'syscall(SYS_EXIT, r);'
+} > "$hbase"
+hout=$(cyrius build --no-deps "$hbase" "$OUT/_harness.bin" 2>&1 || true)
+echo "$hout" | grep -o 'warning:.*' | sort -u > "$OUT/harness.warn" || true
+if [ "$(cat "$OUT/harness.warn")" != "$HARNESS_EXPECT" ]; then
+    echo "FAIL    the consumer scaffold's own warning floor changed."
+    echo "        expected exactly: $HARNESS_EXPECT"
+    echo "        got:"
+    sed 's/^/          /' "$OUT/harness.warn"
+    echo "        Update HARNESS_EXPECT only after confirming the new warning is"
+    echo "        the scaffold's and not a bundle's."
+    exit 1
+fi
 
 rc=0
 for bundle in dist/bayan.cyr dist/bayan-*.cyr; do
@@ -83,9 +124,16 @@ BODY
     ok=1
     problems=""
     if out=$(cyrius build --no-deps "$src" "$OUT/${name}.bin" 2>&1); then
-        if echo "$out" | grep -q '^warning:'; then
-            ok=0; problems=$(echo "$out" | grep '^warning:')
-        fi
+        # Match `warning:` ANYWHERE, not at line start. cyrius prints the FIRST
+        # warning concatenated onto the `compile <src> -> <out> [arch] ` prefix
+        # line, so `^warning:` never saw it — a bundle whose only defect was ONE
+        # undefined function was scored `ok`, and the `ok` verdicts this gate
+        # printed meant no more than "no warnings after the first". Same family
+        # as the `lint` and `cyrfmt` traps in docs/development/state.md: the
+        # gate ran, and proved less than it said.
+        echo "$out" | grep -o 'warning:.*' | sort -u > "$OUT/${name}.warn" || true
+        problems=$(comm -13 "$OUT/harness.warn" "$OUT/${name}.warn" || true)
+        [ -n "$problems" ] && ok=0
     else
         ok=0; problems=$(echo "$out" | tail -20)
     fi

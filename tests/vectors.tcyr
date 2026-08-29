@@ -11,7 +11,16 @@
 # hand-written assertion counts in bayan.tcyr. It contributes a handful of
 # asserts — "0 of 12,334 wrong" — rather than one per vector.
 #
-# Regenerate the vectors with:  python3 scripts/gen-numeric-vectors.py tests/fixtures/numeric
+# Regenerate the vectors with:
+#   python3 scripts/gen-numeric-vectors.py tests/fixtures/numeric
+#   python3 scripts/gen-toml-vectors.py    tests/fixtures/toml
+#
+# 1.5.3 adds a third set for the same reason the first two exist. src/toml.cyr
+# returned the RAW bytes between the quotes for six releases — escapes
+# unresolved, literal strings still wearing their quotes — and the suite stayed
+# green throughout, because every TOML assertion in it had been written by
+# reading bayan's output and writing it down. `tomllib` does not care what
+# bayan does.
 
 include "lib/syscalls.cyr"
 include "lib/string.cyr"
@@ -24,6 +33,7 @@ include "lib/assert.cyr"
 
 include "src/u128.cyr"
 include "src/dtoa.cyr"
+include "src/toml.cyr"
 
 alloc_init();
 
@@ -304,6 +314,142 @@ fn run_f64(): i64 {
 }
 
 
+
+# --- TOML string decoding, against Python's tomllib -------------------------
+#
+# Each vector is a whole TOML document and the value `tomllib` decodes for key
+# `x`, both hex-encoded because both routinely contain newlines, quotes and
+# backslashes. A leading `S` reads the value with bayan_toml_get; an `A` reads
+# it with bayan_toml_get_array and takes element 0, so the element splitter —
+# which keeps its own quote-tracking state and got the escaped-quote rule wrong
+# independently of the scalar parsers — is checked against the oracle too
+# rather than assumed to agree with them.
+
+fn t_say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+fn t_num(n): i64 { var b[24]; var l = fmt_int_buf(n, &b); print(&b, l); return 0; }
+
+var g_tv = 0;
+var g_tv_bad = 0;
+var g_tv_shown = 0;
+
+# The test's OWN hex decoder. Reusing src/toml.cyr's would let a defect in the
+# module under test corrupt the fixture it is being judged against.
+fn t_hexd(c): i64 {
+    if (c >= 48 && c <= 57)  { return c - 48; }
+    if (c >= 97 && c <= 102) { return c - 87; }
+    if (c >= 65 && c <= 70)  { return c - 55; }
+    return 0 - 1;
+}
+
+# Decode the hex field at `p` into `dst`. Returns the position just after the
+# field; the decoded byte count is stored through `outn`.
+fn t_hexfield(buf, p, len, dst, outn): i64 {
+    var n = 0;
+    var go = 1;
+    while (go == 1) {
+        if (p + 1 >= len) { go = 0; }
+        else {
+            var h = t_hexd(load8(buf + p));
+            var l = t_hexd(load8(buf + p + 1));
+            if (h < 0 || l < 0) { go = 0; }
+            else {
+                store8(dst + n, (h << 4) | l);
+                n = n + 1;
+                p = p + 2;
+            }
+        }
+    }
+    store64(outn, n);
+    return p;
+}
+
+# Print a byte span with non-printables as '.', so a failure report is legible
+# without turning the harness into a formatter.
+fn t_dump(p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        var b[1];
+        if (c < 32 || c > 126) { store8(&b, 46); } else { store8(&b, c); }
+        print(&b, 1);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn t_fail(idx, kind, dbuf, dn, vbuf, vn, got): i64 {
+    g_tv_bad = g_tv_bad + 1;
+    if (g_tv_shown < 5) {
+        g_tv_shown = g_tv_shown + 1;
+        t_say("    vector "); t_num(idx); t_say(" kind=");
+        var kb[1]; store8(&kb, kind); print(&kb, 1);
+        t_say("\n      doc  ["); t_dump(dbuf, dn); t_say("]\n");
+        t_say("      want ["); t_dump(vbuf, vn); t_say("] len="); t_num(vn); t_say("\n");
+        t_say("      got  [");
+        if (got == 0) { t_say("<no value>"); } else { t_dump(str_data(got), str_len(got)); }
+        t_say("] len=");
+        if (got == 0) { t_say("-"); } else { t_num(str_len(got)); }
+        t_say("\n");
+    }
+    return 0;
+}
+
+fn run_toml(): i64 {
+    alloc_init();
+    var cap = 1 << 20;
+    var buf = alloc(cap);
+    if (buf == 0) { t_say("cannot allocate the toml vector buffer\n"); return 1; }
+    var len = file_read_all("tests/fixtures/toml/strings.vec", buf, cap);
+    if (len <= 0) { t_say("cannot read tests/fixtures/toml/strings.vec\n"); return 1; }
+
+    var dbuf = alloc(8192);
+    var vbuf = alloc(8192);
+    var nout[8];
+    var pos = 0;
+
+    while (pos < len) {
+        var kind = load8(buf + pos);
+        if (kind != 83 && kind != 65) { break; }      # 'S' / 'A'
+        pos = pos + 2;                                 # kind + the space
+        pos = t_hexfield(buf, pos, len, dbuf, &nout);
+        var dn = load64(&nout);
+        pos = pos + 1;                                 # the separating space
+        pos = t_hexfield(buf, pos, len, vbuf, &nout);
+        var vn = load64(&nout);
+        while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
+        pos = pos + 1;                                 # past the newline
+        if (dn <= 0) { break; }
+
+        var secs = bayan_toml_parse(str_new(dbuf, dn));
+        var got = 0;
+        if (vec_len(secs) > 0) {
+            var pairs = bayan_toml_section_pairs(vec_get(secs, 0));
+            if (kind == 65) {
+                var els = bayan_toml_get_array(pairs, "x");
+                if (els != 0) { if (vec_len(els) > 0) { got = vec_get(els, 0); } }
+            } else {
+                got = bayan_toml_get(pairs, "x");
+            }
+        }
+
+        var ok = 0;
+        if (got != 0) {
+            if (str_len(got) == vn) {
+                if (vn == 0) { ok = 1; }
+                elif (memeq(str_data(got), vbuf, vn) == 1) { ok = 1; }
+            }
+        }
+        g_tv = g_tv + 1;
+        if (ok == 0) { t_fail(g_tv, kind, dbuf, dn, vbuf, vn, got); }
+    }
+
+    t_say("toml string vectors: "); t_num(g_tv);
+    t_say("   wrong: "); t_num(g_tv_bad); t_say("\n");
+    if (g_tv_bad > 0) { return 1; }
+    return 42;
+}
+
+
 test_group("vectors: u128 against Python's arbitrary-precision integers");
 var uv = run_u128();
 assert_eq(uv, 42, "u128: the vector file loaded and every check ran");
@@ -316,5 +462,11 @@ assert_eq(fv, 42, "f64: the vector file loaded and every check ran");
 assert_gt(g_rt, 300, "f64: the expected number of round-trips ran");
 assert_eq(g_rt_bad, 0, "f64: every value survives to_json -> parse unchanged");
 assert_eq(g_py_bad, 0, "f64: and bayan's parser agrees with Python's formatter");
+
+test_group("vectors: toml string decoding against Python's tomllib");
+var tv = run_toml();
+assert_eq(tv, 42, "toml: the vector file loaded and every check ran");
+assert_gt(g_tv, 1400, "toml: the expected number of vectors actually ran");
+assert_eq(g_tv_bad, 0, "toml: zero disagreements with the oracle");
 
 var r = assert_summary();

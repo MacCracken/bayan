@@ -138,9 +138,18 @@ jobs:
           mkdir -p build
           out=$(cyrius build src/main.cyr "build/${{ github.event.repository.name }}" 2>&1)
           printf '%s\n' "$out"
-          if printf '%s\n' "$out" | grep -q '^warning:'; then
+          # Match `warning:` ANYWHERE, not at line start (fixed 1.5.3). cyrius
+          # prints the FIRST warning concatenated onto the
+          # `compile <src> -> <out> [arch] ` prefix line, so `^warning:` never
+          # matched it — a build whose ONLY diagnostic was one warning passed
+          # this gate. Found in scripts/consumer-check.sh, where it had been
+          # hiding half of a real under-declaration for months, and the same
+          # anchor was here. Same family as the `lint`-always-exits-0 and
+          # `cyrfmt`-reads-only-argv[1] traps: the gate ran and proved less
+          # than it said.
+          if printf '%s\n' "$out" | grep -q 'warning:'; then
             echo "::error::build emitted compiler warnings"
-            printf '%s\n' "$out" | grep '^warning:'
+            printf '%s\n' "$out" | grep -o 'warning:.*'
             exit 1
           fi
 
@@ -157,8 +166,11 @@ jobs:
           set -euo pipefail
           if ! out=$(cyrius test 2>&1); then printf '%s\n' "$out"; echo "::error::tests failed"; exit 1; fi
           printf '%s\n' "$out"
-          if printf '%s\n' "$out" | grep -q '^warning:'; then
-            echo "::error::test build emitted compiler warnings"; exit 1
+          # Same anchor fix as the build step above (1.5.3).
+          if printf '%s\n' "$out" | grep -q 'warning:'; then
+            echo "::error::test build emitted compiler warnings"
+            printf '%s\n' "$out" | grep -o 'warning:.*'
+            exit 1
           fi
 
       # scripts/pdfcheck.py is the acceptance oracle for bayan_pdf_*: a strict,
@@ -277,6 +289,25 @@ jobs:
             || { echo "::error::u128 vectors differ from scripts/gen-numeric-vectors.py output"; exit 1; }
           diff "${RUNNER_TEMP}/nv/f64.vec" tests/fixtures/numeric/f64.vec \
             || { echo "::error::f64 vectors differ from scripts/gen-numeric-vectors.py output"; exit 1; }
+
+      # Same contract for the TOML string vectors (1.5.3). Their oracle is
+      # Python's `tomllib`, which ships in the stdlib from 3.11 — no package to
+      # install, so this gate does not depend on anything the property under
+      # test does not depend on (the rule the pdf metric-table gate was
+      # rewritten to obey).
+      #
+      # This module is why the discipline is worth paying for twice: src/toml.cyr
+      # returned the RAW bytes between the quotes from 1.0.0 to 1.5.2 while the
+      # suite stayed green, because every TOML assertion in it had been written
+      # by reading bayan's output and writing it down.
+      - name: TOML string vectors regenerate identically
+        run: |
+          set -euo pipefail
+          python3 -c 'import tomllib' \
+            || { echo "::error::python3 has no tomllib (needs 3.11+); the TOML oracle cannot run"; exit 1; }
+          python3 -W error scripts/gen-toml-vectors.py "${RUNNER_TEMP}/tv"
+          diff "${RUNNER_TEMP}/tv/strings.vec" tests/fixtures/toml/strings.vec \
+            || { echo "::error::toml vectors differ from scripts/gen-toml-vectors.py output"; exit 1; }
 
       # --- Distribution: bayan's actual product is dist/, not build/ ----------
 
