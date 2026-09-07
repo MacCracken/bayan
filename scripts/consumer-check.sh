@@ -28,25 +28,24 @@ mkdir -p "$OUT"
 ORDER="syscalls string alloc io vec str fmt tagged result fnptr assert bench"
 
 # --- Known-incomplete sidecars ------------------------------------------------
-# `cyrius distlib` generates each sidecar from the leaves BAYAN's own code
-# touches; it does not close over the stdlib's own unincluded dependencies.
+# EMPTY as of 1.5.5, and that is the point of the list: it is not a permanent
+# exemption, it is a bug ledger that fails when a bug goes away.
+#
+# `cyrius distlib` used to generate each sidecar from the leaves BAYAN's own
+# code touches, without closing over the stdlib's own unincluded dependencies.
 # `lib/str.cyr` calls memcpy/memeq (string) and fmt_int/fmt_int_buf (fmt) with
 # no include lines of its own, `lib/result.cyr` calls both fmt entry points, and
-# `lib/io.cyr` calls memcpy — so any bundle whose sidecar names str/result/io
-# but not string/fmt under-declares.
+# `lib/io.cyr` calls memcpy — so any bundle whose sidecar named str/result/io
+# but not string/fmt under-declared. `bayan-toml` and `bayan-cyml` were both
+# missing `fmt`.
 #
-# 1.5.3 re-measured this. Since the issue was filed both sidecars gained
-# `string` (and bayan-cyml gained vec/str), so memcpy/memeq now resolve and the
-# issue file's table is stale: what BOTH are missing today is `fmt` alone —
-# fmt_int_buf AND fmt_int, the second of which this gate could not see until the
-# `^warning:` fix below.
-#
-# The sidecars are generated, so editing them here would be undone by the next
-# `cyrius distlib --all`. Until the generator closes the transitive set these
-# two are expected failures — and this script FAILS if one of them starts
-# passing, so the exemption cannot outlive the bug.
-# See docs/development/issues/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md
-EXPECTED_FAIL="bayan-toml bayan-cyml"
+# The cyrius 6.6.0 generator closes the set: `cyrius distlib --all` now reports
+# "sidecar: re-added N leaf(s) the inference missed (compile-verified)" for both
+# profiles and each writes `fmt`. Verified at the 6.6.0 bump — both went FIXED
+# here, which is the signal this script exists to raise, so the exemption is
+# removed rather than carried.
+# See docs/development/issues/archived/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md
+EXPECTED_FAIL=""
 
 # --- The harness's own warning floor ---------------------------------------
 # This script includes lib/syscalls.cyr unconditionally (its consumer body

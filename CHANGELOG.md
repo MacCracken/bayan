@@ -2,6 +2,89 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.5] — 2026-09-06
+
+**Migrated to the cyrius 6.6.0 `Result`/`Option`/`Either` VALUE FORM.** A payload
+variant is now a REGISTER PAIR (tag in `rax`, payload in `rdx`) that allocates
+nothing, so the `tag at +0 / payload at +8` heap box is gone. Toolchain pin
+**6.5.36 → 6.6.0**; vendored `lib/` re-synced to the 6.6.0 snapshot.
+
+No public signature changes. `bayan_json_parse_file_r`, `bayan_toml_parse_file_r`,
+`bayan_cyml_parse_file_r` and `bayan_pdf_parse_file_r` still return a `Result` —
+but a CONSUMER receiving one must now bind both halves, and the shape it used to
+read the payload with is gone:
+
+> ### ⚠ CONSUMER ACTION REQUIRED — how you RECEIVE a bayan `Result` changed
+>
+> ```
+> # before (1.5.4 and earlier)                # now (1.5.5, cyrius 6.6.0)
+> var r = bayan_toml_parse_file_r(p);         var r_tag, r = bayan_toml_parse_file_r(p);
+> if (is_err_result(r) == 1) { ... }          if (is_err_result(r_tag) == 1) { ... }
+> var secs = load64(r + 8);                   var secs = r;
+> ```
+>
+> `payload(x)` and `tagged_new(tag, v)` are DELETED upstream with no one-argument
+> replacement, and `result_unwrap` / `err_code_of` / `unwrap` / `result_print` take
+> `(tag, value)` while `result_unwrap_or` / `unwrap_or` take `(tag, value, fallback)`.
+> Passing the call straight into a predicate — `is_err_result(bayan_json_parse_file_r(p))`
+> — still reads the tag and is unchanged.
+>
+> **The dangerous half is the hand-rolled box read.** `load64(r)` for the tag and
+> `load64(r + 8)` for the payload do NOT fail to compile: under the value form the
+> payload is a plain value, so `load64(r + 8)` dereferences (say) a file descriptor
+> as a pointer. Grep for it; the compiler will not.
+
+### Changed
+
+- `bayan_json_parse_file_r` / `bayan_toml_parse_file_r` / `bayan_cyml_parse_file_r`
+  bind `file_open_r` / `file_read_r` as a pair (`var fd_r_tag, fd_r = ...`) and read
+  the fd and the byte count from the bound payload instead of `load64(fd_r + 8)` /
+  `load64(rd_r + 8)`. The error semantics each of these was built for are unchanged:
+  a missing file is still `Err(*IoErr)` and an empty file is still a legal empty
+  document, which is the one distinction these `_r` variants exist to draw.
+- `cyrius.cyml`: `[package].cyrius` **6.5.36 → 6.6.0**; `lib/` re-vendored from the
+  6.6.0 snapshot (`cyrius lib sync --full`, 109 files, 0 differ).
+
+### Tests
+
+- `tests/bayan.tcyr` — the six sites that asserted the OLD boxed layout now assert
+  the value form, with every assertion intent preserved: the `is_err_result` checks
+  read the bound tag, and `vec_len(load64(r + 8))` / `load64(r + 8)` become
+  `vec_len(r)` / `r`. One assertion was ADDED, not removed: the cyml empty-file case
+  binds a payload it previously discarded, so it now also asserts the empty document
+  really has zero entries. **919 assertions, 0 failed.**
+- `tests/vectors.tcyr` — 10/10 (12,334 u128 · 328 f64 round-trip · 1,494 TOML string
+  vectors against Python).
+
+### Fixed — carried in by the 6.6.0 toolchain
+
+- **The two under-declared sublib `.deps` sidecars are closed.** `bayan-toml`
+  and `bayan-cyml` each needed `fmt` (`fmt_int_buf` *and* `fmt_int`) that their
+  sidecar did not name, so a consumer following the sidecar got undefined
+  functions. The 6.6.0 `distlib` generator closes the transitive set —
+  `sidecar: re-added 1 leaf(s) the inference missed (compile-verified)` — and
+  both now declare `fmt`. `scripts/consumer-check.sh` reports all **10 bundles
+  ok** and its `EXPECTED_FAIL` list is now EMPTY, which is the whole design of
+  that list: it fails when a known-bad bundle starts passing, so an exemption
+  cannot outlive its bug. Issue archived
+  ([2026-08-19](docs/development/issues/archived/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md)).
+
+### Known-bad — NOT from this migration
+
+- ⛔ **`tests/pdf_flate.tcyr` is RED (16/19) on any cycc ≥ 6.5.57**, including 6.6.0.
+  Compressed writer output loses `/Type /Page`, `/MediaBox` and `/Resources` from the
+  page dictionary, so the file it writes has 0 pages — confirmed independently by
+  `scripts/pdfcheck.py`, which is the point of having a strict oracle.
+  Bisected on a PRISTINE 1.5.4 tree with only the compiler changing:
+  **6.5.56 → 19/19 pass, 6.5.57 → 16/19**. It is a codegen defect, not a bayan one:
+  assigning one `Str` to another (`data = z;` at `src/pdf.cyr:8924`) now emits a
+  16-byte aggregate copy, but `Str` is a heap-allocated 16-byte HANDLE — a local
+  holds one word — so the second word lands on the neighbouring local and smashes
+  it. Here it smashes the page dictionary pointer. Minimal repro: two `Str` locals
+  with an `i64` guard between them, `s = z;`, and the guard changes value.
+  Not worked around in `src/`: contorting source around a codegen bug is how a
+  compiler bug becomes a permanent language rule.
+
 ## [1.5.4] — 2026-08-28
 
 **The seven structural TOML gaps, closed.** 1.5.3 fixed what a value *decodes

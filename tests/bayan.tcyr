@@ -500,9 +500,9 @@ assert_eq(vec_len(bayan_toml_section_pairs(vec_get(vc6, 1))), 1, "toml: and its 
 # 5. An EMPTY file is a legal TOML document with no pairs. Reporting it as
 #    Err(TomlIoErr) made it indistinguishable from a file that does not exist,
 #    which is the one distinction this Result variant exists to draw.
-var vc7 = bayan_toml_parse_file_r("tests/fixtures/toml/empty.toml");
-assert_eq(is_err_result(vc7), 0, "toml: parse_file_r reads an empty file as a legal empty document");
-assert_eq(vec_len(load64(vc7 + 8)), 0, "toml: with zero sections");
+var vc7_tag, vc7 = bayan_toml_parse_file_r("tests/fixtures/toml/empty.toml");
+assert_eq(is_err_result(vc7_tag), 0, "toml: parse_file_r reads an empty file as a legal empty document");
+assert_eq(vec_len(vc7), 0, "toml: with zero sections");
 assert_eq(is_err_result(bayan_toml_parse_file_r("tests/fixtures/toml/does-not-exist.toml")), 1,
   "toml: while a MISSING file is still an error — the two are distinguishable again");
 
@@ -582,9 +582,9 @@ str_builder_add_cstr(cyb_sb, "---\nbody text\n");
 var cyb_big = str_builder_build(cyb_sb);
 assert_gt(str_len(cyb_big), 262144, "cyml: the fixture exceeds the old 256 KiB cap");
 file_write_all("build/big-generated.cyml", str_data(cyb_big), str_len(cyb_big));
-var cyb_r = bayan_cyml_parse_file_r("build/big-generated.cyml");
-assert_eq(is_err_result(cyb_r), 0, "cyml: parse_file_r reads a file past the old cap");
-var cyb_doc = load64(cyb_r + 8);
+var cyb_r_tag, cyb_r = bayan_cyml_parse_file_r("build/big-generated.cyml");
+assert_eq(is_err_result(cyb_r_tag), 0, "cyml: parse_file_r reads a file past the old cap");
+var cyb_doc = cyb_r;
 var cyb_e0 = bayan_cyml_doc_entry(cyb_doc, 0);
 assert_neq(cyb_e0, 0, "cyml: it parses to one entry");
 # A truncated read would cut the header short, so the `---` delimiter and
@@ -598,8 +598,9 @@ assert_gt(bayan_cyml_entry_body_len(cyb_e0), 0,
 # loader got at 1.5.3. Reporting it as Err made it indistinguishable from a
 # file that does not exist, the one distinction this variant exists to draw.
 file_write_all("build/empty-generated.cyml", str_data(str_from("x")), 0);
-var cyb_e = bayan_cyml_parse_file_r("build/empty-generated.cyml");
-assert_eq(is_err_result(cyb_e), 0, "cyml: an empty file is a legal empty document");
+var cyb_e_tag, cyb_e = bayan_cyml_parse_file_r("build/empty-generated.cyml");
+assert_eq(is_err_result(cyb_e_tag), 0, "cyml: an empty file is a legal empty document");
+assert_eq(bayan_cyml_doc_entry_count(cyb_e), 0, "cyml: with zero entries");
 assert_eq(is_err_result(bayan_cyml_parse_file_r("build/does-not-exist.cyml")), 1,
   "cyml: while a MISSING file is still an error — the two are distinguishable");
 
@@ -2280,9 +2281,9 @@ assert_eq(vec_len(lc_root), 4, "toml: with four root pairs");
 assert_eq(vec_len(bayan_toml_get_sections(lc_secs, "entry")), 2, "toml: and both [[entry]] tables");
 assert_eq(vec_len(bayan_toml_array_parse_a(lc_arena, bayan_toml_get(lc_root, "tags"))), 3,
   "toml: array_parse_a splits the 3-element array");
-var lc_r = bayan_toml_parse_file_r("tests/fixtures/toml/sample.toml");
-assert_eq(is_err_result(lc_r), 0, "toml: parse_file_r succeeds on a readable file");
-assert_eq(vec_len(load64(lc_r + 8)), 4, "toml: and returns the same four sections");
+var lc_r_tag, lc_r = bayan_toml_parse_file_r("tests/fixtures/toml/sample.toml");
+assert_eq(is_err_result(lc_r_tag), 0, "toml: parse_file_r succeeds on a readable file");
+assert_eq(vec_len(lc_r), 4, "toml: and returns the same four sections");
 assert_eq(is_err_result(bayan_toml_parse_file_r("tests/fixtures/toml/does-not-exist.toml")), 1,
   "toml: parse_file_r reports a missing file as an error");
 assert_eq(vec_len(bayan_toml_parse_file("tests/fixtures/toml/does-not-exist.toml")), 0,
@@ -2363,9 +2364,9 @@ var cc_nod = "a = 1\nb = 2\n";
 assert_eq(bayan_cyml_split(cc_nod, strlen(cc_nod), &cc_hp, &cc_hl, &cc_bp, &cc_bl), 0,
   "cyml: a document with no delimiter reports 0");
 
-var cc_r = bayan_cyml_parse_file_r("tests/fixtures/cyml/sample.cyml");
-assert_eq(is_err_result(cc_r), 0, "cyml: parse_file_r reads a real file");
-var cc_doc = load64(cc_r + 8);
+var cc_r_tag, cc_r = bayan_cyml_parse_file_r("tests/fixtures/cyml/sample.cyml");
+assert_eq(is_err_result(cc_r_tag), 0, "cyml: parse_file_r reads a real file");
+var cc_doc = cc_r;
 assert_eq(bayan_cyml_doc_entry_count(cc_doc), 1, "cyml: the single-entry file yields one entry");
 assert_gt(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(cc_doc, 0)), 0, "cyml: which carries a body");
 assert_neq(bayan_cyml_doc_entries(cc_doc), 0, "cyml: doc_entries exposes the backing array");
@@ -2411,9 +2412,9 @@ file_write_all("build/big-generated.json", str_data(jl_big), str_len(jl_big));
 var jl_pairs = bayan_json_parse_file("build/big-generated.json");
 assert_eq(vec_len(jl_pairs), 3000, "json: parse_file reads every pair, not the first 630");
 assert_neq(bayan_json_get(jl_pairs, str_from("k2999")), 0, "json: including the last key");
-var jl_r = bayan_json_parse_file_r("build/big-generated.json");
-assert_eq(is_err_result(jl_r), 0, "json: parse_file_r succeeds");
-assert_eq(vec_len(load64(jl_r + 8)), 3000, "json: and returns every pair too");
+var jl_r_tag, jl_r = bayan_json_parse_file_r("build/big-generated.json");
+assert_eq(is_err_result(jl_r_tag), 0, "json: parse_file_r succeeds");
+assert_eq(vec_len(jl_r), 3000, "json: and returns every pair too");
 assert_eq(is_err_result(bayan_json_parse_file_r("build/does-not-exist.json")), 1,
   "json: a missing file is an error");
 

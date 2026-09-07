@@ -1,5 +1,14 @@
 # `cyrius distlib` sublib `.deps` sidecars under-declare — not closed over the stdlib's own deps
 
+> **RESOLVED — cyrius 6.6.0, verified at bayan 1.5.5 (2026-09-06).** The
+> generator now closes the transitive set: `cyrius distlib --all` reports
+> `sidecar: re-added 1 leaf(s) the inference missed (compile-verified)` for
+> both `bayan-toml` and `bayan-cyml`, and both sidecars now declare `fmt`.
+> `scripts/consumer-check.sh` reported both as `FIXED` (its known-bad list
+> fails when a listed bundle starts passing, which is how this was caught),
+> so `EXPECTED_FAIL` is now empty. Archived; kept for the measurement history.
+
+
 **Filed by**: bayan (2026-08-19 state review, surfaced by the new
 `scripts/consumer-check.sh` CI gate)
 **Against**: cyrius `distlib` (sidecar generation) — the sidecars are
