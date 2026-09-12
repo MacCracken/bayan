@@ -7,6 +7,5 @@ io
 vec
 str
 fmt
-tagged
 result
 fnptr

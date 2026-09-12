@@ -1554,3 +1554,14 @@ source of truth for the data-format & big-integer modules; cyrius folds
 - Smoke entry (`src/main.cyr`, exits 42) + `tests/bayan.tcyr` (canonical
   API + alias parity). Deep coverage lives in cyrius's
   `json`/`toml`/`csv`/`base64`/`bigint`/`u128`/`cyml` `.tcyr` suite.
+
+## [Unreleased]
+
+## [1.5.6] - 2026-09-12
+
+### Changed
+
+- **Toolchain `6.6.0` → `6.6.2`.** No source change: this repo was already on the
+  value form, so the flip cost it nothing. Re-verified on every surface it ships —
+  build, tests, and any bench/fuzz/distlib target, including every
+  `[lib.<profile>]` bundle.

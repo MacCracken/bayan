@@ -6,6 +6,5 @@ io
 vec
 str
 fmt
-tagged
 fnptr
 assert
