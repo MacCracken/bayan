@@ -2,6 +2,15 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.6] - 2026-09-12
+
+### Changed
+
+- **Toolchain `6.6.0` → `6.6.2`.** No source change: this repo was already on the
+  value form, so the flip cost it nothing. Re-verified on every surface it ships —
+  build, tests, and any bench/fuzz/distlib target, including every
+  `[lib.<profile>]` bundle.
+
 ## [1.5.5] — 2026-09-06
 
 **Migrated to the cyrius 6.6.0 `Result`/`Option`/`Either` VALUE FORM.** A payload
@@ -1556,12 +1565,3 @@ source of truth for the data-format & big-integer modules; cyrius folds
   `json`/`toml`/`csv`/`base64`/`bigint`/`u128`/`cyml` `.tcyr` suite.
 
 ## [Unreleased]
-
-## [1.5.6] - 2026-09-12
-
-### Changed
-
-- **Toolchain `6.6.0` → `6.6.2`.** No source change: this repo was already on the
-  value form, so the flip cost it nothing. Re-verified on every surface it ships —
-  build, tests, and any bench/fuzz/distlib target, including every
-  `[lib.<profile>]` bundle.

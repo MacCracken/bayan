@@ -4,6 +4,27 @@
 > this file is the sequencing — what ships, in what order, against
 > what dependency gates.
 
+## Moving the cyrius pin to 6.6.5
+
+⛔ Before bumping the pin to 6.6.5: cross-reference the deferral note at
+`src/pdf.cyr:6126`, which turns the CI step *Lint — zero warnings, zero
+untracked deferrals* (`.github/workflows/ci.yml:108`) red. 6.6.5's cyrlint
+folds case, so a capital "Out of scope" now counts.
+
+cyrius 6.6.5 is not tagged yet. Nothing below can land against the pin
+until it is, except items marked **(can land now)**. The pin is 6.6.2
+today, and this section lists only what 6.6.5 itself changes.
+
+- [ ] ⛔ `src/pdf.cyr:6126` — "Out of scope for 1.5.0, loudly." A bare
+      `1.5.0` is not a tracking pointer (a version pointer needs the `v`).
+      Point it at *PDF encryption* under *Out of scope (for v1.0)* below,
+      on `:6126` itself. **(can land now)** — a same-line pointer does not
+      depend on the toolchain. See the cyrius CHANGELOG [6.6.5] entry
+      "cyrlint read every rule ONE PHYSICAL LINE at a time".
+- [ ] At the bump, re-run `cyrius deps` — the aarch64 syscall peer moved
+      SYS_UNLINKAT 35 → 263, so an un-re-vendored peer's sys_unlink would
+      run nanosleep.
+
 ## v1.0 criteria
 
 _Define before tagging v0.1.0:_
@@ -158,3 +179,47 @@ _Capture what's deliberately NOT in scope for v1.0. The list keeps future contri
   silent-wrong-answer shape this library refuses.
 - **Full YAML 1.2.** The subset is documented and everything outside it is
   rejected loudly.
+
+## Moving the cyrius pin to 6.6.6
+
+Current pin: `cyrius = "6.6.2"` (`cyrius.cyml`). Nothing needs to change first.
+
+bayan has the second-largest typed-parameter surface in the ecosystem — **43 functions taking
+a `: Str` parameter** and **52 `: cstring` parameters**, nearly all in `src/pdf.cyr` — so two
+of the 6.6.6 items look like they land here. Neither does, and both are worth recording:
+
+- **Item 5 (by-value struct parameter now DEEP-COPIED instead of aliasing a pointer) does not
+  apply to `: Str`.** `struct Str { data; len; }` is 16 bytes, so it looks like the affected
+  class, and three sites store such a parameter into an object that outlives the call —
+  `bayan_pdf_obj_string_new_a` (`src/pdf.cyr:1468`), `bayan_pdf_obj_hex_new_a` (`:1483`) and
+  `bayan_pdf_obj_stream_new_a` (`:1533`), each `store64(o + N, s)`. If `: Str` became a
+  frame-local copy those pointers would dangle. The 6.6.6 change (`_local_is_sptr_param`)
+  explicitly excludes it: `Str`, `Result`, `Option` and `Tagged` are 16-byte structs *by name*
+  whose slot holds a heap handle, they stay value-passed, and assignment between two of them
+  stays the pointer rebind the stdlib is built on. The deep copy applies only to
+  user-declared structs passed by value, and bayan declares none as parameters.
+- **Item 3's `: cstring` gate does not fire.** 6.6.6 refuses an integer literal passed to a
+  `: cstring` parameter, but a literal `0` is still allowed by design (the null-pointer
+  idiom). All 52 `: cstring` parameters were scanned at their call sites for a non-zero
+  integer literal: none. The arity half of the same gate was scanned too: no mismatches in
+  bayan's own sources.
+
+Everything else checked and empty:
+
+- **No Windows exposure** — no `CYRIUS_TARGET_*` in `src/` at all, CI is `ubuntu-latest`,
+  `release.yml` declares no `windows-*` job. And no `O_APPEND` / `O_TRUNC` outside the
+  vendored `lib/`: the writes go through `file_write_all` (`src/pdf.cyr:9517`) and the reads
+  open mode 0 (`src/toml.cyr:1189`, `src/cyml.cyr:347`, `:386`, `src/json.cyr:212`). So item 1
+  is a non-event here.
+- No `async fn`, no `operator` fn, no `ret2`/`rethi`, no SIMD intrinsics, no struct
+  declarations in `src/`, no `var p: S = f(..)` receive form — so the rest of item 3 has no
+  sites either.
+- No top-level bare `{` blocks (item 4), no duplicated global declarations (item 6), no
+  `regression_*` call sites of its own (item 8), and no own `vec_*` function colliding with
+  the 14 names `lib/vec.cyr` exports, so the new transitive `lib/assert.cyr` → `lib/vec.cyr`
+  include is inert (item 9).
+
+After bumping, verify: the full `.tcyr` suite per-file, and one PDF write/parse round trip
+(`bayan_pdf_obj_string_new_a` and `bayan_pdf_obj_stream_new_a` are the sites whose stored
+`: Str` handles the note above turns on) to confirm object strings and streams survive
+serialisation intact.
