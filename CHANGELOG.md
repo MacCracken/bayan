@@ -2,6 +2,30 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **The five resolved issues are archived.** `2026-06-23` (thoth, json global
+  cursor), both `2026-07-16` (agnosai, json depth cap and yaml tree),
+  `2026-08-22` (mneme, toml unescape) and `2026-08-28` (toml structural gaps)
+  moved from `docs/development/issues/` to `issues/archived/`. Each was
+  already marked resolved; they had never been moved. `issues/` now holds
+  only the one open issue (`2026-08-04`, agnosai `obj_get`/`obj_set` key type).
+- **Every reference to them follows them**: comments in `src/json.cyr`,
+  `src/pdf.cyr`, `src/toml.cyr`, `src/yaml.cyr`, `tests/bayan.tcyr` and
+  `scripts/gen-toml-vectors.py`, plus the CHANGELOG, `state.md`, the roadmap
+  and ADR-0003. Links between the five are sibling-relative and moved with them.
+- **Four CHANGELOG paths to `2026-08-19` were already broken.** That issue was
+  archived at 1.5.5 without its references being updated. Fixed now.
+  All 80 relative links and `docs/` paths across the Markdown, `src/`, `tests/`
+  and `scripts/` now resolve, checked by script.
+- `dist/` regenerated for the comment changes. It is byte-for-byte the 1.5.7
+  code with eight path strings changed, and still headed `1.5.7` until the next
+  version bump.
+- The empty `## [Unreleased]` heading that sat below the oldest entry, at the
+  bottom of this file, is this one, moved to the top.
+
 ## [1.5.7] — 2026-09-23
 
 **The f64 parser is correctly rounded: every input, not "the vast majority".**
@@ -241,7 +265,7 @@ read the payload with is gone:
 **The seven structural TOML gaps, closed.** 1.5.3 fixed what a value *decodes
 to*; these are about where a pair *lands* — what a key is, whether a table can
 be empty, what a duplicate means. They were filed rather than fixed at 1.5.3
-([2026-08-28](docs/development/issues/2026-08-28-toml-structural-subset-gaps.md)),
+([2026-08-28](docs/development/issues/archived/2026-08-28-toml-structural-subset-gaps.md)),
 and deferring them was the wrong call: the report was a repair request, not a
 survey. Also removes the project's last two fixed read caps, both in `cyml`.
 
@@ -377,7 +401,7 @@ the maintainer before any of them was written.
 ## [1.5.3] — 2026-08-28
 
 **The TOML parser returned wrong values, and had since 1.0.0.** Reported by
-mneme ([2026-08-22](docs/development/issues/2026-08-22-mneme-toml-basic-strings-not-unescaped.md));
+mneme ([2026-08-22](docs/development/issues/archived/2026-08-22-mneme-toml-basic-strings-not-unescaped.md));
 the repair grew because measuring the reported defect properly turned up nine
 more of the same shape. Toolchain moves to **cyrius 6.5.36**.
 
@@ -512,7 +536,7 @@ file contains.
   defect was one undefined function was scored `ok`, and every `ok` this gate
   printed meant no more than "no warnings after the first". It had been hiding
   half of the real under-declaration in
-  [2026-08-19](docs/development/issues/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md)
+  [2026-08-19](docs/development/issues/archived/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md)
   — both `bayan-toml` and `bayan-cyml` are missing `fmt_int_buf` as well as
   `fmt_int`, and that issue's table is corrected accordingly.
 
@@ -537,7 +561,7 @@ verified against the code it documents.
   since v6.0.62) and `"""` strings, and it now carries an explicit
   **NOT SUPPORTED** block — quoted keys, dotted keys, inline tables, empty
   tables, duplicate keys, untrimmed header names — all filed together in
-  [2026-08-28](docs/development/issues/2026-08-28-toml-structural-subset-gaps.md).
+  [2026-08-28](docs/development/issues/archived/2026-08-28-toml-structural-subset-gaps.md).
 - `bayan_toml_parse_file` was still headed "Reads up to 256KB" eleven lines
   above the block explaining that 1.5.1 removed the cap.
 - `bayan_toml_get_sections` now states the cstring key contract that 1.5.1
@@ -1216,7 +1240,7 @@ report clean.
   fix: `bayan-toml` needs `+string +fmt`, `bayan-cyml` needs `+fmt`. The
   compiler reports these as *warnings*, so a consumer following the sidecar
   gets a green build and a broken binary. Filed as
-  [2026-08-19](docs/development/issues/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md)
+  [2026-08-19](docs/development/issues/archived/2026-08-19-distlib-sublib-deps-sidecar-not-transitive.md)
   — the sidecars are generated, so bayan cannot fix it in-repo. The two are
   carried in the script's `EXPECTED_FAIL` list, which **fails if either starts
   passing**, so the exemption cannot outlive the bug.
@@ -1501,7 +1525,7 @@ arbitrary garbage). That is a cross-repo migration, not a patch.
   so one consumer traverses one node shape across both formats (the
   serde-data-model property the Rust originals have). Filed by **agnosai**
   (definition files) and driven equally by **mneme** (Markdown frontmatter) —
-  see `docs/development/issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md`.
+  see `docs/development/issues/archived/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md`.
   In the subset: block mappings (plain/quoted keys) nested by indentation,
   block sequences (incl. compact `- key: value` items and sequences at the
   parent key's indent), single-line flow sequences, `#` comments
@@ -1557,7 +1581,7 @@ arbitrary garbage). That is a cross-repo migration, not a patch.
   size, so callers reserving via it are transparent; the documented stack
   pattern is now `var ps[48]`. Reported by agnosai (untrusted HTTP bodies on
   its server surface — blocker #2). See
-  `docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md`.
+  `docs/development/issues/archived/2026-07-16-agnosai-json-no-recursion-depth-cap.md`.
   Covered by a new `tests/bayan.tcyr` group (200-deep rejected on both
   parsers, 100-deep parses, exact 128/129 boundary, legacy-entry mirror,
   `_compat` alias parity); suite 86 → 101 asserts.
@@ -1637,7 +1661,7 @@ arbitrary garbage). That is a cross-repo migration, not a patch.
   `bayan_json_last_error()` slots only as a back-compat courtesy. Node allocation
   is unchanged — the filed race was the cursor, not the node arena. Reported by
   thoth (parallel MCP tool-result parsing). See
-  `docs/development/issues/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md`.
+  `docs/development/issues/archived/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md`.
 
 ### Added
 
@@ -1705,5 +1729,3 @@ source of truth for the data-format & big-integer modules; cyrius folds
 - Smoke entry (`src/main.cyr`, exits 42) + `tests/bayan.tcyr` (canonical
   API + alias parity). Deep coverage lives in cyrius's
   `json`/`toml`/`csv`/`base64`/`bigint`/`u128`/`cyml` `.tcyr` suite.
-
-## [Unreleased]

@@ -1556,7 +1556,7 @@ fn bayan_json_v_obj_get_by_str(v, key: Str): i64 {
 # so two threads can parse concurrently without clobbering each other's cursor.
 # (Pre-1.0.3 this was a process-global _jp_buf/_jp_len/_jp_pos triplet; a second
 # parse reset it mid-descent through the first. See
-# docs/development/issues/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md.)
+# docs/development/issues/archived/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md.)
 #
 # The state is _JP_STATE_SIZE bytes and may be stack- or heap-allocated by the
 # caller; the globals-compat wrappers stack-allocate it, so existing callers are
@@ -1580,7 +1580,7 @@ var _JP_STATE_SIZE = 48;
 # error path instead of overflowing the caller's stack (a hostile `[[[[…` body
 # costs 2 bytes per level, so any untrusted input can otherwise out-recurse any
 # thread stack). See
-# docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md.
+# docs/development/issues/archived/2026-07-16-agnosai-json-no-recursion-depth-cap.md.
 var _JP_MAX_DEPTH = 128;
 
 # Initialise a parser state over (buf, len). pos = 0, error cleared, depth 0.
@@ -2830,7 +2830,7 @@ fn bayan_json_v_pointer(v, ptr): i64 {
 # consumer traverses one node shape regardless of input format (the
 # serde-data-model property the Rust originals have). Filed by agnosai
 # (definition files) and driven equally by mneme (Markdown frontmatter):
-# docs/development/issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md
+# docs/development/issues/archived/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md
 #
 # In the subset:
 #   - block mappings (`key: value`), nested by indentation (spaces only);

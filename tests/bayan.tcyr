@@ -182,7 +182,7 @@ test_group("json recursion-depth cap — 128, serde_json parity");
 # Deep untrusted input must fail the parse through the normal error path, not
 # out-recurse the thread stack. Cap is 128 (serde_json's default) so Rust →
 # Cyrius ports keep wire parity. See
-# docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md.
+# docs/development/issues/archived/2026-07-16-agnosai-json-no-recursion-depth-cap.md.
 var jd_deep = _mk_nested(200);
 var jd_ok   = _mk_nested(100);
 var psd[48];
@@ -922,7 +922,7 @@ test_group("yaml: parse into the shared tagged value tree (v1.2.0)");
 # bayan_yaml_parse* produces the SAME JTAG_* node graph as the JSON value
 # parser, so every bayan_json_v_* accessor below traverses YAML output.
 # Subset boundary: out-of-subset YAML must fail LOUDLY, never mis-parse. See
-# docs/development/issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md.
+# docs/development/issues/archived/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md.
 
 # -- scalar typing: str / int / float / bool / null / ~ --
 var y1 = "title: My Note\ncount: 42\npi: 3.14\nok: true\noff: false\nnothing: null\ntilde: ~\n";

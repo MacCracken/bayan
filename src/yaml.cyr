@@ -5,7 +5,7 @@
 # consumer traverses one node shape regardless of input format (the
 # serde-data-model property the Rust originals have). Filed by agnosai
 # (definition files) and driven equally by mneme (Markdown frontmatter):
-# docs/development/issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md
+# docs/development/issues/archived/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md
 #
 # In the subset:
 #   - block mappings (`key: value`), nested by indentation (spaces only);

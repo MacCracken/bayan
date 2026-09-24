@@ -31,7 +31,7 @@ The constraints that make this a real choice:
 - **Everything in `dtoa.cyr` is folded into cyrius's stdlib** (`dist/bayan.cyr` →
   `cyrius/lib/bayan.cyr`), so source size and tables are paid by every consumer.
 - **Reentrancy**: the JSON parser's global-cursor bug
-  ([2026-06-23](../development/issues/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md))
+  ([2026-06-23](../development/issues/archived/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md))
   is the reason new parse state goes on the caller's stack, not in globals.
 
 ## Decision

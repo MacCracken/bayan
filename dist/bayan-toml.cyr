@@ -1526,7 +1526,7 @@ fn bayan_toml_array_parse(value): i64 {
 #
 # Fixing it properly means recording the value's kind on the pair, which
 # changes the struct every consumer reads — filed with the other structural
-# gaps in docs/development/issues/2026-08-28-toml-structural-subset-gaps.md.
+# gaps in docs/development/issues/archived/2026-08-28-toml-structural-subset-gaps.md.
 fn bayan_toml_is_array(value): i64 {
     if (value == 0) { return 0; }
     var buf = str_data(value);

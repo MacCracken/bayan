@@ -7,7 +7,7 @@ paying for twice: `src/toml.cyr` shipped from 1.0.0 to 1.5.2 returning the RAW
 bytes between the quotes — escapes unresolved, literal strings still wearing
 their quotes — while every test in the suite passed, because every test
 compared bayan against bayan. Reported by mneme
-(docs/development/issues/2026-08-22-mneme-toml-basic-strings-not-unescaped.md).
+(docs/development/issues/archived/2026-08-22-mneme-toml-basic-strings-not-unescaped.md).
 
 Mirrors scripts/gen-numeric-vectors.py in shape: a line-oriented text file
 tests/vectors.tcyr reads at run time, so the vector count can grow without the

@@ -71,7 +71,7 @@ it decoded to), 466/466 reference coverage, and ten mutations — one per gap fi
 
 Before that: **1.5.3** — **the TOML parser was returning wrong values, and had
 been since 1.0.0.** mneme reported it
-([2026-08-22](issues/2026-08-22-mneme-toml-basic-strings-not-unescaped.md)):
+([2026-08-22](issues/archived/2026-08-22-mneme-toml-basic-strings-not-unescaped.md)):
 basic-string escapes were never decoded, so `"say \"hi\""` came back with its
 backslashes. Measuring that properly turned up nine more defects of the same
 shape, one of them worse than anything reported — **there was no `'...'` branch
@@ -379,7 +379,7 @@ The 1.5.0 gate lessons still hold and generalise:
 
 1. ~~**The TOML parser is a documented SUBSET, and seven structural gaps
    degrade silently.**~~ **Fixed in 1.5.4** — all seven.
-   [2026-08-28](issues/2026-08-28-toml-structural-subset-gaps.md) is resolved.
+   [2026-08-28](issues/archived/2026-08-28-toml-structural-subset-gaps.md) is resolved.
 
    What remains of the subset is narrower and stated in `src/toml.cyr`'s
    header: a dotted key whose QUOTED segment contains a literal dot

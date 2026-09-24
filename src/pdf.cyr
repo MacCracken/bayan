@@ -49,9 +49,9 @@
 # Reentrancy + bounds: every parse threads a caller-owned _PDF_STATE_SIZE-byte
 # PdfState (buffer, length, cursor, error, depth counters) — there is NO
 # module-global cursor. See
-# docs/development/issues/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md
+# docs/development/issues/archived/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md
 # Every recursive descent is bounded by an explicit cap, per
-# docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md
+# docs/development/issues/archived/2026-07-16-agnosai-json-no-recursion-depth-cap.md
 #
 # NOTE (units): every geometric parameter and return in the public API is in
 # MILLI-POINTS (mpt); 1 pt = 1000 mpt, so A4 is 595000 x 842000 mpt. Font
@@ -2862,7 +2862,7 @@ fn _pdfz_unpredict_a(a, doc, data, len, parms_pred, parms_colors, parms_bpc, par
 #   +0 buf  +8 len  +16 pos  +24 err_msg  +32 err_pos  +40 depth  +48 refs
 #   +56 alloc
 # There is no module-global cursor. See
-# docs/development/issues/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md
+# docs/development/issues/archived/2026-06-23-thoth-json-value-parser-global-cursor-not-thread-safe.md
 #
 # NOTE (no strlen on input): the source is a (ptr, len) span, never a cstring.
 # A PDF carries NUL bytes inside literal strings, inside hex strings, and all
@@ -2956,7 +2956,7 @@ fn _pdfl_restore(ps, saved): i64 { store64(ps + 16, saved); return 0; }
 #
 # The cap exists because recursive descent on attacker-supplied bytes is a
 # stack-exhaustion primitive otherwise, per
-# docs/development/issues/2026-07-16-agnosai-json-no-recursion-depth-cap.md
+# docs/development/issues/archived/2026-07-16-agnosai-json-no-recursion-depth-cap.md
 # The counter lives in the state, never in a global — a process-global depth
 # counter would be the thoth bug wearing a different variable name, and it
 # would be reachable here because extraction naturally nests page walk ->

@@ -83,7 +83,7 @@ the `toml` / `cyml` machinery (quote stripping, comment skipping, flow-list
 - **Drivers (two consumers, convergent):**
   - **agnosai** (agent-orchestration port) — definition-file loading behind
     its `definitions` feature. Filed:
-    [2026-07-16 issue](issues/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md)
+    [2026-07-16 issue](issues/archived/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md)
     (originally noted only in agnosai's port-plan "Upstream filings" table).
     Its ask fixes the output shape: parse into **the existing `JTAG_*`-tagged
     `bayan_json_v_*` value tree**, not a new YAML AST, so one loader traverses
