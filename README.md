@@ -42,7 +42,7 @@ short on purpose.
 | `base64` | `bayan_base64_*` | standard + URL alphabet, encode/decode |
 | `bigint` | `bayan_u256_*`   | 256-bit unsigned int (add/sub/mul/mod, modular arithmetic, hex) |
 | `u128`   | `bayan_u128_*`   | 128-bit unsigned int (full arithmetic + bitwise + divmod) |
-| `dtoa`   | `bayan_f64_*`    | round-trip-correct f64 ⇄ decimal (Grisu2), used by `json` |
+| `dtoa`   | `bayan_f64_*`    | f64 ⇄ decimal: Grisu2 out, correctly rounded parse in (1.5.7), used by `json` |
 
 ### Per-format sublibs
 

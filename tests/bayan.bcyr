@@ -4,7 +4,8 @@
 # CI bench gate was a false green and docs/benchmarks.md did not exist. It now
 # measures the operations a consumer actually pays for: the PDF object grammar,
 # font metric measurement, metric word wrap, whole-document serialisation, and
-# whole-document parse + text extraction.
+# whole-document parse + text extraction. 1.5.7 adds the f64 parser, once per
+# tier, because making it correctly rounded moved cost onto the hard inputs.
 #
 # Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop ->
 # bench_report. For sub-microsecond operations use a batch of >= 1000 to
@@ -27,6 +28,7 @@ include "lib/fnptr.cyr"
 include "lib/bench.cyr"
 
 include "src/pdf.cyr"
+include "src/dtoa.cyr"
 
 var B_DICT = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Contents 5 0 R/Resources<</Font<</F1 3 0 R>>>>>>";
 var B_PROSE = "The quick brown fox jumps over the lazy dog and keeps on running well past the right edge of any column you care to name";
@@ -110,6 +112,40 @@ fn main(): i64 {
     while (i < 1000) { bayan_pdf_extract_text(rd); i = i + 1; }
     bench_batch_stop(b7, 1000);
     bench_report(b7);
+
+    # --- f64 parsing, one input per tier (1.5.7) ----------------------------
+    # Tier 1 (Clinger) is one IEEE multiply; tier 2 (DiyFp) answers most other
+    # inputs; tier 3 (the exact decimal) runs only inside tier 2's error window,
+    # ~0.6% of shortest-repr inputs and ~1.8% of arbitrary ones. The two tier 3
+    # rows are the cost of being right where the old parser was not: the first
+    # is issue 2026-09-22's vector 1, the second an exact binary tie.
+    var b8 = bench_new("f64_parse (tier 1: 2.718281828459045)");
+    bench_batch_start(b8);
+    i = 0;
+    while (i < 100000) { bayan_f64_parse("2.718281828459045", 17); i = i + 1; }
+    bench_batch_stop(b8, 100000);
+    bench_report(b8);
+
+    var b9 = bench_new("f64_parse (tier 2: 1.7976931348623157e308)");
+    bench_batch_start(b9);
+    i = 0;
+    while (i < 100000) { bayan_f64_parse("1.7976931348623157e308", 22); i = i + 1; }
+    bench_batch_stop(b9, 100000);
+    bench_report(b9);
+
+    var b10 = bench_new("f64_parse (tier 3: 1.621274542797433e-9, a near-tie)");
+    bench_batch_start(b10);
+    i = 0;
+    while (i < 10000) { bayan_f64_parse("1.621274542797433e-9", 20); i = i + 1; }
+    bench_batch_stop(b10, 10000);
+    bench_report(b10);
+
+    var b11 = bench_new("f64_parse (tier 3: 9007199254740993, an exact tie)");
+    bench_batch_start(b11);
+    i = 0;
+    while (i < 10000) { bayan_f64_parse("9007199254740993", 16); i = i + 1; }
+    bench_batch_stop(b11, 10000);
+    bench_report(b11);
 
     return 0;
 }

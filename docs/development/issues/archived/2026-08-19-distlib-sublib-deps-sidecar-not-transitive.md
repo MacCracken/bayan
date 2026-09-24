@@ -7,6 +7,13 @@
 > `scripts/consumer-check.sh` reported both as `FIXED` (its known-bad list
 > fails when a listed bundle starts passing, which is how this was caught),
 > so `EXPECTED_FAIL` is now empty. Archived; kept for the measurement history.
+>
+> **Update, bayan 1.5.7 (cyrius 6.6.6):** neither sidecar lists `fmt` any more,
+> and that is correct. 6.6.6 made `lib/io.cyr` self-sufficient (it now
+> `include`s `fmt.cyr` itself), so the `io` leaf brings `fmt` with it.
+> `consumer-check.sh` is green from the declared leaves, and it still goes red
+> when a needed leaf (`io`) is deleted from `bayan-toml.deps`, so the gate is
+> not vacuous.
 
 
 **Filed by**: bayan (2026-08-19 state review, surfaced by the new

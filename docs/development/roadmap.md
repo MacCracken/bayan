@@ -4,26 +4,16 @@
 > this file is the sequencing — what ships, in what order, against
 > what dependency gates.
 
-## Moving the cyrius pin to 6.6.5
+## Moving the cyrius pin to 6.6.5 — ✅ done in 1.5.7 (straight to 6.6.6)
 
-⛔ Before bumping the pin to 6.6.5: cross-reference the deferral note at
-`src/pdf.cyr:6126`, which turns the CI step *Lint — zero warnings, zero
-untracked deferrals* (`.github/workflows/ci.yml:108`) red. 6.6.5's cyrlint
-folds case, so a capital "Out of scope" now counts.
-
-cyrius 6.6.5 is not tagged yet. Nothing below can land against the pin
-until it is, except items marked **(can land now)**. The pin is 6.6.2
-today, and this section lists only what 6.6.5 itself changes.
-
-- [ ] ⛔ `src/pdf.cyr:6126` — "Out of scope for 1.5.0, loudly." A bare
-      `1.5.0` is not a tracking pointer (a version pointer needs the `v`).
-      Point it at *PDF encryption* under *Out of scope (for v1.0)* below,
-      on `:6126` itself. **(can land now)** — a same-line pointer does not
-      depend on the toolchain. See the cyrius CHANGELOG [6.6.5] entry
-      "cyrlint read every rule ONE PHYSICAL LINE at a time".
-- [ ] At the bump, re-run `cyrius deps` — the aarch64 syscall peer moved
-      SYS_UNLINKAT 35 → 263, so an un-re-vendored peer's sys_unlink would
-      run nanosleep.
+- [x] `src/pdf.cyr:6126`: "Out of scope for 1.5.0, loudly." turned the lint
+      gate red exactly as predicted (6.6.5's cyrlint folds case). The comment
+      now points at *PDF encryption* under *Out of scope (for v1.0)* below, on
+      the line itself. `cyrius lint src/pdf.cyr`: 0 warnings, 0 untracked
+      deferrals.
+- [x] `cyrius deps` re-run at the bump, then `cyrius lib sync --full`. The
+      aarch64 syscall peer (`SYS_UNLINKAT` 35 → 263) is re-vendored; `lib/` is
+      111 files, 0 differ against the 6.6.6 snapshot and the release tarball.
 
 ## v1.0 criteria
 
@@ -180,9 +170,10 @@ _Capture what's deliberately NOT in scope for v1.0. The list keeps future contri
 - **Full YAML 1.2.** The subset is documented and everything outside it is
   rejected loudly.
 
-## Moving the cyrius pin to 6.6.6
+## Moving the cyrius pin to 6.6.6 — ✅ done in 1.5.7
 
-Current pin: `cyrius = "6.6.2"` (`cyrius.cyml`). Nothing needs to change first.
+Pin is `cyrius = "6.6.6"`. The analysis below held: the only source change the
+bump needed was the 6.6.5 lint pointer above.
 
 bayan has the second-largest typed-parameter surface in the ecosystem — **43 functions taking
 a `: Str` parameter** and **52 `: cstring` parameters**, nearly all in `src/pdf.cyr` — so two
@@ -223,3 +214,10 @@ After bumping, verify: the full `.tcyr` suite per-file, and one PDF write/parse 
 (`bayan_pdf_obj_string_new_a` and `bayan_pdf_obj_stream_new_a` are the sites whose stored
 `: Str` handles the note above turns on) to confirm object strings and streams survive
 serialisation intact.
+
+- [x] Done at 1.5.7. Per file: `bayan.tcyr` 962/962, `pdf_flate.tcyr` 19/19,
+      `vectors.tcyr` 13/13. String and hex objects built by the `_a`
+      constructors survive `to_bytes → obj_parse_buf` intact. A stream is
+      verified at document level (strict-oracle gate + the compressed
+      round-trip test), because `obj_parse_buf` stops at the `stream` keyword
+      by documented design, since a stream's `/Length` may be indirect.

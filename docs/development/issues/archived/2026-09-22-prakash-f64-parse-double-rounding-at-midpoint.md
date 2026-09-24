@@ -1,5 +1,36 @@
 # `bayan_f64_from_json` does not invert `bayan_f64_to_json`: the slow path double-rounds at the midpoint
 
+> **RESOLVED — bayan 1.5.7 (2026-09-23), all 27 vectors correct.** The parser is
+> now correctly rounded for every input, which is the report's option 1 with an
+> exact tier in place of the bignum ([ADR-0003](../../../adr/0003-f64-parse-exact-fallback-not-eisel-lemire.md)).
+> Tier 2 answers only when its dropped bits are more than 16 units from
+> halfway: the derived error bound is < 5.01 and the measured maximum is 3.25,
+> so the report's "at least ±2" was right and a `low == 0x400` fix alone would
+> have left 936 wrong decisions in a 390,000-input near-midpoint sample.
+> Everything else goes to an exact decimal (Go strconv's `decimal`).
+>
+> Measuring the report against Python found **three more defect classes** it did
+> not cover, all fixed: the 20th+ significant digit was discarded rather than
+> accounted for; `[2^-1075, 2^-1074)` flushed to 0 instead of rounding to the
+> smallest subnormal (C's `%.17g` output `4.9406564584124654e-324` decoded to
+> 0); and the exact overflow tie decoded to DBL_MAX instead of +Inf. Before the
+> fix, the parser got 46 of 300,000 Python `repr` strings wrong, 276 of 300,000
+> random 1–25-digit decimals, and 22,529 of 60,000 near-midpoint strings. After
+> it, 0 of 884,093.
+>
+> Coverage the report asked for, all mutation-checked against the old parser:
+> the 27 vectors pinned in `tests/bayan.tcyr` (37 of the 43 new asserts are red on
+> the old parser); `tests/fixtures/numeric/f64parse.vec`, 7,736 Python-oracle
+> vectors aimed at midpoints (355 red on the old parser); and
+> `tests/dtoa.fcyr`, 2×10⁶ round-trips at the report's seed (31 red on the old
+> parser) plus a tier-2-vs-exact cross-check. The `src/dtoa.cyr` header claim
+> is restated.
+>
+> **prakash action** (from *Consumer status* below): the first `cyrius deps`
+> that vendors bayan 1.5.7 turns `tests/hardening.tcyr`'s pin of the +1 ULP
+> value red, as designed. Delete it and the `src/serialize.cyr` caveat.
+> Archived; kept for the measurement history.
+
 **Filed by**: prakash (optics library; found in its 2.4.9 audit, filed at 2.5.0)
 **Date**: 2026-09-22
 **Version**: bayan 1.5.6 (as vendored by `cyrius deps` at cyrius 6.6.6);
@@ -7,7 +38,7 @@
 **Severity**: Low–Medium — silently wrong values (exactly 1 ULP), not a crash. It
 contradicts a documented guarantee, and a JSON round-trip that changes the bits
 breaks any consumer that hashes, diffs or equality-tests decoded values.
-**Status**: Open
+**Status**: Resolved in 1.5.7
 
 ## What happens
 

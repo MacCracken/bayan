@@ -6123,7 +6123,8 @@ fn bayan_pdf_parse_ctx_a(a, ps, buf, len): i64 {
     # ENCRYPTION IS REFUSED BEFORE ANY STRING OR STREAM IS TOUCHED. Half-
     # handling an encrypted file means every string and every content stream is
     # ciphertext, and ciphertext presented as extracted text is the single
-    # worst answer this module could give. Out of scope for 1.5.0, loudly.
+    # worst answer this module could give. Refused loudly; see roadmap.md,
+    # "Out of scope (for v1.0)" -> PDF encryption.
     if (bayan_pdf_obj_dict_get(tr, "Encrypt") != 0) {
         store64(doc + 120, load64(doc + 120) | _PDF_F_ENCRYPT);
         _pdfp_last_enc = 1;

@@ -2203,6 +2203,81 @@ d_n = bayan_f64_to_json(9218868437227405312, d_buf);          # +inf
 store8(d_buf + d_n, 0);
 assert_eq(streq(d_buf, "null"), 1, "dtoa: infinity serialises as null, since JSON has no inf");
 
+test_group("dtoa: the parser is correctly rounded, not just close (v1.5.7)");
+# Issue 2026-09-22 (prakash). For ~2 in 10^5 doubles the parser returned a
+# NEIGHBOUR of the value bayan_f64_to_json had just printed: the DiyFp path
+# rounded its 64 approximate bits a second time and took `low == halfway` as a
+# real tie. Every expected value below comes from Python's float(), not from
+# bayan. Each vector is checked twice: the reported string parsed directly, and
+# the bits pushed through the emitter and back.
+fn _dtoa_pin(text: cstring, bitv): i64 {
+    if (bayan_f64_from_json(text) != bitv) { return 0; }
+    return _dtoa_rt(bitv);
+}
+# 1-4 are prakash's known cases; 5-27 are every failure in the report's
+# full-range sampler. The correct bits are ALWAYS odd, and the old parser
+# returned the even neighbour, one ULP up or down.
+assert_eq(_dtoa_pin("1.621274542797433e-9", 0x3E1BDA70DB50D19F), 1, "dtoa 1.5.7: issue vector 1");
+assert_eq(_dtoa_pin("6.28282780197287e+197", 0x6900CF5CDB6F39DB), 1, "dtoa 1.5.7: issue vector 2");
+assert_eq(_dtoa_pin("6.056508755376114e-30", 0x39DEB5CC3FA3A223), 1, "dtoa 1.5.7: issue vector 3");
+assert_eq(_dtoa_pin("5.413192751330368e-12", 0x3D97CEB69538C823), 1, "dtoa 1.5.7: issue vector 4");
+assert_eq(_dtoa_pin("2.268960681969623e+176", 0x648CAB0B1AF1B70D), 1, "dtoa 1.5.7: issue vector 5");
+assert_eq(_dtoa_pin("1.117384033173974e-30", 0x39B6A9CA23916F49), 1, "dtoa 1.5.7: issue vector 6");
+assert_eq(_dtoa_pin("7.541299607260034e-87", 0x2E0E00F30598D2B5), 1, "dtoa 1.5.7: issue vector 7");
+assert_eq(_dtoa_pin("3.896249127662247e-70", 0x31858342D5584921), 1, "dtoa 1.5.7: issue vector 8");
+assert_eq(_dtoa_pin("2.358691174571055e-104", 0x2A6B0C5BBB70C97F), 1, "dtoa 1.5.7: issue vector 9");
+assert_eq(_dtoa_pin("3.602444916265846e-72", 0x311975BA7E2C8985), 1, "dtoa 1.5.7: issue vector 10");
+assert_eq(_dtoa_pin("5.292147622049392e-157", 0x1F7D1049467164ED), 1, "dtoa 1.5.7: issue vector 11");
+assert_eq(_dtoa_pin("7.220771039042403e+202", 0x6A0D7AB053F360C9), 1, "dtoa 1.5.7: issue vector 12");
+assert_eq(_dtoa_pin("9.23786520951051e-303", 0x0139570CAFD19A87), 1, "dtoa 1.5.7: issue vector 13");
+assert_eq(_dtoa_pin("2.367847325017567e+234", 0x7097D4A9AA392DF5), 1, "dtoa 1.5.7: issue vector 14");
+assert_eq(_dtoa_pin("2.857588316145595e+118", 0x5886A9EA130B654B), 1, "dtoa 1.5.7: issue vector 15");
+assert_eq(_dtoa_pin("3.016748988549019e+299", 0x7E1CD475C5D5CA81), 1, "dtoa 1.5.7: issue vector 16");
+assert_eq(_dtoa_pin("3.724466833043056e+71", 0x4ECAFB685B4391F9), 1, "dtoa 1.5.7: issue vector 17");
+assert_eq(_dtoa_pin("2.856052993406979e+87", 0x5216F8ADCCB560FD), 1, "dtoa 1.5.7: issue vector 18");
+assert_eq(_dtoa_pin("6.88182903070455e-258", 0x0A8A73E4BCA35EF5), 1, "dtoa 1.5.7: issue vector 19");
+assert_eq(_dtoa_pin("1.129663429840676e+97", 0x541527A5D721736D), 1, "dtoa 1.5.7: issue vector 20");
+assert_eq(_dtoa_pin("1.663259973966709e-127", 0x259CD2AC3F0F59B9), 1, "dtoa 1.5.7: issue vector 21");
+assert_eq(_dtoa_pin("1.411708210369543e+200", 0x697D82300891D01B), 1, "dtoa 1.5.7: issue vector 22");
+assert_eq(_dtoa_pin("2.630392443164597e+103", 0x55677D02C359E7B1), 1, "dtoa 1.5.7: issue vector 23");
+assert_eq(_dtoa_pin("3.247638607483073e+214", 0x6C781E0EF124C88F), 1, "dtoa 1.5.7: issue vector 24");
+assert_eq(_dtoa_pin("5.145827025736034e-8", 0x3E6BA05EED8329CD), 1, "dtoa 1.5.7: issue vector 25");
+assert_eq(_dtoa_pin("2.756486299691583e-120", 0x271C78C45296A011), 1, "dtoa 1.5.7: issue vector 26");
+assert_eq(_dtoa_pin("4.289892475427113e+60", 0x4C855B5ABA134B09), 1, "dtoa 1.5.7: issue vector 27");
+# The same defect on inputs the emitter never produces: one or two digits, and a
+# plain fixed-notation fraction.
+assert_eq(bayan_f64_from_json("5e125"), 0x5A07A2ECC414A03F, "dtoa 1.5.7: 5e125 (a one-digit input)");
+assert_eq(bayan_f64_from_json("4.78376e207"), 0x6B0DCCE82EBB87DF, "dtoa 1.5.7: 4.78376e207");
+assert_eq(bayan_f64_from_json("996861.0387127432623"), 0x412E6BFA13D2281D, "dtoa 1.5.7: fixed notation");
+# Found while measuring the report, not in it: [2^-1075, 2^-1074) FLUSHED TO 0
+# instead of rounding up to the smallest subnormal. The first input is how C's
+# printf("%.17g") writes that subnormal.
+assert_eq(bayan_f64_from_json("4.9406564584124654e-324"), 1, "dtoa 1.5.7: %.17g of the smallest subnormal");
+assert_eq(bayan_f64_from_json("3e-324"), 1, "dtoa 1.5.7: 3e-324 rounds up, not to 0");
+assert_eq(bayan_f64_from_json("2.4703282292062328e-324"), 1, "dtoa 1.5.7: just above 2^-1075 rounds up");
+assert_eq(bayan_f64_from_json("2.4703282292062327e-324"), 0, "dtoa 1.5.7: just below 2^-1075 rounds to 0");
+assert_eq(bayan_f64_from_json("7.4109846876186982e-324"), 2, "dtoa 1.5.7: 1.5 subnormal ulps, above the tie");
+# Found alongside it: the 20th+ significant digit was DISCARDED, so an input just
+# above a midpoint parsed as the midpoint and rounded to even. 2^53 + 1 is a tie;
+# anything past it is not.
+assert_eq(bayan_f64_from_json("9007199254740993"), 0x4340000000000000, "dtoa 1.5.7: 2^53+1 is a tie, to even");
+assert_eq(bayan_f64_from_json("9007199254740993.0000000000000001"), 0x4340000000000001,
+  "dtoa 1.5.7: a 33rd digit breaks the tie upward");
+assert_eq(bayan_f64_from_json("9007199254740993.00000000000000000000000000000000000000000000000001"),
+  0x4340000000000001, "dtoa 1.5.7: so does a 68th");
+# The overflow midpoint, 1.797693134862315807937...e308: below it is DBL_MAX, at
+# or above it is +Inf. These two bracket it; the old parser got both right. What
+# it got wrong was the exact tie (309 digits, which must round to +Inf), and that
+# lives in tests/fixtures/numeric/f64parse.vec with the other full-length ties.
+assert_eq(bayan_f64_from_json("1.797693134862315807e308"), 0x7FEFFFFFFFFFFFFF, "dtoa 1.5.7: under the overflow midpoint");
+assert_eq(bayan_f64_from_json("1.797693134862315808e308"), 0x7FF0000000000000, "dtoa 1.5.7: over it is +Inf");
+assert_eq(bayan_f64_from_json("-1.797693134862315808e308"), 0xFFF0000000000000, "dtoa 1.5.7: and -Inf");
+# A decoded JSON number goes through the same parser (json.cyr's _jp_atof).
+var d_js = "[1.621274542797433e-9, 5e125]";
+var d_jv = bayan_json_v_parse_buf(d_js, strlen(d_js));
+assert_eq(bayan_json_v_float(bayan_json_v_arr_get(d_jv, 0)), 0x3E1BDA70DB50D19F, "dtoa 1.5.7: a JSON float decodes exactly");
+assert_eq(bayan_json_v_float(bayan_json_v_arr_get(d_jv, 1)), 0x5A07A2ECC414A03F, "dtoa 1.5.7: so does a one-digit one");
+
 test_group("toml: sections, arrays and lookup (v1.5.2)");
 var t_doc = "top = 1\nname = \"demo\"\nlist = [1, 2, 3]\nstrs = [\"a\", \"b\"]\n\n[server]\nhost = \"h\"\nport = 80\n\n[[item]]\nid = 1\n\n[[item]]\nid = 2\n";
 var t_secs = bayan_toml_parse(str_from(t_doc));

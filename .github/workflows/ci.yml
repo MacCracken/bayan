@@ -289,6 +289,8 @@ jobs:
             || { echo "::error::u128 vectors differ from scripts/gen-numeric-vectors.py output"; exit 1; }
           diff "${RUNNER_TEMP}/nv/f64.vec" tests/fixtures/numeric/f64.vec \
             || { echo "::error::f64 vectors differ from scripts/gen-numeric-vectors.py output"; exit 1; }
+          diff "${RUNNER_TEMP}/nv/f64parse.vec" tests/fixtures/numeric/f64parse.vec \
+            || { echo "::error::f64 parse vectors differ from scripts/gen-numeric-vectors.py output"; exit 1; }
 
       # Same contract for the TOML string vectors (1.5.3). Their oracle is
       # Python's `tomllib`, which ships in the stdlib from 3.11 — no package to

@@ -32,6 +32,12 @@ than an error return.
 >
 > Reconciling the two signatures is still a breaking change and still wants its
 > own release. Recorded in `docs/development/state.md` under Known gaps.
+>
+> **Re-measured 2026-09-23 at bayan 1.5.7 / cyrius 6.6.6: unchanged.** 6.6.6
+> reworked the `: cstring` gate (it now refuses a non-zero integer literal), but
+> the inline `bayan_json_v_obj_get(o, str_from("name"))` still compiles with zero
+> warnings and returns 0. The named-local form still warns
+> (`passing Str-typed 'key' to 'bayan_json_v_obj_get' which expects a cstring`).
 
 ## What happens
 

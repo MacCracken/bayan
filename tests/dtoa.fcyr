@@ -1,0 +1,158 @@
+# dtoa fuzz harness — the f64 parser at a volume no fixture can hold (1.5.7).
+#
+# Issue 2026-09-22 (prakash): for about 2 in 10^5 doubles, bayan_f64_from_json
+# decoded bayan_f64_to_json's own output to a neighbouring double. The suite had
+# the right kind of test (a Python oracle) at the wrong size: 328 values, which
+# has about a 0.7% chance of containing one failure. Seeing a 10^-5 event needs
+# around 10^6 samples, which is this harness's job. tests/fixtures/numeric/
+# f64parse.vec is the complement: fewer inputs, each chosen to be hard.
+#
+# Three properties. Any disagreement prints the input and exits non-zero:
+#   1. to_json -> parse returns IDENTICAL bits, over 10^6 uniformly random finite
+#      doubles of either sign (the report's first sampler).
+#   2. The same over 10^6 with the biased exponent uniform in 970..1076, i.e.
+#      |x| ~ 1e-16..1e16, where most real data lives (its second sampler).
+#   3. The tiered parser agrees with the EXACT tier alone on 200,000 random
+#      decimals of 1..25 significant digits across the whole exponent range.
+#      Tier 2 answers most inputs by itself, from an approximation plus an error
+#      bound; this checks every one of those answers against an independent
+#      algorithm that has no error bound to get wrong. Python checks both of
+#      them in tests/vectors.tcyr.
+#
+# xorshift64, seeded as the report was (0x9E3779B97F4A7C15), so a failure
+# reproduces exactly.
+
+# NOTE: a file carrying include directives skips the [deps].stdlib
+# auto-prepend, so the stdlib prerequisites are listed explicitly here, exactly
+# as src/main.cyr does.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/fmt.cyr"
+
+include "src/dtoa.cyr"
+
+var g_x = 0x9E3779B97F4A7C15;
+
+fn xs64(): i64 {
+    g_x = g_x ^ (g_x << 13);
+    g_x = g_x ^ (g_x >> 7);
+    g_x = g_x ^ (g_x << 17);
+    return g_x;
+}
+
+fn fz_say(m): i64 { print(m, strlen(m)); return 0; }
+fn fz_hex(v): i64 {
+    var b[16];
+    var i = 0;
+    while (i < 16) {
+        var d = (v >> ((15 - i) * 4)) & 15;
+        if (d < 10) { store8(&b + i, 48 + d); } else { store8(&b + i, 87 + d); }
+        i = i + 1;
+    }
+    print(&b, 16);
+    return 0;
+}
+fn fz_num(n): i64 { var b[24]; var l = fmt_int_buf(n, &b); print(&b, l); return 0; }
+
+var g_bad = 0;
+
+fn fz_report(label, text, n, want, got): i64 {
+    g_bad = g_bad + 1;
+    if (g_bad <= 8) {
+        fz_say("  "); fz_say(label); fz_say(" ["); print(text, n);
+        fz_say("] want 0x"); fz_hex(want); fz_say(" got 0x"); fz_hex(got); fz_say("\n");
+    }
+    return 0;
+}
+
+# 1 and 2: format, parse, compare. Non-finite patterns format as null; skip them.
+fn fz_roundtrip(bitv, out): i64 {
+    if (((bitv >> 52) & 0x7FF) == 0x7FF) { return 0; }
+    var n = bayan_f64_to_json(bitv, out);
+    var back = bayan_f64_parse(out, n);
+    if (back != bitv) { fz_report("round-trip", out, n, bitv, back); }
+    return 1;
+}
+
+# 3: write a random decimal `[-]d.ddd...e<x>` into `out`; return its length. The
+# mantissa span and the exponent are handed back through `info` so the exact
+# tier can be called on the same text: info[0] mantissa start, [8] mantissa
+# end, [16] explicit exponent, [24] sign.
+fn fz_decimal(out, info): i64 {
+    var p = 0;
+    var neg = 0;
+    if ((xs64() & 1) == 1) { store8(out, 45); p = 1; neg = 1; }
+    store64(info, p);
+    var nd = 1 + (xs64() >> 1) % 25;
+    var i = 0;
+    while (i < nd) {
+        var d = (xs64() >> 1) % 10;
+        if (i == 0 && d == 0) { d = 1 + (xs64() >> 1) % 9; }
+        store8(out + p, 48 + d);
+        p = p + 1;
+        if (i == 0 && nd > 1) { store8(out + p, 46); p = p + 1; }
+        i = i + 1;
+    }
+    store64(info + 8, p);
+    # exponent in -345..310: below the smallest subnormal to past DBL_MAX
+    var x = ((xs64() >> 1) % 656) - 345;
+    store64(info + 16, x);
+    store64(info + 24, neg);
+    store8(out + p, 101);
+    p = p + 1;
+    var ax = x;
+    if (x < 0) { store8(out + p, 45); p = p + 1; ax = 0 - x; }
+    var tmp[8];
+    var t = 0;
+    if (ax == 0) { store8(&tmp, 48); t = 1; }
+    while (ax > 0) { store8(&tmp + t, 48 + ax % 10); t = t + 1; ax = ax / 10; }
+    while (t > 0) { t = t - 1; store8(out + p, load8(&tmp + t)); p = p + 1; }
+    return p;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var out = alloc(64);
+    var info = alloc(32);
+
+    var n1 = 0;
+    var i = 0;
+    while (i < 1000000) {
+        n1 = n1 + fz_roundtrip(xs64(), out);
+        i = i + 1;
+    }
+
+    var n2 = 0;
+    i = 0;
+    while (i < 1000000) {
+        var r = xs64();
+        var be = 970 + (r >> 1) % 107;
+        var sgn = xs64() & 0x8000000000000000;
+        n2 = n2 + fz_roundtrip(sgn | (be << 52) | (xs64() & 0x000FFFFFFFFFFFFF), out);
+        i = i + 1;
+    }
+
+    var n3 = 0;
+    i = 0;
+    while (i < 200000) {
+        var len = fz_decimal(out, info);
+        var got = bayan_f64_parse(out, len);
+        var ms = load64(info);
+        var want = _d_exact(out + ms, load64(info + 8) - ms, load64(info + 16), load64(info + 24));
+        if (got != want) { fz_report("tiered vs exact", out, len, want, got); }
+        n3 = n3 + 1;
+        i = i + 1;
+    }
+
+    fz_say("dtoa fuzz: "); fz_num(n1); fz_say(" + "); fz_num(n2);
+    fz_say(" round-trips, "); fz_num(n3); fz_say(" tier cross-checks, ");
+    fz_num(g_bad); fz_say(" wrong\n");
+    if (g_bad > 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+syscall(60, r);

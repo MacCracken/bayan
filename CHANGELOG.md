@@ -2,6 +2,148 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.7] — 2026-09-23
+
+**The f64 parser is correctly rounded: every input, not "the vast majority".**
+prakash reported that about 2 in 10⁵ doubles came back as a neighbouring double
+from `bayan_f64_to_json → bayan_f64_from_json`
+([issue 2026-09-22](docs/development/issues/archived/2026-09-22-prakash-f64-parse-double-rounding-at-midpoint.md)).
+Measured against Python's `float()`, the parser also got 46 of 300,000 Python
+`repr` strings wrong, 276 of 300,000 random 1–25-digit decimals, 124 of 200,000
+fixed-notation fractions, and 22,529 of 60,000 decimals at or near a rounding
+midpoint. It turned up three defect classes the report did not cover. After the
+fix: **0 wrong of 884,093**, and 0 with the fast tiers disabled.
+
+Toolchain **6.6.2 → 6.6.6**; `lib/` re-vendored.
+
+> ### ⚠ BEHAVIOUR CHANGE — some decoded floats change bits
+>
+> `bayan_f64_parse`, `bayan_f64_from_json`, and every JSON and YAML float
+> decoded through them now return the correctly rounded double. Where the old
+> answer was wrong, the new one differs by **1 ULP** (a near-tie), or goes
+> **0 → 5e-324** (`[2⁻¹⁰⁷⁵, 2⁻¹⁰⁷⁴)`), or **DBL_MAX → +Inf** (the exact overflow tie).
+> Any stored hash, diff baseline or golden value built from a misdecoded float
+> changes.
+>
+> **prakash:** `tests/hardening.tcyr` pins `1.621274542797433e-9` →
+> `0x3E1BDA70DB50D1A0`, the wrong +1 ULP value, precisely so that this release
+> would turn it red. Delete it, and delete the `src/serialize.cyr` caveat that a
+> float field is not guaranteed to round-trip bit-exactly. It now is.
+
+### Fixed
+
+- **Double rounding at the midpoint (the report).** After Clinger's exact path,
+  the parser's DiyFp tier multiplies a 64-bit significand by a cached power of
+  ten and then by the residual 10^r, then rounds the 64 approximate bits to 53.
+  Two rounded products feed that rounding. It took `low == halfway` as a real
+  tie, and a decimal is almost never a binary midpoint. **Fixing only that one
+  pattern would not have been enough**, as the report warned. The error bound is
+  < 5.01 units of the last bit (derived at `_D_WINDOW`); the measured maximum
+  over 200,000 samples is 3.25. Over 389,822 decimals built to sit within a few
+  units of a tie, the approximation lands on the wrong side at distance 0 from
+  halfway 14,759 times, at distance 1 764 times, and at distance 2 172 times.
+  Tier 2 now answers only when its dropped bits are **more than 16 units** from
+  halfway, and returns `_D_UNDECIDED` otherwise.
+- **An exact third tier decides everything tier 2 does not.** It is Go strconv's
+  `decimal` (Nigel Tao's "simple decimal conversion"): the digits themselves in
+  an 800-digit buffer, scaled by exact binary shifts, then rounded once. A
+  `trunc` flag breaks the one tie the stored digits cannot. It lives on the
+  caller's stack (1.6 KB), uses no globals and no tables, and runs for ~0.6% of
+  shortest-repr inputs and ~1.8% of arbitrary decimals. Why this and not
+  Eisel–Lemire: [ADR-0003](docs/adr/0003-f64-parse-exact-fallback-not-eisel-lemire.md).
+- **The 20th+ significant digit was discarded, not accounted for.** The scanner
+  keeps 19 digits in a u64 and dropped the rest, so an input just ABOVE a
+  midpoint parsed as the midpoint and rounded to even:
+  `9007199254740993.0000000000000001` gave 2⁵³ instead of 2⁵³+2. The scanner
+  now records that a nonzero digit was dropped. Tier 2 answers only if W and
+  W+1 round to the same double, and otherwise tier 3 reads every digit.
+- **`[2⁻¹⁰⁷⁵, 2⁻¹⁰⁷⁴)` flushed to 0 instead of rounding up to the smallest
+  subnormal.** `_d_diyfp_to_f64` returned 0 whenever the shift reached 64 bits,
+  without rounding. That covers `3e-324`, `4.9e-324`, and
+  `4.9406564584124654e-324`, which is how C's `printf("%.17g")` writes the
+  smallest subnormal. All now give bit pattern 1. The same interval is now
+  settled by tier 3.
+- **The exact overflow tie decoded to DBL_MAX.** The midpoint between DBL_MAX
+  and 2¹⁰²⁴ is a tie, and ties go to even, which is +Inf. The truncated
+  significand read it as below the midpoint. So did the full-length ties at the
+  subnormal/normal seam and among the subnormals.
+- `src/dtoa.cyr`'s header no longer claims round-trip correctness it did not
+  have. It now states what is true and where the proof lives.
+
+### Tests
+
+Every new check was run against the **old** parser first, to show it can fail:
+
+- `tests/bayan.tcyr` — **962** assertions (from 919). The report's 27 vectors,
+  each checked as the literal string AND through the emitter, plus one or more
+  pins per new defect class and two through `bayan_json_v_parse_buf`. **37 of the
+  43 are red on the old parser**; the other 6 are boundary controls that
+  bracket a defect from the side the old parser got right.
+- `tests/fixtures/numeric/f64parse.vec` — **7,736** Python-oracle vectors aimed
+  at the hard inputs: every double's midpoint cut to 16–19 digits (rounded down
+  and up), full-length exact ties ±1 unit past their last digit, inputs past the
+  exact tier's 800-digit buffer, and the underflow, subnormal and overflow seams.
+  **The old parser gets 355 wrong.** `f64.vec`'s 328 shortest-repr strings stayed
+  green on the old parser throughout: at a 2×10⁻⁵ failure rate, a fixture that
+  size had about a 0.7% chance of catching this. Aiming beats volume.
+  Generated by `scripts/gen-numeric-vectors.py`, with its own `Random`, so
+  `u128.vec` and `f64.vec` still regenerate byte-identically. CI now diffs this
+  file on regeneration too. `tests/vectors.tcyr`: **13** asserts (from 10).
+- `tests/dtoa.fcyr` (new fuzz harness) — 2×10⁶ `to_json → parse` round-trips
+  (uniform finite doubles; |x| ≈ 1e-16..1e16) at the report's seed, plus
+  200,000 random decimals checked tier-2-vs-exact, which verifies every tier-2
+  answer against an independent algorithm with no Python needed. **The old
+  parser fails 31 of the round-trips**, including the report's vector 6. ~8 s.
+- **Mutations.** Fourteen, applied one at a time, each run against six scratch
+  corpora (Python oracle, 884,093 inputs). All twelve that remove a piece of the
+  fix turned a corpus red: window 0 (red on all six), the underflow flush, the
+  W-only bound for truncated input, the tie parity, the tie branch, the input
+  `trunc` flag, `trunc` through the left and right shifts, the integer-part
+  decimal point (`nsig` vs `nd`), the exact tier's carry, and its overflow check
+  (red with tier 3 forced on; tier 2 catches that input first otherwise). The two
+  shift-`trunc` mutations stayed green until a corpus of EXACTLY-800-digit ±1
+  inputs was built, since that is the only input shape that reaches them. The
+  other two mutations narrow the window to 2 and to 3, and both stay green on
+  every corpus. That matches the measurement (no wrong-side landing beyond
+  distance 2), and it is why 16 rests on the derivation, not on a test.
+- `tests/bayan.bcyr` — four f64 parse rows, one per tier. Minimum of 7
+  interleaved runs, old → new: tier 1 258 → 285 ns, tier 2 414 → 479 ns (both
+  within this host's noise), tier 3 **~0.5 → 2.5–4.0 µs** on exactly the inputs
+  the old parser answered wrongly.
+
+### Changed — toolchain 6.6.2 → 6.6.6
+
+- `cyrius.cyml` pin **6.6.2 → 6.6.6**. `cyrius deps` refreshed the 9 declared
+  leaves; `cyrius lib sync --full` then left `lib/` at **111 files, 0 differ**
+  against the snapshot. The snapshot's `lib/` is byte-identical to the 6.6.6
+  release tarball's. 40 files changed, plus one new one (`alloc_cx.cyr`). The
+  aarch64 syscall peer's `SYS_UNLINKAT` 35 → 263 correction came with it, as
+  the roadmap required.
+- **`src/pdf.cyr:6126` was the one lint failure**, as the roadmap predicted:
+  6.6.5's cyrlint folds case, so "Out of scope for 1.5.0" became an untracked
+  deferral (`1.5.0` without a `v` is not a pointer). The comment now points at
+  the roadmap's *Out of scope (for v1.0)* → PDF encryption, on the line itself.
+- **`dist/bayan-toml.deps` and `dist/bayan-cyml.deps` no longer list `fmt`, and
+  that is correct.** 6.6.6 made `lib/io.cyr` self-sufficient: it `include`s
+  `fmt.cyr` itself. `consumer-check.sh` stays green from the declared leaves.
+  It still goes red when a needed leaf (`io`) is deleted, so the gate is not vacuous.
+- `dist/` regenerated with the **release** 6.6.6 toolchain in an isolated
+  `CYRIUS_HOME`. The local toolchain produces byte-identical output.
+- Re-verified after the bump, per the roadmap's 6.6.6 note: every `.tcyr` file
+  individually, and `: Str` handles stored by `bayan_pdf_obj_string_new_a` /
+  `_hex_new_a` surviving `to_bytes → obj_parse_buf` intact. Streams are
+  covered at document level by the strict-oracle gate: `obj_parse_buf` stops
+  at the `stream` keyword by documented design.
+
+### Closed — `tests/pdf_flate.tcyr` is green
+
+1.5.5 recorded it RED (16/19) on every cycc ≥ 6.5.57 and blamed a codegen
+defect. The diagnosis was right: `Str = Str` copied the type's two slots over a
+one-slot pointer local. The fix shipped in the **released** cyrius 6.6.0
+(its CHANGELOG: "A SILENT MISCOMPILE THAT SHIPPED IN v6.5.57"). 1.5.5 had
+measured against a pre-release 6.6.0 snapshot, which is exactly what state.md's
+local-snapshot caveat warns about. 19/19 on 6.6.2 and on 6.6.6.
+
 ## [1.5.6] - 2026-09-12
 
 ### Changed

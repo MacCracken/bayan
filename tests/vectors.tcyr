@@ -313,6 +313,61 @@ fn run_f64(): i64 {
     return 42;
 }
 
+# --- f64 PARSING, aimed at the hard inputs (1.5.7) ---------------------------
+#
+# f64.vec is 328 shortest-repr strings, and the parser misrounded ~2 in 10^5 of
+# those, so it passed by luck of size (issue 2026-09-22). f64parse.vec aims
+# instead: decimals within a few units of a rounding midpoint, full-length exact
+# ties, inputs past the exact tier's 800-digit buffer, and the subnormal and
+# overflow seams. The pre-1.5.7 parser gets 355 of them wrong. Lines are
+# `<hexbits> <text>` with text up to ~830 bytes, so no length cap here.
+
+var g_fp = 0;
+var g_fp_bad = 0;
+
+fn run_f64_parse(): i64 {
+    var cap = 1 << 20;
+    var buf = alloc(cap);
+    var len = file_read_all("tests/fixtures/numeric/f64parse.vec", buf, cap);
+    if (len <= 0) { f_say("cannot read tests/fixtures/numeric/f64parse.vec\n"); return 1; }
+    if (len >= cap) { f_say("tests/fixtures/numeric/f64parse.vec outgrew its buffer\n"); return 1; }
+    var pos = 0;
+    var shown = 0;
+    while (pos < len) {
+        var bits = 0;
+        while (pos < len) {
+            var c = load8(buf + pos);
+            var d = 0 - 1;
+            if (c >= 48 && c <= 57)  { d = c - 48; }
+            if (c >= 97 && c <= 102) { d = c - 87; }
+            if (d < 0) { break; }
+            bits = (bits << 4) | d;
+            pos = pos + 1;
+        }
+        while (pos < len && load8(buf + pos) == 32) { pos = pos + 1; }
+        var ts = pos;
+        while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
+        var tlen = pos - ts;
+        pos = pos + 1;
+        if (tlen <= 0) { break; }
+        g_fp = g_fp + 1;
+        var got = bayan_f64_parse(buf + ts, tlen);
+        if (got != bits) {
+            g_fp_bad = g_fp_bad + 1;
+            if (shown < 4) {
+                shown = shown + 1;
+                f_say("    parse text=[");
+                if (tlen > 60) { print(buf + ts, 60); f_say("..."); } else { print(buf + ts, tlen); }
+                f_say("] want_bits="); f_num(bits); f_say(" got="); f_num(got); f_say("\n");
+            }
+        }
+    }
+    f_say("f64 parse(python float()):      "); f_num(g_fp);
+    f_say("   wrong: "); f_num(g_fp_bad); f_say("\n");
+    if (g_fp_bad > 0) { return 1; }
+    return 42;
+}
+
 
 
 # --- TOML string decoding, against Python's tomllib -------------------------
@@ -491,6 +546,12 @@ assert_eq(fv, 42, "f64: the vector file loaded and every check ran");
 assert_gt(g_rt, 300, "f64: the expected number of round-trips ran");
 assert_eq(g_rt_bad, 0, "f64: every value survives to_json -> parse unchanged");
 assert_eq(g_py_bad, 0, "f64: and bayan's parser agrees with Python's formatter");
+
+test_group("vectors: f64 parsing of near-midpoint decimals against Python's float()");
+var fpv = run_f64_parse();
+assert_eq(fpv, 42, "f64 parse: the vector file loaded and every check ran");
+assert_gt(g_fp, 7700, "f64 parse: the expected number of vectors actually ran");
+assert_eq(g_fp_bad, 0, "f64 parse: every one is correctly rounded");
 
 test_group("vectors: toml string decoding against Python's tomllib");
 var tv = run_toml();
