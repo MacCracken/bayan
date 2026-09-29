@@ -49,20 +49,29 @@ EXPECTED_FAIL=""
 
 # --- The harness's own warning floor ---------------------------------------
 # This script includes lib/syscalls.cyr unconditionally (its consumer body
-# exits through SYS_EXIT), and syscalls.cyr references `alloc` without
-# including lib/alloc.cyr — so a consumer with ZERO declared leaves already
-# emits one warning that has nothing to do with any bundle. That warning is
+# exits through SYS_EXIT), so a consumer with ZERO declared leaves is the
+# scaffold alone. Whatever that emits has nothing to do with any bundle and is
 # subtracted below.
+#
+# Under the cyrius 6.6.9 pin that floor is EMPTY (bayan 1.5.8). Through 6.6.8,
+# syscalls.cyr's sigset/epoll/timer helpers called `alloc` while only its cx
+# arm included lib/alloc.cyr, so this scaffold emitted exactly
+# `warning: undefined function 'alloc'` and that one warning was expected here.
+# cyrius 6.6.9 made the include unconditional (its CHANGELOG [6.6.9]), the
+# scaffold now builds clean, and the assertion below failed on the pin bump —
+# as it should. Nothing is subtracted now: every warning a bundle build prints
+# is that bundle's.
 #
 # Only warnings the SCAFFOLD produces are subtracted, never ones a declared
 # leaf produces: a leaf's unresolved call is precisely the under-declaration
 # this gate exists to catch (see EXPECTED_FAIL above), so subtracting a
 # per-bundle baseline would define the bug out of existence.
 #
-# The floor is asserted, not assumed. If it ever stops being exactly this one
-# warning the script fails rather than widening the exemption silently — the
-# same reason EXPECTED_FAIL fails when a known-bad bundle starts passing.
-HARNESS_EXPECT="warning: undefined function 'alloc'"
+# The floor is asserted, not assumed. If it ever stops being exactly this —
+# today, no warning at all — the script fails rather than widening the
+# exemption silently, the same reason EXPECTED_FAIL fails when a known-bad
+# bundle starts passing.
+HARNESS_EXPECT=""
 hbase="$OUT/_harness.cyr"
 {
     echo 'include "lib/syscalls.cyr"'

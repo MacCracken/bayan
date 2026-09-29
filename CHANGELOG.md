@@ -14,6 +14,14 @@ unreleased) and moves the toolchain pin to cyrius **6.6.9**.
   `callind`. The comment now says why `fncall4` is used (the stdlib's indirect-call helper; kept for
   consistency, not necessity). Comment-only — cyrius folds `dist/bayan.cyr` as `lib/bayan.cyr`, so
   the ~15 repos that vendor it carried the stale claim too.
+- **`scripts/consumer-check.sh` failed on the 6.6.9 pin before compiling a single bundle.** Its
+  preflight asserts that a consumer including only `lib/syscalls.cyr` emits exactly
+  `warning: undefined function 'alloc'`. Through 6.6.8 only that file's cx arm included
+  `alloc.cyr`; 6.6.9 made the include unconditional, so the scaffold now builds with no warning and
+  the assertion fired, as it should. `HARNESS_EXPECT` is now empty: nothing is subtracted, and every
+  warning a bundle build prints counts against that bundle. All 10 bundles compile clean from their
+  sidecars, and dropping `str` from a scratch copy of `bayan-toml.deps` still fails the gate. CI never
+  showed this: the coverage step, earlier in the same job, was already red (see Tests).
 
 ### Changed
 
