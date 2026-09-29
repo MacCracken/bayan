@@ -4,6 +4,5 @@ syscalls
 string
 alloc
 io
-vec
 str
 result

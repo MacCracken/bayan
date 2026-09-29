@@ -5,6 +5,4 @@ alloc
 io
 vec
 str
-fmt
 fnptr
-assert

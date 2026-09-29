@@ -6,7 +6,8 @@
 
 ## Version
 
-**1.5.7** — **the f64 parser is correctly rounded for every input.** prakash
+**1.5.8** — a patch: toolchain pin 6.6.9, the stale `callptr` comment in `src/pdf.cyr`
+corrected, and the issue archive/link moves (see CHANGELOG). Before it, **1.5.7** — **the f64 parser is correctly rounded for every input.** prakash
 reported that ~2 in 10⁵ doubles did not survive `bayan_f64_to_json →
 bayan_f64_from_json`
 ([2026-09-22](issues/archived/2026-09-22-prakash-f64-parse-double-rounding-at-midpoint.md)).
@@ -115,8 +116,8 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.6.6`, bumped at 1.5.7 from `6.6.2` (`cyrius.cyml
-  [package].cyrius`). `cyrius version` reports `manifest-pin: 6.6.6` with no
+- **Cyrius pin**: `6.6.9`, bumped at 1.5.8 from `6.6.6` (`cyrius.cyml
+  [package].cyrius`). `cyrius version` reports `manifest-pin: 6.6.9` with no
   drift line; build and test emit neither the pin-drift nor the shadow-lib
   warning. The only source change the bump needed was the `src/pdf.cyr:6126`
   lint pointer (6.6.5's cyrlint folds case).
@@ -144,7 +145,7 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
   1.4.0 a green `cyrius lib sync --full` still left five files behind.
 - **Pin history**: 6.4.68 → 6.5.4 (1.4.0) → 6.5.16 (commit `97a3476`,
   2026-08-10, **undocumented**) → 6.5.28 (1.4.2) → 6.5.33 (1.5.0) → 6.5.36
-  (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7).
+  (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8).
 - **Caveat on the local snapshot — still live.** `~/.cyrius/versions/<pin>/lib`
   on a machine that also develops cyrius can carry unreleased in-flight edits at
   the same version number: at 6.5.28 its `freelist.cyr` had been edited in place

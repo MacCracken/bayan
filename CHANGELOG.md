@@ -2,9 +2,29 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.5.8] — 2026-09-28
+
+Patch release, from cyrius 6.6.10 bite 14. Carries the archive/link changes below (previously
+unreleased) and moves the toolchain pin to cyrius **6.6.9**.
+
+### Fixed
+
+- **A stale comment in `src/pdf.cyr`'s FlateDecode loop said `callptr` "is a hard compile error on
+  one backend (G13)".** It was cx, and it stopped being true at cyrius v6.5.13, when cx gained
+  `callind`. The comment now says why `fncall4` is used (the stdlib's indirect-call helper; kept for
+  consistency, not necessity). Comment-only — cyrius folds `dist/bayan.cyr` as `lib/bayan.cyr`, so
+  the ~15 repos that vendor it carried the stale claim too.
 
 ### Changed
+
+- Toolchain pin **6.6.6 → 6.6.9**, verified before the source change: 962 + 19 + 13 + 3 assertions
+  green. `lib/` re-vendored by `cyrius deps` then `cyrius lib sync --full`:
+  `diff -rq lib ~/.cyrius/versions/6.6.9/lib` reports 0 differences (111 files).
+- `dist/` regenerated with `cyrius distlib --all` (reproducible: a second run is byte-identical;
+  `--check` green). Seven profile sidecars change because 6.6.9's distlib infers leaves
+  differently (compile-verified by distlib itself): `base64`, `bigint`, `csv` gain `str`; `cyml`
+  drops `vec`, `pdf` drops `fmt` and `assert`, `toml` drops `string`, `u128` drops `alloc`. The
+  base `dist/bayan.deps` is unchanged.
 
 - **The five resolved issues are archived.** `2026-06-23` (thoth, json global
   cursor), both `2026-07-16` (agnosai, json depth cap and yaml tree),
