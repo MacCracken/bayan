@@ -46,6 +46,35 @@ unreleased) and moves the toolchain pin to cyrius **6.6.9**.
 - The empty `## [Unreleased]` heading that sat below the oldest entry, at the
   bottom of this file, is this one, moved to the top.
 
+### Tests
+
+- **`cyrius coverage --min 100` was red under the 6.6.9 pin: 70% (355/503).** cyrius 6.6.8 made
+  the counter match REFERENCES (whole identifiers outside comments and strings) instead of
+  substrings. Every back-compat alias in `src/_compat.cyr` is a substring of the `bayan_*` name it
+  forwards to, so the old counter credited all 153 while the suite called ten. Three canonicals were
+  unreferenced outright: `bayan_pdf_obj`, `bayan_cyml_entry_body` and `bayan_cyml_doc_header`.
+- New group `back-compat aliases: every alias forwards to its bayan_* twin (1.5.8)` calls every one
+  of the 153 aliases against its canonical twin on the same inputs: scalars compared directly, value
+  trees by tag and serialisation, TOML/CYML documents section by section, out-parameters through
+  separate buffers, and the JSON tag predicates and accessors over one value of every tag plus the
+  null pointer. Each `_a` alias also runs on an allocator that refuses every request (for
+  `toml_array_parse_a`, by allocation count instead), so an alias that dropped its allocator and fell
+  back to the default one fails. Checked against 16 deliberate mis-forwardings in a scratch copy of
+  `_compat.cyr` (wrong twin, swapped arguments, dropped allocator, shifted event id): each was caught.
+- Direct tests for the three canonicals, expected values read from their implementations.
+  `bayan_cyml_doc_header` and `bayan_cyml_entry_body` return addresses into the caller's buffer and
+  are checked as addresses, plus the no-header, fresh-doc and null cases. `bayan_pdf_obj` resolves
+  `/Root`'s number to the catalog cell itself; returns 0 for object 0, a negative number, one past
+  `/Size` (recording a document error) and a null handle; and on a writer returns 0 for slot 0 and
+  for one past the table instead of letting `vec_get` exit the process.
+- `tests/bayan.tcyr`: **1,271** assertions (from 962), 0 failed; `pdf_flate` 19 and `vectors` 13
+  unchanged. `cyrius coverage`: **501/503 (99%)**, from 355/503 (70%).
+- **CI coverage floor 100 → 99.** The two unreferenced functions are the `main` entry points of
+  `src/main.cyr` and `src/test.cyr`: the 6.6.8+ tool counts them and no test can reference them
+  (`cyrius header` already excludes `main`; `cyrius coverage` does not yet). 1.5.2's 100 was a
+  substring-counter figure, so this corrects what the floor measures rather than lowering it to go
+  green. It goes back to 100 when the tool excludes `main`; the floor still only ratchets.
+
 ## [1.5.7] — 2026-09-23
 
 **The f64 parser is correctly rounded: every input, not "the vast majority".**

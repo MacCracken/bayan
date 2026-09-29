@@ -265,18 +265,29 @@ jobs:
       # A floor that ratchets, not a target. Raise it whenever real coverage
       # lands; never lower it to make a red build green.
       #
-      # 1.5.2 took this from 30 to 100: every public function in every module
-      # is now referenced by a test. Pinning it AT 100 means adding a public
-      # function without a test turns the build red, which is the pressure this
-      # project turned out to need — 1.5.1 found two heap overflows, a wrong
-      # 256-bit multiply and 18 other defects in modules that had built clean
-      # and passed every gate for five releases while being untested.
+      # 1.5.2 set this to 100, and the reason still holds: 1.5.1 found two heap
+      # overflows, a wrong 256-bit multiply and 18 other defects in modules that
+      # had built clean and passed every gate for five releases while untested.
+      # But that 100 was measured by the OLD counter, which matched SUBSTRINGS.
+      # Every back-compat alias in src/_compat.cyr (json_parse, u256_add, ...)
+      # is a substring of the bayan_* name it forwards to, so all 153 were
+      # credited while the suite called ten. cyrius 6.6.8+ counts REFERENCES —
+      # whole identifiers outside comments and strings — and measured 70%
+      # (355/503) here. 1.5.8 added a test row for every alias (and for the
+      # three canonicals nothing referenced), which makes it 501/503.
+      #
+      # The two left are the `main` entry points of src/main.cyr and
+      # src/test.cyr. The 6.6.8+ tool counts them and no test can reference
+      # them (`cyrius header` already excludes `main`; `cyrius coverage` does
+      # not yet), so 99 is the highest honest floor — this is a correction of
+      # what 100 measured, not a lowering to go green. Raise it back to 100
+      # when the tool excludes `main`.
       #
       # It remains reference coverage: it proves a function is CALLED, not that
       # it is called correctly. The oracle-driven vectors below are what check
       # the answers.
       - name: Reference coverage floor
-        run: cyrius coverage --min 100
+        run: cyrius coverage --min 99
 
       # The arithmetic vectors' expected values come from Python, not from
       # bayan. Regenerating them must be reproducible, or the "independent

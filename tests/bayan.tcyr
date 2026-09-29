@@ -2646,4 +2646,495 @@ assert_gt(str_len(bayan_pdf_stream_data(pr, bayan_pdf_resolve(pr, pr_c))), 0, "p
 assert_gt(str_len(bayan_pdf_stream_data_a(pa, pr, bayan_pdf_resolve(pr, pr_c))), 0, "pdf: stream_data_a");
 assert_gt(bayan_pdf_last_error_pos(), 0 - 2, "pdf: last_error_pos is readable");
 
+test_group("cyml: entry_body and doc_header return spans into the caller's buffer (1.5.8)");
+# The two cyml accessors no test called. The parser is zero-copy, so each returns an ADDRESS inside
+# the source buffer, and the address itself is the assertion that means something.
+var BA_CYS = "title = \"demo\"\n[[entries]]\nkey = \"a\"\n---\nbody A\n[[entries]]\nkey = \"b\"\n---\nbody B\n";
+var ba_cyd = bayan_cyml_parse(BA_CYS, strlen(BA_CYS));
+assert_eq(bayan_cyml_doc_header(ba_cyd), BA_CYS, "cyml: doc_header is the first byte of the file-level header");
+assert_eq(bayan_cyml_doc_header_len(ba_cyd), 14, "cyml: which runs up to the first [[entries]] marker, trimmed");
+assert_eq(memeq(bayan_cyml_doc_header(ba_cyd), "title = \"demo\"", 14), 1, "cyml: doc_header's bytes");
+assert_eq(memeq(bayan_cyml_entry_body(bayan_cyml_doc_entry(ba_cyd, 0)), "body A", 6), 1,
+  "cyml: entry_body of the first entry stops before the next marker");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(ba_cyd, 1)), BA_CYS + strlen(BA_CYS) - 7,
+  "cyml: entry_body of the last entry is the trimmed text below its ---");
+var BA_CY1 = "k = \"v\"\n---\njust the body\n";
+var ba_cy1 = bayan_cyml_parse(BA_CY1, strlen(BA_CY1));
+assert_eq(bayan_cyml_doc_header(ba_cy1), BA_CY1, "cyml: a single-entry file's header is the text above ---");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(ba_cy1, 0)), BA_CY1 + 12,
+  "cyml: and its body starts on the line after the delimiter");
+var BA_CYM = "[[entries]]\nk = 1\n---\nx\n";
+assert_eq(bayan_cyml_doc_header(bayan_cyml_parse(BA_CYM, strlen(BA_CYM))), 0,
+  "cyml: nothing above the first marker is no header — 0, not an empty span");
+var BA_CYB = "text";
+assert_eq(bayan_cyml_entry_body(bayan_cyml_entry_new("k = 1", 5, BA_CYB, 4)), BA_CYB,
+  "cyml: entry_body returns the span an entry was built with");
+assert_eq(bayan_cyml_doc_header(bayan_cyml_doc_new()), 0, "cyml: a fresh doc has no header");
+assert_eq(bayan_cyml_doc_header(0), 0, "cyml: a null doc reads as 0 rather than faulting");
+assert_eq(bayan_cyml_entry_body(0), 0, "cyml: and so does a null entry");
+
+test_group("pdf: bayan_pdf_obj resolves an object by its number (1.5.8)");
+# The one pdf entry point no test called. A reader answers from the cross-reference and memoises the
+# cell; a writer answers from its object table, whose slot 0 is the free-list head and holds no cell.
+var ba_prd = bayan_pdf_parse(pdf_bytes);
+var ba_root = bayan_pdf_obj_ref_num(bayan_pdf_obj_dict_get(bayan_pdf_trailer(ba_prd), "Root"));
+assert_gt(ba_root, 0, "pdf: the trailer's /Root names an object");
+assert_eq(bayan_pdf_obj(ba_prd, ba_root), bayan_pdf_catalog(ba_prd), "pdf: obj(/Root's number) IS the catalog cell");
+assert_eq(bayan_pdf_obj(ba_prd, 0), 0, "pdf: object 0 is the free-list head, never a cell");
+assert_eq(bayan_pdf_obj(ba_prd, 0 - 1), 0, "pdf: a negative number is 0");
+assert_eq(bayan_pdf_obj(ba_prd, bayan_pdf_obj_count(ba_prd)), 0, "pdf: one past /Size is 0, not a read past the table");
+assert_gt(bayan_pdf_doc_error_count(ba_prd), 0, "pdf: and that miss is recorded on the document");
+assert_eq(bayan_pdf_obj(0, 1), 0, "pdf: a null handle is 0, not a fault");
+assert_eq(bayan_pdf_obj(pdf_doc, 0), 0, "pdf: writer: slot 0 is the free-list head");
+assert_neq(bayan_pdf_obj(pdf_doc, 1), 0, "pdf: writer: object 1 is a cell once the document has serialised");
+assert_eq(bayan_pdf_obj(pdf_doc, bayan_pdf_obj_count(pdf_doc)), 0,
+  "pdf: writer: one past the table is 0 — a bare vec_get would have exited the process");
+
+# 1.5.8: EVERY alias is exercised, each against its bayan_* twin on the same inputs. cyrius 6.6.8's
+# `cyrius coverage` counts a reference, not a substring — and every alias name is a substring of
+# the canonical it forwards to, so the old counter credited all 153 while this file called ten.
+# Measured under the 6.6.9 toolchain: 70% (355/503), against a floor of 100. These rows make the
+# figure true, and they also pin that each alias forwards to the right function.
+test_group("back-compat aliases: every alias forwards to its bayan_* twin (1.5.8)");
+
+# Two json_v trees are the same value: same tag, same serialisation. A missing value never matches,
+# so two failed parses cannot agree vacuously.
+fn _ba_same(x, y): i64 {
+    if (x == 0 || y == 0) { return 0; }
+    if (bayan_json_v_tag(x) != bayan_json_v_tag(y)) { return 0; }
+    return str_eq(bayan_json_v_build(x), bayan_json_v_build(y));
+}
+
+# Two non-empty vecs of Strs hold the same text, element for element.
+fn _ba_strs_same(x, y): i64 {
+    if (x == 0 || y == 0) { return 0; }
+    if (vec_len(x) == 0 || vec_len(x) != vec_len(y)) { return 0; }
+    var i = 0;
+    while (i < vec_len(x)) {
+        if (str_eq(vec_get(x, i), vec_get(y, i)) != 1) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Two non-empty parsed TOML documents agree section by section and pair by pair.
+fn _ba_toml_same(x, y): i64 {
+    if (x == 0 || y == 0) { return 0; }
+    if (vec_len(x) == 0 || vec_len(x) != vec_len(y)) { return 0; }
+    var i = 0;
+    while (i < vec_len(x)) {
+        var sx = vec_get(x, i);
+        var sy = vec_get(y, i);
+        if (str_eq(bayan_toml_section_name(sx), bayan_toml_section_name(sy)) != 1) { return 0; }
+        var px = bayan_toml_section_pairs(sx);
+        var py = bayan_toml_section_pairs(sy);
+        if (vec_len(px) != vec_len(py)) { return 0; }
+        var j = 0;
+        while (j < vec_len(px)) {
+            var qx = vec_get(px, j);
+            var qy = vec_get(py, j);
+            if (str_eq(bayan_toml_pair_key(qx), bayan_toml_pair_key(qy)) != 1) { return 0; }
+            if (str_eq(bayan_toml_pair_value(qx), bayan_toml_pair_value(qy)) != 1) { return 0; }
+            if (bayan_toml_pair_kind(qx) != bayan_toml_pair_kind(qy)) { return 0; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Two (ptr, len) spans hold the same bytes.
+fn _ba_span_same(p1, l1, p2, l2): i64 {
+    if (l1 != l2) { return 0; }
+    if (l1 == 0) { return 1; }
+    return memeq(p1, p2, l1);
+}
+
+# Two non-empty CYML documents carry the same header and entries, compared by CONTENT so that two
+# reads of one file, into two different buffers, still compare.
+fn _ba_cyml_same(x, y): i64 {
+    if (x == 0 || y == 0) { return 0; }
+    var n = bayan_cyml_doc_entry_count(x);
+    if (n == 0 || n != bayan_cyml_doc_entry_count(y)) { return 0; }
+    if (_ba_span_same(bayan_cyml_doc_header(x), bayan_cyml_doc_header_len(x),
+        bayan_cyml_doc_header(y), bayan_cyml_doc_header_len(y)) != 1) { return 0; }
+    var i = 0;
+    while (i < n) {
+        var ex = bayan_cyml_doc_entry(x, i);
+        var ey = bayan_cyml_doc_entry(y, i);
+        if (_ba_span_same(bayan_cyml_entry_header(ex), bayan_cyml_entry_header_len(ex),
+            bayan_cyml_entry_header(ey), bayan_cyml_entry_header_len(ey)) != 1) { return 0; }
+        if (_ba_span_same(bayan_cyml_entry_body(ex), bayan_cyml_entry_body_len(ex),
+            bayan_cyml_entry_body(ey), bayan_cyml_entry_body_len(ey)) != 1) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Two decoded {ptr, len} pairs hold the same bytes, and neither is a refusal.
+fn _ba_bytes_same(x, y): i64 {
+    if (x == 0 || y == 0) { return 0; }
+    if (load64(x + 8) != load64(y + 8)) { return 0; }
+    return memeq(load64(x), load64(y), load64(x + 8));
+}
+
+# Two out-parameter results agree in value AND in what the call returned (carry, borrow, status).
+fn _ba_u128_same(rc1, rc2, r1, r2): i64 {
+    if (rc1 != rc2) { return 0; }
+    return bayan_u128_eq(r1, r2);
+}
+fn _ba_u256_same(rc1, rc2, r1, r2): i64 {
+    if (rc1 != rc2) { return 0; }
+    return bayan_u256_eq(r1, r2);
+}
+
+# What the streaming callbacks observed, as one number: int events, key events, and the int sum.
+fn _ba_strm_seen(): i64 { return _strm_int * 1000000 + _strm_key * 1000 + _strm_acc; }
+
+var BA_AR = arena_allocator(65536);
+# An allocator that refuses every request. An `_a` alias that dropped the allocator it was handed and
+# fell back to the default one would still return a cell here; one that forwards it returns 0.
+var BA_DRY = test_allocator();
+test_allocator_fail_after(BA_DRY, 0);
+var BA_K = str_from("k");
+var BA_V = str_from("v");
+var ba_i = 0;
+
+# --- json: the flat key/value API ---
+assert_eq(memeq(json_pair_new_a(BA_AR, BA_K, BA_V), bayan_json_pair_new_a(BA_AR, BA_K, BA_V), 16), 1,
+  "alias json_pair_new_a");
+assert_eq(json_pair_new_a(BA_DRY, BA_K, BA_V), 0, "alias json_pair_new_a allocates through the allocator it is handed");
+assert_eq(memeq(json_pair_new(BA_K, BA_V), bayan_json_pair_new(BA_K, BA_V), 16), 1, "alias json_pair_new");
+var ba_jp = bayan_json_pair_new(BA_K, BA_V);
+assert_eq(json_key(ba_jp), bayan_json_key(ba_jp), "alias json_key");
+assert_eq(json_value(ba_jp), bayan_json_value(ba_jp), "alias json_value");
+var BA_JF = str_from("{\"name\": \"demo\", \"count\": 42, \"on\": true}");
+var ba_jf = bayan_json_parse(BA_JF);
+assert_eq(str_eq(bayan_json_build(json_parse(BA_JF)), bayan_json_build(ba_jf)), 1, "alias json_parse");
+assert_eq(json_get(ba_jf, str_from("name")), bayan_json_get(ba_jf, str_from("name")), "alias json_get");
+assert_eq(json_get_int(ba_jf, str_from("count")), bayan_json_get_int(ba_jf, str_from("count")), "alias json_get_int");
+assert_eq(str_eq(json_build(ba_jf), bayan_json_build(ba_jf)), 1, "alias json_build");
+# build/big-generated.json is written by "json: file loaders read the WHOLE file" above.
+var BA_JPATH = "build/big-generated.json";
+assert_eq(vec_len(json_parse_file(BA_JPATH)), vec_len(bayan_json_parse_file(BA_JPATH)), "alias json_parse_file");
+var ba_jr1_tag, ba_jr1 = json_parse_file_r(BA_JPATH);
+var ba_jr2_tag, ba_jr2 = bayan_json_parse_file_r(BA_JPATH);
+assert_eq(is_err_result(ba_jr1_tag), is_err_result(ba_jr2_tag), "alias json_parse_file_r (tag)");
+assert_eq(vec_len(ba_jr1), vec_len(ba_jr2), "alias json_parse_file_r (value)");
+assert_eq(is_err_result(json_parse_file_r("build/does-not-exist.json")), 1,
+  "alias json_parse_file_r reports a missing file");
+assert_eq(bayan_json_v_parse_buf("{\"k\": }", 7), 0, "json: a malformed document sets the legacy error slots");
+assert_eq(json_last_error(), bayan_json_last_error(), "alias json_last_error");
+assert_eq(json_last_error_pos(), bayan_json_last_error_pos(), "alias json_last_error_pos");
+
+# --- json: value-tree constructors ---
+assert_eq(_ba_same(json_v_null_a(BA_AR), bayan_json_v_null_a(BA_AR)), 1, "alias json_v_null_a");
+assert_eq(json_v_null_a(BA_DRY), 0, "alias json_v_null_a allocates through the allocator it is handed");
+assert_eq(_ba_same(json_v_null(), bayan_json_v_null()), 1, "alias json_v_null");
+assert_eq(_ba_same(json_v_bool_new_a(BA_AR, 1), bayan_json_v_bool_new_a(BA_AR, 1)), 1, "alias json_v_bool_new_a");
+assert_eq(json_v_bool_new_a(BA_DRY, 1), 0, "alias json_v_bool_new_a allocates through the allocator it is handed");
+assert_eq(_ba_same(json_v_bool_new(1), bayan_json_v_bool_new(1)), 1, "alias json_v_bool_new");
+assert_eq(_ba_same(json_v_int_new_a(BA_AR, 0 - 7), bayan_json_v_int_new_a(BA_AR, 0 - 7)), 1, "alias json_v_int_new_a");
+assert_eq(json_v_int_new_a(BA_DRY, 0 - 7), 0, "alias json_v_int_new_a allocates through the allocator it is handed");
+assert_eq(_ba_same(json_v_int_new(0 - 7), bayan_json_v_int_new(0 - 7)), 1, "alias json_v_int_new");
+# A float carries an f64 BIT PATTERN: 4612811918334230528 is 2.5.
+assert_eq(_ba_same(json_v_float_new_a(BA_AR, 4612811918334230528), bayan_json_v_float_new_a(BA_AR, 4612811918334230528)), 1,
+  "alias json_v_float_new_a");
+assert_eq(json_v_float_new_a(BA_DRY, 4612811918334230528), 0,
+  "alias json_v_float_new_a allocates through the allocator it is handed");
+assert_eq(_ba_same(json_v_float_new(4612811918334230528), bayan_json_v_float_new(4612811918334230528)), 1,
+  "alias json_v_float_new");
+assert_eq(_ba_same(json_v_str_new_a(BA_AR, BA_K), bayan_json_v_str_new_a(BA_AR, BA_K)), 1, "alias json_v_str_new_a");
+assert_eq(json_v_str_new_a(BA_DRY, BA_K), 0, "alias json_v_str_new_a allocates through the allocator it is handed");
+assert_eq(_ba_same(json_v_str_new(BA_K), bayan_json_v_str_new(BA_K)), 1, "alias json_v_str_new");
+assert_eq(_ba_same(json_v_arr_new_a(BA_AR), bayan_json_v_arr_new_a(BA_AR)), 1, "alias json_v_arr_new_a");
+assert_eq(json_v_arr_new_a(BA_DRY), 0, "alias json_v_arr_new_a allocates through the allocator it is handed");
+assert_eq(_ba_same(json_v_arr_new(), bayan_json_v_arr_new()), 1, "alias json_v_arr_new");
+assert_eq(_ba_same(json_v_obj_new_a(BA_AR), bayan_json_v_obj_new_a(BA_AR)), 1, "alias json_v_obj_new_a");
+assert_eq(json_v_obj_new_a(BA_DRY), 0, "alias json_v_obj_new_a allocates through the allocator it is handed");
+assert_eq(_ba_same(json_v_obj_new(), bayan_json_v_obj_new()), 1, "alias json_v_obj_new");
+var ba_ar1 = bayan_json_v_arr_new();
+var ba_ar2 = bayan_json_v_arr_new();
+assert_eq(json_v_arr_push_a(BA_AR, ba_ar1, bayan_json_v_int_new(1)), bayan_json_v_arr_push_a(BA_AR, ba_ar2, bayan_json_v_int_new(1)),
+  "alias json_v_arr_push_a (return)");
+assert_eq(_ba_same(ba_ar1, ba_ar2), 1, "alias json_v_arr_push_a");
+assert_eq(json_v_arr_push(ba_ar1, bayan_json_v_int_new(2)), bayan_json_v_arr_push(ba_ar2, bayan_json_v_int_new(2)),
+  "alias json_v_arr_push (return)");
+assert_eq(_ba_same(ba_ar1, ba_ar2), 1, "alias json_v_arr_push");
+# vec_new starts at capacity 16, so the 17th push must grow — through the allocator it is handed.
+var ba_full = bayan_json_v_arr_new();
+while (ba_i < 16) { bayan_json_v_arr_push(ba_full, bayan_json_v_null()); ba_i = ba_i + 1; }
+assert_eq(json_v_arr_push_a(BA_DRY, ba_full, bayan_json_v_null()), 0 - 1,
+  "alias json_v_arr_push_a grows through the allocator it is handed");
+var ba_ob1 = bayan_json_v_obj_new();
+var ba_ob2 = bayan_json_v_obj_new();
+assert_eq(json_v_obj_set(ba_ob1, BA_K, bayan_json_v_int_new(3)), bayan_json_v_obj_set(ba_ob2, BA_K, bayan_json_v_int_new(3)),
+  "alias json_v_obj_set (return)");
+assert_eq(_ba_same(ba_ob1, ba_ob2), 1, "alias json_v_obj_set");
+
+# --- json: tag predicates and scalar accessors, over one value of every tag plus the null pointer,
+# so a predicate or accessor forwarded to the wrong twin disagrees on at least one of them ---
+var BA_TV = vec_new();
+vec_push(BA_TV, 0);
+vec_push(BA_TV, bayan_json_v_null());
+vec_push(BA_TV, bayan_json_v_bool_new(1));
+vec_push(BA_TV, bayan_json_v_int_new(0 - 7));
+vec_push(BA_TV, bayan_json_v_float_new(4612811918334230528));
+vec_push(BA_TV, bayan_json_v_str_new(BA_K));
+vec_push(BA_TV, bayan_json_v_parse_buf("[1,2]", 5));
+vec_push(BA_TV, bayan_json_v_parse_buf("{\"x\":1}", 7));
+var ba_tv = 0;
+ba_i = 0;
+while (ba_i < vec_len(BA_TV)) {
+    ba_tv = vec_get(BA_TV, ba_i);
+    assert_eq(json_v_tag(ba_tv), bayan_json_v_tag(ba_tv), "alias json_v_tag");
+    assert_eq(json_v_is_null(ba_tv), bayan_json_v_is_null(ba_tv), "alias json_v_is_null");
+    assert_eq(json_v_is_bool(ba_tv), bayan_json_v_is_bool(ba_tv), "alias json_v_is_bool");
+    assert_eq(json_v_is_int(ba_tv), bayan_json_v_is_int(ba_tv), "alias json_v_is_int");
+    assert_eq(json_v_is_float(ba_tv), bayan_json_v_is_float(ba_tv), "alias json_v_is_float");
+    assert_eq(json_v_is_str(ba_tv), bayan_json_v_is_str(ba_tv), "alias json_v_is_str");
+    assert_eq(json_v_is_arr(ba_tv), bayan_json_v_is_arr(ba_tv), "alias json_v_is_arr");
+    assert_eq(json_v_is_obj(ba_tv), bayan_json_v_is_obj(ba_tv), "alias json_v_is_obj");
+    assert_eq(json_v_bool(ba_tv), bayan_json_v_bool(ba_tv), "alias json_v_bool");
+    assert_eq(json_v_int(ba_tv), bayan_json_v_int(ba_tv), "alias json_v_int");
+    assert_eq(json_v_float(ba_tv), bayan_json_v_float(ba_tv), "alias json_v_float");
+    assert_eq(json_v_str(ba_tv), bayan_json_v_str(ba_tv), "alias json_v_str");
+    assert_eq(json_v_arr_len(ba_tv), bayan_json_v_arr_len(ba_tv), "alias json_v_arr_len");
+    assert_eq(json_v_obj_len(ba_tv), bayan_json_v_obj_len(ba_tv), "alias json_v_obj_len");
+    ba_i = ba_i + 1;
+}
+
+# --- json: container access, parse, build, pointer ---
+var BA_JS = "{\"a\":[10,20],\"b\":{\"c\":true}}";
+var ba_doc = bayan_json_v_parse_buf(BA_JS, strlen(BA_JS));
+var ba_arr = bayan_json_v_obj_get(ba_doc, "a");
+assert_eq(json_v_arr_get(ba_arr, 1), bayan_json_v_arr_get(ba_arr, 1), "alias json_v_arr_get");
+assert_eq(json_v_obj_key(ba_doc, 1), bayan_json_v_obj_key(ba_doc, 1), "alias json_v_obj_key");
+assert_eq(json_v_obj_val(ba_doc, 1), bayan_json_v_obj_val(ba_doc, 1), "alias json_v_obj_val");
+assert_eq(json_v_obj_get(ba_doc, "b"), bayan_json_v_obj_get(ba_doc, "b"), "alias json_v_obj_get");
+assert_eq(_ba_same(json_v_parse(str_from(BA_JS)), bayan_json_v_parse(str_from(BA_JS))), 1, "alias json_v_parse");
+assert_eq(_ba_same(json_v_parse_buf(BA_JS, strlen(BA_JS)), bayan_json_v_parse_buf(BA_JS, strlen(BA_JS))), 1,
+  "alias json_v_parse_buf");
+assert_eq(str_eq(json_v_build(ba_doc), bayan_json_v_build(ba_doc)), 1, "alias json_v_build");
+assert_eq(str_eq(json_v_build_pretty(ba_doc, 2), bayan_json_v_build_pretty(ba_doc, 2)), 1, "alias json_v_build_pretty");
+assert_eq(json_v_pointer_cstr(ba_doc, "/b/c", 4), bayan_json_v_pointer_cstr(ba_doc, "/b/c", 4), "alias json_v_pointer_cstr");
+assert_eq(json_v_pointer(ba_doc, str_from("/a/1")), bayan_json_v_pointer(ba_doc, str_from("/a/1")), "alias json_v_pointer");
+
+# --- json: the streaming parser ---
+var ba_h1 = json_stream_handler_new(BA_K);
+var ba_h2 = bayan_json_stream_handler_new(BA_K);
+assert_eq(memeq(ba_h1, ba_h2, _JS_HANDLER_SIZE), 1, "alias json_stream_handler_new");
+assert_eq(json_stream_on(ba_h1, JS_EV_INT, &_strm_cb_int), bayan_json_stream_on(ba_h2, JS_EV_INT, &_strm_cb_int),
+  "alias json_stream_on (return)");
+json_stream_on(ba_h1, JS_EV_KEY, &_strm_cb_key);
+bayan_json_stream_on(ba_h2, JS_EV_KEY, &_strm_cb_key);
+assert_eq(memeq(ba_h1, ba_h2, _JS_HANDLER_SIZE), 1, "alias json_stream_on binds the same slots");
+assert_eq(json_stream_on(ba_h1, JS_EV_COUNT, &_strm_cb_int), 0 - 1, "alias json_stream_on refuses an out-of-range event");
+_strm_reset();
+var ba_src = json_stream_parse(BA_JS, strlen(BA_JS), ba_h1);
+var ba_seen = _ba_strm_seen();
+_strm_reset();
+assert_eq(bayan_json_stream_parse(BA_JS, strlen(BA_JS), ba_h2), ba_src, "alias json_stream_parse (return)");
+assert_eq(_ba_strm_seen(), ba_seen, "alias json_stream_parse fires the same events");
+_strm_reset();
+ba_src = json_stream_parse_str(str_from(BA_JS), ba_h1);
+ba_seen = _ba_strm_seen();
+_strm_reset();
+assert_eq(bayan_json_stream_parse_str(str_from(BA_JS), ba_h2), ba_src, "alias json_stream_parse_str (return)");
+assert_eq(_ba_strm_seen(), ba_seen, "alias json_stream_parse_str fires the same events");
+
+# --- toml ---
+var BA_TD = str_from("top = 1\nname = \"demo\"\nlist = [1, 2, 3]\n\n[server]\nport = 80\n\n[[item]]\nid = 1\n\n[[item]]\nid = 2\n");
+var ba_ts = bayan_toml_parse(BA_TD);
+var ba_troot = bayan_toml_section_pairs(vec_get(ba_ts, 0));
+var ba_tsrv = vec_get(ba_ts, 1);
+var ba_tpair = vec_get(ba_troot, 1);
+var ba_tlist = bayan_toml_get(ba_troot, "list");
+assert_eq(memeq(toml_section_new_a(BA_AR, BA_K, ba_troot), bayan_toml_section_new_a(BA_AR, BA_K, ba_troot), 16), 1,
+  "alias toml_section_new_a");
+assert_eq(toml_section_new_a(BA_DRY, BA_K, ba_troot), 0,
+  "alias toml_section_new_a allocates through the allocator it is handed");
+assert_eq(memeq(toml_section_new(BA_K, ba_troot), bayan_toml_section_new(BA_K, ba_troot), 16), 1, "alias toml_section_new");
+assert_eq(toml_section_name(ba_tsrv), bayan_toml_section_name(ba_tsrv), "alias toml_section_name");
+assert_eq(toml_section_pairs(ba_tsrv), bayan_toml_section_pairs(ba_tsrv), "alias toml_section_pairs");
+assert_eq(memeq(toml_pair_new_a(BA_AR, BA_K, BA_V), bayan_toml_pair_new_a(BA_AR, BA_K, BA_V), 24), 1, "alias toml_pair_new_a");
+assert_eq(toml_pair_new_a(BA_DRY, BA_K, BA_V), 0, "alias toml_pair_new_a allocates through the allocator it is handed");
+assert_eq(memeq(toml_pair_new(BA_K, BA_V), bayan_toml_pair_new(BA_K, BA_V), 24), 1, "alias toml_pair_new");
+assert_eq(toml_pair_key(ba_tpair), bayan_toml_pair_key(ba_tpair), "alias toml_pair_key");
+assert_eq(toml_pair_value(ba_tpair), bayan_toml_pair_value(ba_tpair), "alias toml_pair_value");
+assert_eq(_ba_toml_same(toml_parse(BA_TD), bayan_toml_parse(BA_TD)), 1, "alias toml_parse");
+var BA_TPATH = "tests/fixtures/toml/sample.toml";
+assert_eq(_ba_toml_same(toml_parse_file(BA_TPATH), bayan_toml_parse_file(BA_TPATH)), 1, "alias toml_parse_file");
+var ba_tf1_tag, ba_tf1 = toml_parse_file_r(BA_TPATH);
+var ba_tf2_tag, ba_tf2 = bayan_toml_parse_file_r(BA_TPATH);
+assert_eq(is_err_result(ba_tf1_tag), is_err_result(ba_tf2_tag), "alias toml_parse_file_r (tag)");
+assert_eq(_ba_toml_same(ba_tf1, ba_tf2), 1, "alias toml_parse_file_r (value)");
+assert_eq(is_err_result(toml_parse_file_r("tests/fixtures/toml/does-not-exist.toml")), 1,
+  "alias toml_parse_file_r reports a missing file");
+assert_eq(toml_get(ba_troot, "name"), bayan_toml_get(ba_troot, "name"), "alias toml_get");
+var ba_tg1 = toml_get_sections(ba_ts, "item");
+var ba_tg2 = bayan_toml_get_sections(ba_ts, "item");
+assert_eq(vec_len(ba_tg1), vec_len(ba_tg2), "alias toml_get_sections (count)");
+assert_eq(vec_get(ba_tg1, 1), vec_get(ba_tg2, 1), "alias toml_get_sections (the same sections)");
+assert_eq(_ba_strs_same(toml_array_parse_a(BA_AR, ba_tlist), bayan_toml_array_parse_a(BA_AR, ba_tlist)), 1,
+  "alias toml_array_parse_a");
+# array_parse_a cannot run on BA_DRY (it does not check its own vec_new_a for 0), so its allocator is
+# checked by COUNT: the alias must allocate through the one it is handed, as often as its twin does.
+var BA_CNT = test_allocator();
+var ba_n0 = test_allocator_alloc_count(BA_CNT);
+toml_array_parse_a(BA_CNT, ba_tlist);
+var ba_n1 = test_allocator_alloc_count(BA_CNT);
+bayan_toml_array_parse_a(BA_CNT, ba_tlist);
+assert_eq(test_allocator_alloc_count(BA_CNT) - ba_n1, ba_n1 - ba_n0,
+  "alias toml_array_parse_a allocates through the allocator it is handed");
+assert_eq(_ba_strs_same(toml_array_parse(ba_tlist), bayan_toml_array_parse(ba_tlist)), 1, "alias toml_array_parse");
+assert_eq(toml_is_array(ba_tlist), bayan_toml_is_array(ba_tlist), "alias toml_is_array (an array)");
+assert_eq(toml_is_array(bayan_toml_get(ba_troot, "name")), bayan_toml_is_array(bayan_toml_get(ba_troot, "name")),
+  "alias toml_is_array (a scalar)");
+assert_eq(_ba_strs_same(toml_get_array(ba_troot, "list"), bayan_toml_get_array(ba_troot, "list")), 1, "alias toml_get_array");
+
+# --- cyml ---
+var BA_CEH = "k = 1";
+assert_eq(memeq(cyml_entry_new_a(BA_AR, BA_CEH, 5, BA_CYB, 4), bayan_cyml_entry_new_a(BA_AR, BA_CEH, 5, BA_CYB, 4), 32), 1,
+  "alias cyml_entry_new_a");
+assert_eq(cyml_entry_new_a(BA_DRY, BA_CEH, 5, BA_CYB, 4), 0,
+  "alias cyml_entry_new_a allocates through the allocator it is handed");
+assert_eq(memeq(cyml_entry_new(BA_CEH, 5, BA_CYB, 4), bayan_cyml_entry_new(BA_CEH, 5, BA_CYB, 4), 32), 1, "alias cyml_entry_new");
+var ba_ce = bayan_cyml_doc_entry(ba_cyd, 1);
+assert_eq(cyml_entry_header(ba_ce), bayan_cyml_entry_header(ba_ce), "alias cyml_entry_header");
+assert_eq(cyml_entry_header_len(ba_ce), bayan_cyml_entry_header_len(ba_ce), "alias cyml_entry_header_len");
+assert_eq(cyml_entry_body(ba_ce), bayan_cyml_entry_body(ba_ce), "alias cyml_entry_body");
+assert_eq(cyml_entry_body_len(ba_ce), bayan_cyml_entry_body_len(ba_ce), "alias cyml_entry_body_len");
+assert_eq(memeq(cyml_doc_new_a(BA_AR), bayan_cyml_doc_new_a(BA_AR), 32), 1, "alias cyml_doc_new_a");
+assert_eq(cyml_doc_new_a(BA_DRY), 0, "alias cyml_doc_new_a allocates through the allocator it is handed");
+assert_eq(memeq(cyml_doc_new(), bayan_cyml_doc_new(), 32), 1, "alias cyml_doc_new");
+assert_eq(cyml_doc_header(ba_cyd), bayan_cyml_doc_header(ba_cyd), "alias cyml_doc_header");
+assert_eq(cyml_doc_header_len(ba_cyd), bayan_cyml_doc_header_len(ba_cyd), "alias cyml_doc_header_len");
+assert_eq(cyml_doc_entries(ba_cyd), bayan_cyml_doc_entries(ba_cyd), "alias cyml_doc_entries");
+assert_eq(cyml_doc_entry_count(ba_cyd), bayan_cyml_doc_entry_count(ba_cyd), "alias cyml_doc_entry_count");
+assert_eq(cyml_doc_entry(ba_cyd, 1), bayan_cyml_doc_entry(ba_cyd, 1), "alias cyml_doc_entry");
+assert_eq(_ba_cyml_same(cyml_parse(BA_CYS, strlen(BA_CYS)), bayan_cyml_parse(BA_CYS, strlen(BA_CYS))), 1, "alias cyml_parse");
+assert_eq(streq(cyml_expand_value("v${file:VERSION}-beta"), bayan_cyml_expand_value("v${file:VERSION}-beta")), 1,
+  "alias cyml_expand_value");
+var ba_sp1: i64[4];
+var ba_sp2: i64[4];
+assert_eq(cyml_split(BA_CY1, strlen(BA_CY1), &ba_sp1, &ba_sp1 + 8, &ba_sp1 + 16, &ba_sp1 + 24),
+  bayan_cyml_split(BA_CY1, strlen(BA_CY1), &ba_sp2, &ba_sp2 + 8, &ba_sp2 + 16, &ba_sp2 + 24), "alias cyml_split (return)");
+assert_eq(memeq(&ba_sp1, &ba_sp2, 32), 1, "alias cyml_split (all four out-parameters)");
+var BA_CPATH = "tests/fixtures/cyml/sample.cyml";
+var ba_cf1_tag, ba_cf1 = cyml_parse_file_r(BA_CPATH);
+var ba_cf2_tag, ba_cf2 = bayan_cyml_parse_file_r(BA_CPATH);
+assert_eq(is_err_result(ba_cf1_tag), is_err_result(ba_cf2_tag), "alias cyml_parse_file_r (tag)");
+assert_eq(_ba_cyml_same(ba_cf1, ba_cf2), 1, "alias cyml_parse_file_r (value)");
+assert_eq(is_err_result(cyml_parse_file_r("tests/fixtures/cyml/nope.cyml")), 1, "alias cyml_parse_file_r reports a missing file");
+
+# --- csv ---
+var BA_CSV = "a,\"b,c\",\"d\"\"e\"";
+assert_eq(streq(bayan_csv_write_line(csv_parse_line(BA_CSV)), bayan_csv_write_line(bayan_csv_parse_line(BA_CSV))), 1,
+  "alias csv_parse_line");
+assert_eq(streq(csv_escape("d\"e"), bayan_csv_escape("d\"e")), 1, "alias csv_escape");
+var ba_row = vec_new();
+vec_push(ba_row, "x");
+vec_push(ba_row, "y,z");
+assert_eq(streq(csv_write_line(ba_row), bayan_csv_write_line(ba_row)), 1, "alias csv_write_line");
+
+# --- base64: bytes that encode to the two characters the alphabets disagree on ---
+var BA_B64 = alloc(3);
+store8(BA_B64, 255); store8(BA_B64 + 1, 254); store8(BA_B64 + 2, 253);
+assert_eq(streq(base64_encode(BA_B64, 3), bayan_base64_encode(BA_B64, 3)), 1, "alias base64_encode");
+assert_eq(_ba_bytes_same(base64_decode("//79", 4), bayan_base64_decode("//79", 4)), 1, "alias base64_decode");
+assert_eq(streq(base64url_encode(BA_B64, 3), bayan_base64url_encode(BA_B64, 3)), 1, "alias base64url_encode");
+assert_eq(_ba_bytes_same(base64url_decode("__79", 4), bayan_base64url_decode("__79", 4)), 1, "alias base64url_decode");
+
+# --- u256: full-width operands, so every limb and every carry is in play ---
+var BA_P = bayan_u256_from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f");
+var BA_X = bayan_u256_from_hex("c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5");
+var BA_Y = bayan_u256_from_hex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+var ba_w1 = bayan_u256_zero();
+var ba_w2 = bayan_u256_zero();
+assert_eq(bayan_u256_eq(u256_zero(), bayan_u256_zero()), 1, "alias u256_zero");
+assert_eq(bayan_u256_eq(u256_from(0 - 3), bayan_u256_from(0 - 3)), 1, "alias u256_from");
+assert_eq(_ba_u256_same(u256_copy(ba_w1, BA_X), bayan_u256_copy(ba_w2, BA_X), ba_w1, ba_w2), 1, "alias u256_copy");
+assert_eq(bayan_u256_eq(u256_clone(BA_X), bayan_u256_clone(BA_X)), 1, "alias u256_clone");
+assert_eq(u256_limb(BA_X, 2), bayan_u256_limb(BA_X, 2), "alias u256_limb");
+assert_eq(_ba_u256_same(u256_set_limb(ba_w1, 3, 7), bayan_u256_set_limb(ba_w2, 3, 7), ba_w1, ba_w2), 1, "alias u256_set_limb");
+assert_eq(u256_is_zero(bayan_u256_zero()), bayan_u256_is_zero(bayan_u256_zero()), "alias u256_is_zero");
+assert_eq(u256_cmp(BA_X, BA_Y), bayan_u256_cmp(BA_X, BA_Y), "alias u256_cmp");
+assert_eq(u256_eq(BA_X, bayan_u256_clone(BA_X)), bayan_u256_eq(BA_X, bayan_u256_clone(BA_X)), "alias u256_eq");
+assert_eq(_ba_u256_same(u256_add(ba_w1, BA_X, BA_Y), bayan_u256_add(ba_w2, BA_X, BA_Y), ba_w1, ba_w2), 1, "alias u256_add");
+assert_eq(_ba_u256_same(u256_sub(ba_w1, BA_Y, BA_X), bayan_u256_sub(ba_w2, BA_Y, BA_X), ba_w1, ba_w2), 1, "alias u256_sub");
+assert_eq(_ba_u256_same(u256_mul(ba_w1, BA_X, BA_Y), bayan_u256_mul(ba_w2, BA_X, BA_Y), ba_w1, ba_w2), 1, "alias u256_mul");
+assert_eq(_ba_u256_same(u256_shl1(ba_w1, BA_X), bayan_u256_shl1(ba_w2, BA_X), ba_w1, ba_w2), 1, "alias u256_shl1");
+assert_eq(_ba_u256_same(u256_shr1(ba_w1, BA_X), bayan_u256_shr1(ba_w2, BA_X), ba_w1, ba_w2), 1, "alias u256_shr1");
+assert_eq(_ba_u256_same(u256_mod(ba_w1, BA_X, BA_Y), bayan_u256_mod(ba_w2, BA_X, BA_Y), ba_w1, ba_w2), 1, "alias u256_mod");
+assert_eq(_ba_u256_same(u256_addmod(ba_w1, BA_X, BA_Y, BA_P), bayan_u256_addmod(ba_w2, BA_X, BA_Y, BA_P), ba_w1, ba_w2), 1,
+  "alias u256_addmod");
+assert_eq(_ba_u256_same(u256_submod(ba_w1, BA_Y, BA_X, BA_P), bayan_u256_submod(ba_w2, BA_Y, BA_X, BA_P), ba_w1, ba_w2), 1,
+  "alias u256_submod");
+assert_eq(_ba_u256_same(u256_mulmod(ba_w1, BA_X, BA_Y, BA_P), bayan_u256_mulmod(ba_w2, BA_X, BA_Y, BA_P), ba_w1, ba_w2), 1,
+  "alias u256_mulmod");
+assert_eq(streq(u256_to_hex(BA_X), bayan_u256_to_hex(BA_X)), 1, "alias u256_to_hex");
+assert_eq(bayan_u256_eq(u256_from_hex("79be667ef9dcbbac"), bayan_u256_from_hex("79be667ef9dcbbac")), 1, "alias u256_from_hex");
+
+# --- u128: bit 63 of ba_ua's HIGH limb is set, so a signed compare would call it the smaller one ---
+var ba_ua[16]; var ba_ub[16]; var ba_r1[16]; var ba_r2[16]; var ba_m1[16]; var ba_m2[16];
+bayan_u128_set(&ba_ua, 0x0123456789abcdef, 0 - 0x0123456789abcdf0);
+bayan_u128_set(&ba_ub, 0x7654321, 3);
+assert_eq(_ba_u128_same(u128_set(&ba_r1, 5, 9), bayan_u128_set(&ba_r2, 5, 9), &ba_r1, &ba_r2), 1, "alias u128_set");
+assert_eq(_ba_u128_same(u128_from_u64(&ba_r1, 0 - 5), bayan_u128_from_u64(&ba_r2, 0 - 5), &ba_r1, &ba_r2), 1,
+  "alias u128_from_u64");
+assert_eq(_ba_u128_same(u128_copy(&ba_r1, &ba_ua), bayan_u128_copy(&ba_r2, &ba_ua), &ba_r1, &ba_r2), 1, "alias u128_copy");
+assert_eq(u128_lo(&ba_ua), bayan_u128_lo(&ba_ua), "alias u128_lo");
+assert_eq(u128_hi(&ba_ua), bayan_u128_hi(&ba_ua), "alias u128_hi");
+assert_eq(u128_eq(&ba_ua, &ba_r1), bayan_u128_eq(&ba_ua, &ba_r1), "alias u128_eq");
+bayan_u128_set(&ba_m1, 0, 0);
+assert_eq(u128_is_zero(&ba_m1), bayan_u128_is_zero(&ba_m1), "alias u128_is_zero");
+assert_eq(_ba_u128_same(u128_add(&ba_r1, &ba_ua, &ba_ub), bayan_u128_add(&ba_r2, &ba_ua, &ba_ub), &ba_r1, &ba_r2), 1,
+  "alias u128_add");
+assert_eq(_ba_u128_same(u128_sub(&ba_r1, &ba_ub, &ba_ua), bayan_u128_sub(&ba_r2, &ba_ub, &ba_ua), &ba_r1, &ba_r2), 1,
+  "alias u128_sub");
+assert_eq(_ba_u128_same(u128_mul(&ba_r1, &ba_ua, &ba_ub), bayan_u128_mul(&ba_r2, &ba_ua, &ba_ub), &ba_r1, &ba_r2), 1,
+  "alias u128_mul");
+assert_eq(_ba_u128_same(u128_shl(&ba_r1, &ba_ua, 37), bayan_u128_shl(&ba_r2, &ba_ua, 37), &ba_r1, &ba_r2), 1, "alias u128_shl");
+assert_eq(_ba_u128_same(u128_shr(&ba_r1, &ba_ua, 37), bayan_u128_shr(&ba_r2, &ba_ua, 37), &ba_r1, &ba_r2), 1, "alias u128_shr");
+assert_eq(_ba_u128_same(u128_and(&ba_r1, &ba_ua, &ba_ub), bayan_u128_and(&ba_r2, &ba_ua, &ba_ub), &ba_r1, &ba_r2), 1,
+  "alias u128_and");
+assert_eq(_ba_u128_same(u128_or(&ba_r1, &ba_ua, &ba_ub), bayan_u128_or(&ba_r2, &ba_ua, &ba_ub), &ba_r1, &ba_r2), 1,
+  "alias u128_or");
+assert_eq(_ba_u128_same(u128_xor(&ba_r1, &ba_ua, &ba_ub), bayan_u128_xor(&ba_r2, &ba_ua, &ba_ub), &ba_r1, &ba_r2), 1,
+  "alias u128_xor");
+assert_eq(_ba_u128_same(u128_not(&ba_r1, &ba_ua), bayan_u128_not(&ba_r2, &ba_ua), &ba_r1, &ba_r2), 1, "alias u128_not");
+bayan_u128_copy(&ba_r1, &ba_ua); bayan_u128_copy(&ba_r2, &ba_ua);
+assert_eq(_ba_u128_same(u128_addeq(&ba_r1, &ba_ub), bayan_u128_addeq(&ba_r2, &ba_ub), &ba_r1, &ba_r2), 1, "alias u128_addeq");
+assert_eq(_ba_u128_same(u128_subeq(&ba_r1, &ba_ua), bayan_u128_subeq(&ba_r2, &ba_ua), &ba_r1, &ba_r2), 1, "alias u128_subeq");
+assert_eq(_ba_u128_same(u128_muleq(&ba_r1, &ba_ua), bayan_u128_muleq(&ba_r2, &ba_ua), &ba_r1, &ba_r2), 1, "alias u128_muleq");
+assert_eq(_ba_u128_same(u128_shleq(&ba_r1, 5), bayan_u128_shleq(&ba_r2, 5), &ba_r1, &ba_r2), 1, "alias u128_shleq");
+assert_eq(_ba_u128_same(u128_shreq(&ba_r1, 3), bayan_u128_shreq(&ba_r2, 3), &ba_r1, &ba_r2), 1, "alias u128_shreq");
+assert_eq(_ba_u128_same(u128_andeq(&ba_r1, &ba_ua), bayan_u128_andeq(&ba_r2, &ba_ua), &ba_r1, &ba_r2), 1, "alias u128_andeq");
+assert_eq(_ba_u128_same(u128_oreq(&ba_r1, &ba_ub), bayan_u128_oreq(&ba_r2, &ba_ub), &ba_r1, &ba_r2), 1, "alias u128_oreq");
+assert_eq(_ba_u128_same(u128_xoreq(&ba_r1, &ba_ua), bayan_u128_xoreq(&ba_r2, &ba_ua), &ba_r1, &ba_r2), 1, "alias u128_xoreq");
+assert_eq(u128_ugt(&ba_ua, &ba_ub), bayan_u128_ugt(&ba_ua, &ba_ub), "alias u128_ugt (unequal)");
+assert_eq(u128_ugt(&ba_ua, &ba_ua), bayan_u128_ugt(&ba_ua, &ba_ua), "alias u128_ugt (equal)");
+assert_eq(u128_uge(&ba_ua, &ba_ub), bayan_u128_uge(&ba_ua, &ba_ub), "alias u128_uge (unequal)");
+assert_eq(u128_uge(&ba_ua, &ba_ua), bayan_u128_uge(&ba_ua, &ba_ua), "alias u128_uge (equal)");
+assert_eq(u128_ult(&ba_ua, &ba_ub), bayan_u128_ult(&ba_ua, &ba_ub), "alias u128_ult (unequal)");
+assert_eq(u128_ult(&ba_ua, &ba_ua), bayan_u128_ult(&ba_ua, &ba_ua), "alias u128_ult (equal)");
+assert_eq(u128_ule(&ba_ua, &ba_ub), bayan_u128_ule(&ba_ua, &ba_ub), "alias u128_ule (unequal)");
+assert_eq(u128_ule(&ba_ua, &ba_ua), bayan_u128_ule(&ba_ua, &ba_ua), "alias u128_ule (equal)");
+assert_eq(_ba_u128_same(u128_divmod(&ba_r1, &ba_m1, &ba_ua, &ba_ub), bayan_u128_divmod(&ba_r2, &ba_m2, &ba_ua, &ba_ub),
+    &ba_r1, &ba_r2), 1, "alias u128_divmod (quotient)");
+assert_eq(bayan_u128_eq(&ba_m1, &ba_m2), 1, "alias u128_divmod (remainder)");
+assert_eq(_ba_u128_same(u128_div(&ba_r1, &ba_ua, &ba_ub), bayan_u128_div(&ba_r2, &ba_ua, &ba_ub), &ba_r1, &ba_r2), 1,
+  "alias u128_div");
+assert_eq(_ba_u128_same(u128_mod(&ba_r1, &ba_ua, &ba_ub), bayan_u128_mod(&ba_r2, &ba_ua, &ba_ub), &ba_r1, &ba_r2), 1,
+  "alias u128_mod");
+bayan_u128_copy(&ba_r1, &ba_ua); bayan_u128_copy(&ba_r2, &ba_ua);
+assert_eq(_ba_u128_same(u128_diveq(&ba_r1, &ba_ub), bayan_u128_diveq(&ba_r2, &ba_ub), &ba_r1, &ba_r2), 1, "alias u128_diveq");
+bayan_u128_copy(&ba_r1, &ba_ua); bayan_u128_copy(&ba_r2, &ba_ua);
+assert_eq(_ba_u128_same(u128_modeq(&ba_r1, &ba_ub), bayan_u128_modeq(&ba_r2, &ba_ub), &ba_r1, &ba_r2), 1, "alias u128_modeq");
+# The 1.5.2 SIGFPE operands: unreduced 64-bit values (bit 63 set) over a 31-bit modulus.
+assert_eq(u64_mulmod(0 - 0x02139a018ded68c9, 0 - 0x6cab746fa1a38b8c, 0x7222d728),
+  bayan_u64_mulmod(0 - 0x02139a018ded68c9, 0 - 0x6cab746fa1a38b8c, 0x7222d728), "alias u64_mulmod");
+assert_eq(u64_powmod(3, 200, 1000000007), bayan_u64_powmod(3, 200, 1000000007), "alias u64_powmod");
+
 var r = assert_summary();
