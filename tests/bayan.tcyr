@@ -55,6 +55,10 @@ fn _strm_cb_err(ctx, m, p) { _strm_err = _strm_err + 1; return 0; }
 test_group("base64 encode/decode (canonical)");
 assert_eq(streq(bayan_base64_encode("foo", 3), "Zm9v"), 1, "encode foo");
 assert_eq(streq(bayan_base64_encode("fo", 2), "Zm8="), 1, "encode fo (pad)");
+# 1.5.9: an output size past ALLOC_MAX makes the global alloc refuse deterministically. The encoder
+# used to store through the refused 0 (SIGSEGV); it returns 0, which lib/ws.cyr already tests for.
+# The input is never read: the refusal is checked before the first byte.
+assert_eq(bayan_base64_encode("foo", 0x4000000000000000), 0, "encode: a refused output alloc returns 0");
 var d = bayan_base64_decode("Zm9v", 4);
 assert_eq(load64(d + 8), 3, "decode len 3");
 assert_eq(memeq(load64(d), "foo", 3), 1, "decode foo");
@@ -2978,15 +2982,39 @@ assert_eq(vec_len(ba_tg1), vec_len(ba_tg2), "alias toml_get_sections (count)");
 assert_eq(vec_get(ba_tg1, 1), vec_get(ba_tg2, 1), "alias toml_get_sections (the same sections)");
 assert_eq(_ba_strs_same(toml_array_parse_a(BA_AR, ba_tlist), bayan_toml_array_parse_a(BA_AR, ba_tlist)), 1,
   "alias toml_array_parse_a");
-# array_parse_a cannot run on BA_DRY (it does not check its own vec_new_a for 0), so its allocator is
-# checked by COUNT: the alias must allocate through the one it is handed, as often as its twin does.
-var BA_CNT = test_allocator();
-var ba_n0 = test_allocator_alloc_count(BA_CNT);
-toml_array_parse_a(BA_CNT, ba_tlist);
-var ba_n1 = test_allocator_alloc_count(BA_CNT);
-bayan_toml_array_parse_a(BA_CNT, ba_tlist);
-assert_eq(test_allocator_alloc_count(BA_CNT) - ba_n1, ba_n1 - ba_n0,
+# 1.5.9: array_parse_a checks its own vec_new_a (it used to load through a refused 0 and die of
+# SIGSEGV, which is why this row was a count), so the alias runs on BA_DRY like every other `_a`.
+assert_eq(toml_array_parse_a(BA_DRY, ba_tlist), 0,
   "alias toml_array_parse_a allocates through the allocator it is handed");
+assert_eq(bayan_toml_array_parse_a(BA_DRY, ba_tlist), 0, "toml_array_parse_a: a refused vec returns 0");
+# ...and a refusal LATER in the parse (an element Str, or both allocs of an unescaped element) is 0
+# too, never a short vec handed back as success. Every refusal point of one parse is driven in turn.
+# The unescaped element is LAST on purpose: a refusal of its first alloc falls back to an empty Str
+# from the default allocator, and only as the last element does no later refusal hide that.
+var BA_TA = str_from("[ d, 'c', \"a\\\"b\" ]");
+var BA_CNT = test_allocator();
+var ba_tfull = bayan_toml_array_parse_a(BA_CNT, BA_TA);
+assert_eq(vec_len(ba_tfull), 3, "toml_array_parse_a: the refusal fixture parses to 3 elements");
+assert_eq(str_eq_cstr(vec_get(ba_tfull, 2), "a\"b"), 1, "toml_array_parse_a: and its last element is unescaped");
+var ba_tn = test_allocator_alloc_count(BA_CNT);
+assert_eq(ba_tn, 6, "toml_array_parse_a: the vec (2), two plain elements (1 each), one unescaped (2)");
+var ba_tk = 0;
+var ba_tpartial = 0;
+while (ba_tk < ba_tn) {
+    var ba_tfa = test_allocator();
+    test_allocator_fail_after(ba_tfa, ba_tk);
+    if (bayan_toml_array_parse_a(ba_tfa, BA_TA) != 0) { ba_tpartial = ba_tpartial + 1; }
+    ba_tk = ba_tk + 1;
+}
+assert_eq(ba_tpartial, 0, "toml_array_parse_a: every refusal point returns 0, never a partial vec");
+# A refusal of the vec header ALONE (every later request granted) must be 0 as well: the elements
+# would otherwise be pushed onto a vec at address 0. A fail-after allocator cannot reach this.
+fn _ba_refuse_vec_hdr(state, size): i64 {
+    if (size == 24) { return 0; }
+    return alloc(size);
+}
+var BA_NOHDR = allocator_new(&_ba_refuse_vec_hdr, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
+assert_eq(bayan_toml_array_parse_a(BA_NOHDR, BA_TA), 0, "toml_array_parse_a: a refused vec header alone returns 0");
 assert_eq(_ba_strs_same(toml_array_parse(ba_tlist), bayan_toml_array_parse(ba_tlist)), 1, "alias toml_array_parse");
 assert_eq(toml_is_array(ba_tlist), bayan_toml_is_array(ba_tlist), "alias toml_is_array (an array)");
 assert_eq(toml_is_array(bayan_toml_get(ba_troot, "name")), bayan_toml_is_array(bayan_toml_get(ba_troot, "name")),

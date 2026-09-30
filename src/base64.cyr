@@ -10,10 +10,13 @@ var _b64_enc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
 # omitted in URL-safe usage (JWT, OAuth state, capability URLs).
 var _b64u_enc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-# Encode buf[0..len] to base64. Returns null-terminated string.
+# Encode buf[0..len] to base64. Returns a null-terminated string, or 0 when the
+# allocator refuses the output buffer (1.5.9: it used to store through the refused
+# 0 and die of SIGSEGV; lib/ws.cyr and lib/ws_server.cyr already test for 0).
 fn bayan_base64_encode(buf, len): i64 {
     var out_len = ((len + 2) / 3) * 4;
     var out = alloc(out_len + 1);
+    if (out == 0) { return 0; }
     var si = 0;
     var di = 0;
     while (si < len) {

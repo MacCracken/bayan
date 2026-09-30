@@ -2,6 +2,52 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.9] — 2026-09-30
+
+Patch release, from cyrius 6.6.12 bite B13 (items SA2, SA10, SA12). ⛔ **Tag it before cyrius
+6.6.12 is tagged** — cyrius 6.6.12 folds `dist/bayan.cyr` as `lib/bayan.cyr`. Moves the toolchain
+pin to cyrius **6.6.11** and the coverage floor back to **100**. Public API unchanged.
+
+### Fixed
+
+- **`bayan_base64_encode` stored into its own refused alloc.** `src/base64.cyr` used the output
+  buffer without checking it, so a length whose output the allocator refuses (past `ALLOC_MAX`)
+  died of SIGSEGV instead of returning 0. It now returns 0, which its callers in cyrius
+  (`lib/ws.cyr`, `lib/ws_server.cyr`) already test for.
+- **`bayan_toml_array_parse_a` ignored every allocator refusal.** It used `vec_new_a`'s result
+  unchecked (a refused vec was loaded through 0 on the first push: SIGSEGV), and
+  `_toml_arr_flush_a` ignored a refused element Str and a refused push, so a refusal later in the
+  parse silently dropped that element and the caller got a short vec as success. The flush now
+  returns -1 on either (including an unescaped element whose first alloc was refused and fell back
+  to an empty Str), and `array_parse_a` returns 0 on any refusal — never a partial vec. The
+  default-allocator `bayan_toml_array_parse` inherits it.
+
+### Changed
+
+- Toolchain pin **6.6.9 → 6.6.11**. `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
+  --full` against the 6.6.11 release: `diff -rq` reports 0 differences (111 files). No source
+  change was needed for 6.6.11's new refusals (qualified-enum check, unknown string escapes).
+- **CI coverage floor 99 → 100.** cyrius 6.6.11's `cyrius coverage` excludes the entry point
+  `main`, which no test can reference and which was the only miss (the two `main`s of
+  `src/main.cyr` and `src/test.cyr`). Measured **501/501 (100%)** under the new pin; the floor and
+  the pin move in the same commit because a ≤6.6.10 CLI still reads 501/503.
+- `dist/` regenerated under the 6.6.11 pin (`--check` green, reproducible). `bayan.cyr`,
+  `bayan-base64.cyr` and `bayan-toml.cyr` carry the fixes; the rest change only their version
+  header. One sidecar changes: `bayan-pdf.deps` gains `result` (6.6.11's distlib inference,
+  compile-verified).
+
+### Tests
+
+- base64: an oversize length returns 0 (SIGSEGV without the fix).
+- toml: the `toml_array_parse_a` alias row now runs on the allocator that refuses everything (it
+  was an allocation COUNT, because the function could not survive a refusal), plus the canonical on
+  the same allocator; a fixture parsed once under a counting allocator, then re-parsed with a
+  refusal at each of its 6 allocation points — every one returns 0 (4 of 6 came back as a short vec
+  without the flush fix, 1 of 6 without the empty-unescape check); and an allocator that refuses
+  ONLY the vec header (SIGSEGV without the `vec_new_a` check).
+- `tests/bayan.tcyr`: **1,278** assertions (from 1,271), 0 failed; `pdf_flate` 19 and `vectors`
+  13 unchanged.
+
 ## [1.5.8] — 2026-09-28
 
 Patch release, from cyrius 6.6.10 bite 14. Carries the archive/link changes below (previously

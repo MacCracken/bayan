@@ -2,11 +2,15 @@
 
 > Refreshed every release. CLAUDE.md is preferences/process/procedures
 > (durable); this file is **state** (volatile).
-> Last refreshed: 2026-09-23.
+> Last refreshed: 2026-09-30.
 
 ## Version
 
-**1.5.8** — a patch: toolchain pin 6.6.9, the stale `callptr` comment in `src/pdf.cyr`
+**1.5.9** — a patch, from cyrius 6.6.12 bite B13: `bayan_base64_encode` returns 0 when its output
+alloc is refused (it stored through 0 and died of SIGSEGV), `bayan_toml_array_parse_a` returns 0
+on any allocator refusal instead of loading through a refused vec or handing back a short one, the
+toolchain pin moves to 6.6.11, and the CI coverage floor goes back to 100 (6.6.11's `cyrius
+coverage` excludes `main`; 501/501). Before it, **1.5.8** — a patch: toolchain pin 6.6.9, the stale `callptr` comment in `src/pdf.cyr`
 corrected, and the issue archive/link moves (see CHANGELOG). Before it, **1.5.7** — **the f64 parser is correctly rounded for every input.** prakash
 reported that ~2 in 10⁵ doubles did not survive `bayan_f64_to_json →
 bayan_f64_from_json`
@@ -116,8 +120,12 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.6.9`, bumped at 1.5.8 from `6.6.6` (`cyrius.cyml
-  [package].cyrius`). `cyrius version` reports `manifest-pin: 6.6.9` with no
+- **Cyrius pin**: `6.6.11`, bumped at 1.5.9 from `6.6.9` (`cyrius.cyml
+  [package].cyrius`); `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
+  --full` against the 6.6.11 release slot (`diff -rq`: 111 files, 0 differ), and
+  `dist/` regenerated under it (`bayan-pdf.deps` gains `result`). The 6.6.9 notes
+  that follow are kept as the previous bump's record.
+  At 6.6.9 `cyrius version` reported `manifest-pin: 6.6.9` with no
   drift line; build and test emit neither the pin-drift nor the shadow-lib
   warning. The only source change the bump needed was the `src/pdf.cyr:6126`
   lint pointer (6.6.5's cyrlint folds case).
@@ -145,7 +153,7 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
   1.4.0 a green `cyrius lib sync --full` still left five files behind.
 - **Pin history**: 6.4.68 → 6.5.4 (1.4.0) → 6.5.16 (commit `97a3476`,
   2026-08-10, **undocumented**) → 6.5.28 (1.4.2) → 6.5.33 (1.5.0) → 6.5.36
-  (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8).
+  (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8) → 6.6.11 (1.5.9).
 - **Caveat on the local snapshot — still live.** `~/.cyrius/versions/<pin>/lib`
   on a machine that also develops cyrius can carry unreleased in-flight edits at
   the same version number: at 6.5.28 its `freelist.cyr` had been edited in place
@@ -223,7 +231,7 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **962 asserts, green**. base64, u128, alias parity, the
+- `tests/bayan.tcyr` — **1,278 asserts, green** @1.5.9 (1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.

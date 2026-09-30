@@ -5,4 +5,5 @@ alloc
 io
 vec
 str
+result
 fnptr

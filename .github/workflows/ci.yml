@@ -276,18 +276,18 @@ jobs:
       # (355/503) here. 1.5.8 added a test row for every alias (and for the
       # three canonicals nothing referenced), which makes it 501/503.
       #
-      # The two left are the `main` entry points of src/main.cyr and
-      # src/test.cyr. The 6.6.8+ tool counts them and no test can reference
-      # them (`cyrius header` already excludes `main`; `cyrius coverage` does
-      # not yet), so 99 is the highest honest floor — this is a correction of
-      # what 100 measured, not a lowering to go green. Raise it back to 100
-      # when the tool excludes `main`.
+      # The two left were the `main` entry points of src/main.cyr and
+      # src/test.cyr, which no test can reference, so 1.5.8 set the floor to 99
+      # (a correction of what 100 measured, not a lowering to go green). cyrius
+      # 6.6.11 excludes the entry point `main` from `cyrius coverage`, and 1.5.9
+      # moved the pin to it, so the measured figure is 501/501 and the floor is
+      # back at 100. It rides the pin: under a <=6.6.10 CLI this step reads 99.6%.
       #
       # It remains reference coverage: it proves a function is CALLED, not that
       # it is called correctly. The oracle-driven vectors below are what check
       # the answers.
       - name: Reference coverage floor
-        run: cyrius coverage --min 99
+        run: cyrius coverage --min 100
 
       # The arithmetic vectors' expected values come from Python, not from
       # bayan. Regenerating them must be reproducible, or the "independent
