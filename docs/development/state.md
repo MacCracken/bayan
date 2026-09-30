@@ -231,7 +231,7 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,278 asserts, green** @1.5.9 (1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
+- `tests/bayan.tcyr` — **1,281 asserts, green** @1.5.9 (1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.

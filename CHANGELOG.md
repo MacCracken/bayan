@@ -44,8 +44,10 @@ pin to cyrius **6.6.11** and the coverage floor back to **100**. Public API unch
   the same allocator; a fixture parsed once under a counting allocator, then re-parsed with a
   refusal at each of its 6 allocation points — every one returns 0 (4 of 6 came back as a short vec
   without the flush fix, 1 of 6 without the empty-unescape check); and an allocator that refuses
-  ONLY the vec header (SIGSEGV without the `vec_new_a` check).
-- `tests/bayan.tcyr`: **1,278** assertions (from 1,271), 0 failed; `pdf_flate` 19 and `vectors`
+  ONLY the vec header (SIGSEGV without the `vec_new_a` check); and an 18-element fixture whose vec
+  growth (the 17th push) is refused once — it returns 0 (17 of 18 elements came back as success
+  without the push check; no smaller fixture ever grows the 16-slot vec, so none reached that arm).
+- `tests/bayan.tcyr`: **1,281** assertions (from 1,271), 0 failed; `pdf_flate` 19 and `vectors`
   13 unchanged.
 
 ## [1.5.8] — 2026-09-28

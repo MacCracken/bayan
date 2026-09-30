@@ -3015,6 +3015,21 @@ fn _ba_refuse_vec_hdr(state, size): i64 {
 }
 var BA_NOHDR = allocator_new(&_ba_refuse_vec_hdr, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
 assert_eq(bayan_toml_array_parse_a(BA_NOHDR, BA_TA), 0, "toml_array_parse_a: a refused vec header alone returns 0");
+# A refused PUSH must be 0 too. vec_new_a starts at 16 slots, so no fixture above ever grows the vec
+# and no refusal above reaches the push arm. Eighteen elements make the 17th push request 32 slots
+# (a 256-byte alloc); the allocator refuses that request ONCE and grants everything else, so a
+# dropped refusal would let the 18th push grow the vec and hand back 17 of 18 elements as success.
+var ba_grow_refused = 0;
+fn _ba_refuse_first_grow(state, size): i64 {
+    if (size == 256 && ba_grow_refused == 0) { ba_grow_refused = 1; return 0; }
+    return alloc(size);
+}
+var BA_T18 = str_from("[ a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r ]");
+assert_eq(vec_len(bayan_toml_array_parse_a(test_allocator(), BA_T18)), 18,
+  "toml_array_parse_a: the growth fixture parses to 18 elements");
+var BA_NOGROW = allocator_new(&_ba_refuse_first_grow, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
+assert_eq(bayan_toml_array_parse_a(BA_NOGROW, BA_T18), 0, "toml_array_parse_a: a refused push (vec growth) returns 0");
+assert_eq(ba_grow_refused, 1, "toml_array_parse_a: the growth request was made and refused");
 assert_eq(_ba_strs_same(toml_array_parse(ba_tlist), bayan_toml_array_parse(ba_tlist)), 1, "alias toml_array_parse");
 assert_eq(toml_is_array(ba_tlist), bayan_toml_is_array(ba_tlist), "alias toml_is_array (an array)");
 assert_eq(toml_is_array(bayan_toml_get(ba_troot, "name")), bayan_toml_is_array(bayan_toml_get(ba_troot, "name")),
