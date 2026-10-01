@@ -2,6 +2,74 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.11] — 2026-10-01
+
+Patch release, cut for cyrius **6.6.13**. ⛔ **Tag it before cyrius 6.6.13 is tagged** — cyrius 6.6.13
+folds `dist/bayan.cyr` as `lib/bayan.cyr`. Three fixes, each with tests. The toolchain pin stays at
+**6.6.12**. Public API: no addition, no removal; three functions now return 0 where they returned a
+substituted answer (below).
+
+### Fixed
+
+- **`bayan_pdf_use_font` passed a Str's data pointer as a `key: cstring`.** It set each page's
+  `/Resources /Font` key with `bayan_pdf_obj_dict_set_a(a, fdict, str_data(name), ..)`. The bytes
+  were right — the Str borrows the NUL-terminated buffer `_pdfc_resname_a` built — but cyrius
+  6.6.13 warns on `str_data(..)` passed to a `: cstring` parameter (its issue
+  2026-10-01-str-cstring-diagnostic-misses-call-results), so every build that includes bayan,
+  `tls.cyr` or `tls_native.cyr` would carry that warning. The PdfFont now keeps the buffer itself
+  (`+32`; the struct is 40 bytes, from 32) and the key is set from it, on both paths: the first use
+  of a face and a later page's use of a registered one, where only the PdfFont has the buffer. The
+  writer's output is unchanged byte for byte. Three rows of `tests/bayan.tcyr` that compared with
+  `streq(str_data(x), "lit")` use the length-bounded `str_eq_cstr(x, "lit")` now, for the same
+  diagnostic.
+- **A refused allocation while decoding a TOML string was reported as an empty string.**
+  `_toml_unescape_span_a` answered a refused output buffer with `str_from("")` — an EMPTY Str from
+  the DEFAULT allocator — so every arm that decodes a basic string (single-line and multi-line
+  values, quoted keys, inline-table members) reported the refusal as a parsed empty value. Its
+  sibling on the multi-line arm, `_toml_crlf_copy_a`, fell back to a default-allocator view of the
+  RAW bytes, CRs and all. Both return 0 now, and every caller stops on it, per the rule 1.5.9 and
+  1.5.10 applied to base64, TOML arrays and the flat JSON parser:
+  - `bayan_toml_parse` returns 0 when a key or value is refused (`bayan_toml_parse_file` passes it
+    on as 0, `bayan_toml_parse_file_r` as `Ok(0)`).
+  - `bayan_toml_inline_parse_a` returns 0 when a key or value is refused (so does
+    `bayan_toml_get_inline` through it).
+  - `bayan_toml_unescape_a` returns 0 on a refusal.
+  - A refused key segment, or a refused push of one, was dropped or empty; the key scan now reports
+    it and the parse stops.
+  - `bayan_toml_array_parse_a` already returned 0; its flush no longer needs the `str_len == 0`
+    test that existed only to recognise the empty fallback.
+- **The f64 tables' first use was not thread-safe on aarch64.** `_d_init_tables` (`src/dtoa.cyr`)
+  was a check-then-set with the flag stored last and no barrier, so a second thread could see the
+  flag set and read significands that were still zero: a wrong `bayan_f64_parse` or
+  `bayan_f64_to_json` answer, with no error. The build is now a 0 → 1 → 2 claim (`atomic_cas`) and
+  publish (fence, then store), with an acquire fence on aarch64's fast path — the shape sigil 3.13.6
+  gave its own initialisers (cyrius issue 2026-09-30-tls-first-use-thread-race). `atomic` joins
+  `[deps] stdlib`; `alloc.cyr` already includes it, so no consumer gains a module.
+
+### Changed
+
+- `dist/` regenerated (`cyrius distlib --all`, under the 6.6.12 pin in an isolated `CYRIUS_HOME`).
+  `bayan.cyr`, `bayan-json.cyr`, `bayan-yaml.cyr`, `bayan-toml.cyr` and `bayan-pdf.cyr` carry the
+  fixes; the rest change only their version header. The `.deps` sidecars of the bundles that carry
+  `dtoa.cyr` gain `atomic`.
+
+### Tests
+
+- `tests/bayan.tcyr`: **1,462** assertions (from 1,437), 0 failed.
+  - pdf (+7): the font resource key on both paths — the returned name's bytes, NUL-terminated at
+    its length, one buffer with the returned Str.
+  - toml (+18): `unescape_a` on a refusing allocator; `inline_parse_a` with ONLY the unescape's
+    request refused, for a value and for a quoted key; `bayan_toml_parse` under `ALLOC_MAX = 128`
+    for a basic string, a multi-line basic string, a CRLF multi-line string (the copy) and a quoted
+    key, each parsing whole without the limit, plus a control. 7 of these rows fail on 1.5.10's
+    `src/toml.cyr`.
+- `tests/dtoa_init.tcyr` (new, **12** assertions): the claim/publish protocol, and 8 threads held
+  at a start word and released together into their FIRST parse and format, each answer equal to
+  the answer recomputed after publication. Green 20× on x86_64, 10× under qemu-aarch64 and 300× on
+  a Raspberry Pi (aarch64). The race is a probability — 300 Pi runs of the 1.5.10 code did not show
+  it either — so the file pins that the protocol completes and agrees with itself; it is its own
+  file because it must be the process's first use of the tables.
+
 ## [1.5.10] — 2026-10-01
 
 Patch release. Resolves the three open issues, moves the toolchain pin to cyrius **6.6.12**, and

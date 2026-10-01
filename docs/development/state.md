@@ -6,7 +6,20 @@
 
 ## Version
 
-**1.5.10** — a patch that closes all three open issues (archived with resolution banners) and
+**1.5.11** — a patch cut for cyrius 6.6.13 (tag it BEFORE cyrius 6.6.13, which folds
+`dist/bayan.cyr`); pin unchanged at 6.6.12. Three fixes:
+
+- **`bayan_pdf_use_font` sets its font key from the NUL-terminated buffer**, kept on the PdfFont
+  (now 40 bytes), instead of `str_data(name)` — cyrius 6.6.13 warns on a Str's data pointer passed
+  to a `: cstring` parameter in every build that includes bayan or TLS. Output byte-identical.
+- **A refused TOML string decode is a failure.** `_toml_unescape_span_a` (and the multi-line CRLF
+  copy) returned an empty / raw default-allocator Str on a refusal, reported as a parsed value;
+  they return 0 and `bayan_toml_parse`, `bayan_toml_inline_parse_a` and `bayan_toml_unescape_a`
+  return 0 on it.
+- **The f64 tables' first use is race-free on aarch64**: a 0 → 1 → 2 claim and publish, the
+  shape sigil 3.13.6 gave its initialisers.
+
+Before it, **1.5.10** — a patch that closes all three open issues (archived with resolution banners) and
 moves the pin to cyrius 6.6.12:
 
 - **`bayan_json_parse` returns the right pairs.** A nested value is one value (its raw span,
@@ -147,7 +160,7 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.6.12`, bumped at 1.5.10 from `6.6.11` (`cyrius.cyml
+- **Cyrius pin**: `6.6.12` (unchanged at 1.5.11), bumped at 1.5.10 from `6.6.11` (`cyrius.cyml
   [package].cyrius`). `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
   --full` (22 files changed); `diff -rq` against the **6.6.12 release tarball**'s
   `lib/` (sha256 checked against the release's `.sha256`): 111 files, 0 differ.
@@ -258,10 +271,15 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,437 asserts, green** @1.5.10 on x86_64 and on `--aarch64` (1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
+- `tests/bayan.tcyr` — **1,462 asserts, green** @1.5.11 on x86_64 and on `--aarch64` (1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
+
+  **1.5.11 adds** (+25): the pdf font key on both paths (+7), and the TOML refused-decode rows
+  (+18 — `unescape_a`, `inline_parse_a` with only the unescape refused for a value and a quoted
+  key, `bayan_toml_parse` under `ALLOC_MAX = 128` for four string shapes plus a control; 7 rows
+  fail on the 1.5.10 parser).
 
   **1.5.10 adds** (+156): the flat JSON parser's groups (+120 — the 2026-09-30
   issue's 16 documents against exact pair lists, nested spans and kind matching,
@@ -325,6 +343,12 @@ this is mutation-verified.
   Regenerate with `scripts/gen-numeric-vectors.py` and
   `scripts/gen-toml-vectors.py`; CI requires every regenerated file
   (`u128.vec`, `f64.vec`, `f64parse.vec`, `strings.vec`) to be byte-identical.
+- `tests/dtoa_init.tcyr` — **new at 1.5.11**, **12 asserts**: the f64 tables' one-time build. The
+  claim/publish protocol rows, then 8 threads held at a start word and released together into
+  their FIRST parse and format, each answer equal to the answer after publication. Its own file
+  because it must be the process's first use of the tables. A race is a probability: it pins that
+  the protocol completes and agrees with itself (300× green on a Pi; the 1.5.10 code did not show
+  the race in 300 Pi runs either).
 - `tests/pdf_flate.tcyr` — the compression path, isolated because it is the
   only test that pulls in `lib/sankoch.cyr`. **19 asserts, green.**
 - `tests/mulmod_speed.cyr` — **new at 1.5.10**, run by its own CI step on
@@ -619,7 +643,8 @@ The 1.5.0 gate lessons still hold and generalise:
 ## Dependencies
 
 Direct (declared in `cyrius.cyml [deps].stdlib`): string, fmt, alloc, io,
-vec, str, syscalls, assert, bench, result, fnptr, tagged. The dist bundle
+vec, str, syscalls, assert, bench, result, fnptr, tagged, atomic (1.5.11, for
+`dtoa.cyr`'s one-time table build; `alloc.cyr` already includes it). The dist bundle
 strips includes — consumers must supply these (notably `result`, which is
 NOT in cyrius's own stdlib auto-prepend set).
 

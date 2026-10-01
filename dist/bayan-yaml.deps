@@ -9,3 +9,4 @@ str
 fmt
 result
 fnptr
+atomic
