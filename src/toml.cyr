@@ -333,9 +333,13 @@ fn _toml_has_crlf(buf, n): i64 {
 #
 # An ESCAPED `\r` is deliberately NOT normalised: the author asked for that
 # byte by name. Only a raw CRLF newline is folded.
+#
+# Returns 0 when `a` refuses the copy or its Str (1.5.11). A refused copy used
+# to fall back to a view of the RAW bytes made by the DEFAULT allocator — the
+# CRs this function exists to remove, reported as success.
 fn _toml_crlf_copy_a(a, buf, n): Str {
     var out = alloc_via(a, n + 4);
-    if (out == 0) { return str_new(buf, n); }
+    if (out == 0) { return 0; }
     var oi = 0;
     var i = 0;
     while (i < n) {
@@ -362,10 +366,17 @@ fn _toml_crlf_copy(buf, n): Str {
 # that, keeping the bytes is strictly better than deleting them: a caller can
 # still see what was written, and a Windows path that lost its escaping is a
 # recoverable annoyance rather than silent data loss.
+#
+# Returns 0 when `a` refuses the buffer or the Str (1.5.11). A refused buffer
+# used to be answered with str_from("") — an EMPTY string, made by the DEFAULT
+# allocator — so every value arm above it reported a refusal as a successfully
+# parsed empty value. Every caller now passes the 0 on as a failure: the value
+# and key arms, bayan_toml_parse, bayan_toml_inline_parse_a,
+# bayan_toml_array_parse_a and bayan_toml_unescape_a.
 fn _toml_unescape_span_a(a, buf, n, ml): Str {
     if (n < 0) { n = 0; }
     var out = alloc_via(a, n + 4);
-    if (out == 0) { return str_from(""); }
+    if (out == 0) { return 0; }
     var oi = 0;
     var i = 0;
     while (i < n) {
@@ -415,7 +426,9 @@ fn _toml_unescape_span(buf, n, ml): Str {
     return _toml_unescape_span_a(default_alloc(), buf, n, ml);
 }
 
-# 1.5.3 — Allocator-as-first-arg variant of bayan_toml_unescape.
+# 1.5.3 — Allocator-as-first-arg variant of bayan_toml_unescape. Returns 0 when
+# `a` refuses an allocation (1.5.11; it returned an empty string, from the
+# default allocator, as if the input had decoded to nothing).
 fn bayan_toml_unescape_a(a, s): Str {
     if (s == 0) { return str_from(""); }
     return _toml_unescape_span_a(a, str_data(s), str_len(s), 0);
@@ -734,7 +747,8 @@ fn _toml_multiline_end(buf, pos, end): i64 { return _toml_multiline_end_q(buf, p
 #
 # Parses the value starting at `pos`. Returns the value Str, stores its
 # TOML_K_* kind through `out_kind` and the position just after it through
-# `out_pos`.
+# `out_pos`. Returns 0 when `a` refuses the value's Str or its decoded copy —
+# never an empty string in its place (1.5.11); the callers stop on it.
 fn _toml_parse_value_a(a, buf, pos, end, out_kind, out_pos): Str {
     var value = str_from("");
     var vkind = TOML_K_BARE;
@@ -948,7 +962,9 @@ fn _toml_parse_value_a(a, buf, pos, end, out_kind, out_pos): Str {
 # segment is decoded like a basic string; a `'` segment is verbatim.
 
 # Scan ONE key segment at `pos`. Stores the segment Str through `out_seg` and
-# returns the position just after it, or -1 if there is no segment here.
+# returns the position just after it, -1 if there is no segment here, or -2
+# when the allocator refused the segment's Str (1.5.11: a refused quoted key
+# came back as an empty segment, so `"a\tb" = 1` could land as key ``).
 fn _toml_key_seg_a(a, buf, pos, end, out_seg): i64 {
     if (pos >= end) { return 0 - 1; }
     var c = load8(buf + pos);
@@ -956,6 +972,7 @@ fn _toml_key_seg_a(a, buf, pos, end, out_seg): i64 {
         var qs = _toml_parse_str_a(a, buf, pos, end);
         var qe = _toml_str_end(buf, pos, end);
         if (qe <= pos) { return 0 - 1; }
+        if (qs == 0) { return 0 - 2; }
         store64(out_seg, qs);
         return qe;
     }
@@ -963,6 +980,7 @@ fn _toml_key_seg_a(a, buf, pos, end, out_seg): i64 {
         var ls = _toml_parse_lit_a(a, buf, pos, end);
         var le = _toml_lit_end(buf, pos, end);
         if (le <= pos) { return 0 - 1; }
+        if (ls == 0) { return 0 - 2; }
         store64(out_seg, ls);
         return le;
     }
@@ -977,7 +995,9 @@ fn _toml_key_seg_a(a, buf, pos, end, out_seg): i64 {
         pos = pos + 1;
     }
     if (pos == bstart) { return 0 - 1; }
-    store64(out_seg, str_new_a(a, buf + bstart, pos - bstart));
+    var bs = str_new_a(a, buf + bstart, pos - bstart);
+    if (bs == 0) { return 0 - 2; }
+    store64(out_seg, bs);
     return pos;
 }
 
@@ -989,15 +1009,16 @@ fn _toml_key_seg(buf, pos, end, out_seg): i64 {
 # Scan a full dotted key path, pushing each segment onto `parts`. Returns the
 # position after the last segment, or -1 if there is no key here at all — which
 # is how a line beginning with `=` or `]` produces no pair instead of a
-# zero-length-key phantom.
+# zero-length-key phantom — or -2 when the allocator refused a segment or its
+# push (1.5.11), which every caller treats as a failed parse, not a missing key.
 fn _toml_scan_key_a(a, buf, pos, end, parts): i64 {
     var go = 1;
     while (go == 1) {
         pos = _toml_skip_ws(buf, pos, end);
         var seg[8];
         var np = _toml_key_seg_a(a, buf, pos, end, &seg);
-        if (np < 0) { return 0 - 1; }
-        vec_push_a(a, parts, load64(&seg));
+        if (np < 0) { return np; }
+        if (vec_push_a(a, parts, load64(&seg)) < 0) { return 0 - 2; }
         pos = np;
         var after = _toml_skip_ws(buf, pos, end);
         if (after < end && load8(buf + after) == 46) { pos = after + 1; }
@@ -1066,6 +1087,11 @@ fn _toml_section_find(sections, from, name): i64 {
 #
 # All three change vec_len(sections) and can move indices, in the direction
 # that makes them correct. See the CHANGELOG for 1.5.4.
+#
+# Returns 0 when the allocator refuses a key or a value (1.5.11). A refused
+# escaped string used to come back as an EMPTY value and the parse reported
+# success. bayan_toml_parse_file and bayan_toml_parse_file_r pass the 0 on (as
+# 0 and as Ok(0)).
 fn bayan_toml_parse(src): i64 {
     var sections = vec_new();
     var data = str_data(src);
@@ -1094,6 +1120,7 @@ fn bayan_toml_parse(src): i64 {
             pos = pos + 2;
             var aparts = vec_new();
             var ap = _toml_scan_key(data, pos, slen, aparts);
+            if (ap == 0 - 2) { return 0; }
             if (ap > 0) { pos = ap; }
             cur = bayan_toml_section_new(_toml_join_parts(aparts, 0, vec_len(aparts)), vec_new());
             vec_push(sections, cur);
@@ -1109,6 +1136,7 @@ fn bayan_toml_parse(src): i64 {
             pos = pos + 1;
             var hparts = vec_new();
             var hp = _toml_scan_key(data, pos, slen, hparts);
+            if (hp == 0 - 2) { return 0; }
             if (hp > 0) { pos = hp; }
             cur = bayan_toml_section_new(_toml_join_parts(hparts, 0, vec_len(hparts)), vec_new());
             vec_push(sections, cur);
@@ -1120,6 +1148,7 @@ fn bayan_toml_parse(src): i64 {
         else {
             var kparts = vec_new();
             var kend = _toml_scan_key(data, pos, slen, kparts);
+            if (kend == 0 - 2) { return 0; }
             if (kend < 0) {
                 # No key here at all — a line beginning with `=` or `]`. It
                 # used to push a phantom pair with a ZERO-LENGTH key that every
@@ -1137,6 +1166,7 @@ fn bayan_toml_parse(src): i64 {
                     var vk[8];
                     var vp[8];
                     var value = _toml_parse_value_a(default_alloc(), data, pos, slen, &vk, &vp);
+                    if (value == 0) { return 0; }
                     var vkind = load64(&vk);
                     pos = load64(&vp);
 
@@ -1431,11 +1461,11 @@ fn _toml_arr_flush_a(a, out, buf, start, end): i64 {
         var bn = last - s - 2;
         if (c0 == 34) {
             if (_toml_has_bs(buf + s + 1, bn) == 1) {
-                # The span holds a backslash, so a single-line unescape emits at least
-                # one byte: an empty result is its first alloc refused (it falls back
-                # to an empty Str), and 0 is its second.
+                # 0 is a refusal of either of the unescape's allocations (1.5.11; the
+                # first one used to come back as an empty Str, which this test had to
+                # recognise by its length).
                 var ue = _toml_unescape_span_a(a, buf + s + 1, bn, 0);
-                if (ue == 0 || str_len(ue) == 0) { return 0 - 1; }
+                if (ue == 0) { return 0 - 1; }
                 return _toml_arr_push_a(a, out, ue);
             }
         }
@@ -1560,7 +1590,9 @@ fn bayan_toml_is_array(value): i64 {
 #
 # Returns a vec of PAIRS (bayan_toml_pair_key / _value / _kind), not a vec of
 # sections. A non-inline value yields an EMPTY vec, mirroring
-# bayan_toml_array_parse's behaviour on a non-array.
+# bayan_toml_array_parse's behaviour on a non-array. Returns 0 when the
+# allocator refuses a key or a value (1.5.11: a refused escaped value came back
+# as an empty string in a vec reported as success).
 
 # 1.5.4 — Allocator-as-first-arg variant of bayan_toml_inline_parse.
 fn bayan_toml_inline_parse_a(a, value): i64 {
@@ -1584,6 +1616,7 @@ fn bayan_toml_inline_parse_a(a, value): i64 {
         else {
             var kp = vec_new_a(a);
             var kend = _toml_scan_key_a(a, buf, pos, n, kp);
+            if (kend == 0 - 2) { return 0; }
             if (kend < 0) { go = 0; }
             else {
                 pos = _toml_skip_ws(buf, kend, n);
@@ -1592,6 +1625,7 @@ fn bayan_toml_inline_parse_a(a, value): i64 {
                     var ik[8];
                     var ip[8];
                     var iv = _toml_parse_value_a(a, buf, pos, n, &ik, &ip);
+                    if (iv == 0) { return 0; }
                     pos = load64(&ip);
                     vec_push_a(a, out, bayan_toml_pair_new_kind_a(a,
                         _toml_join_parts_a(a, kp, 0, vec_len(kp)), iv, load64(&ik)));
@@ -1627,7 +1661,8 @@ fn bayan_toml_is_inline(value): i64 {
 }
 
 # 1.5.4 — Look up `key` and decompose its value as an inline table.
-# 0 if the key is absent; otherwise a (possibly empty) vec of pairs.
+# 0 if the key is absent (or an allocation was refused, 1.5.11); otherwise a
+# (possibly empty) vec of pairs.
 # `key` is a **cstring**, not a Str — forwarded to bayan_toml_get.
 fn bayan_toml_get_inline(pairs, key): i64 {
     var v = bayan_toml_get(pairs, key);

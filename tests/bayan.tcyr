@@ -3656,8 +3656,9 @@ assert_eq(toml_array_parse_a(BA_DRY, ba_tlist), 0,
 assert_eq(bayan_toml_array_parse_a(BA_DRY, ba_tlist), 0, "toml_array_parse_a: a refused vec returns 0");
 # ...and a refusal LATER in the parse (an element Str, or both allocs of an unescaped element) is 0
 # too, never a short vec handed back as success. Every refusal point of one parse is driven in turn.
-# The unescaped element is LAST on purpose: a refusal of its first alloc falls back to an empty Str
-# from the default allocator, and only as the last element does no later refusal hide that.
+# The unescaped element is LAST on purpose: until 1.5.11 a refusal of its first alloc fell back to
+# an empty Str from the default allocator, and only as the last element does no later refusal hide
+# a flush that let that through.
 var BA_TA = str_from("[ d, 'c', \"a\\\"b\" ]");
 var BA_CNT = test_allocator();
 var ba_tfull = bayan_toml_array_parse_a(BA_CNT, BA_TA);
@@ -3697,6 +3698,84 @@ assert_eq(vec_len(bayan_toml_array_parse_a(test_allocator(), BA_T18)), 18,
 var BA_NOGROW = allocator_new(&_ba_refuse_first_grow, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
 assert_eq(bayan_toml_array_parse_a(BA_NOGROW, BA_T18), 0, "toml_array_parse_a: a refused push (vec growth) returns 0");
 assert_eq(ba_grow_refused, 1, "toml_array_parse_a: the growth request was made and refused");
+
+test_group("toml: a refused unescape is a failure, not an empty string (1.5.11)");
+# _toml_unescape_span_a answered a refused buffer with str_from("") — an EMPTY string from the
+# DEFAULT allocator — so every arm that decodes a string reported the refusal as a successfully
+# parsed empty value. It returns 0 now, and each caller stops on it.
+var TU_ALL = test_allocator();
+test_allocator_fail_after(TU_ALL, 0);
+assert_eq(bayan_toml_unescape_a(TU_ALL, str_from("a\\tb")), 0,
+  "toml: unescape_a on a refusing allocator is 0 (was an empty string)");
+assert_eq(str_eq_cstr(bayan_toml_unescape_a(test_allocator(), str_from("a\\tb")), "a\tb"), 1,
+  "toml: (unescape_a decodes on an allocator that grants)");
+# inline_parse_a, with ONLY the unescape buffer refused: the escaped body is 29 bytes, so its buffer
+# is the one 33-byte request of the parse. Every other request is granted, so a 0 can come from
+# nowhere but the unescape. Before 1.5.11 this returned both pairs, `b` empty.
+var TU_IN = str_from("{ a = 1, b = \"x\\ty-escaped-value-0123456789\" }");
+var tu_seen = 0;
+fn _tu_refuse_33(state, size): i64 {
+    if (size == 33) { tu_seen = tu_seen + 1; return 0; }
+    return alloc(size);
+}
+var TU_33 = allocator_new(&_tu_refuse_33, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
+var tu_ok = bayan_toml_inline_parse_a(test_allocator(), TU_IN);
+assert_eq(vec_len(tu_ok), 2, "toml: the inline fixture parses to 2 pairs");
+assert_eq(str_eq_cstr(bayan_toml_pair_value(vec_get(tu_ok, 1)), "x\ty-escaped-value-0123456789"), 1,
+  "toml: and b is decoded");
+assert_eq(bayan_toml_inline_parse_a(TU_33, TU_IN), 0, "toml: inline_parse_a with b's unescape refused is 0");
+assert_eq(tu_seen, 1, "toml: (the refused request was the unescape's, made once)");
+# A refused QUOTED KEY is the same arm: it came back as an empty key segment.
+var TU_KEY = str_from("{ \"k\\ty-escaped-value-0123456789\" = 1 }");
+assert_eq(vec_len(bayan_toml_inline_parse_a(test_allocator(), TU_KEY)), 1, "toml: the quoted-key fixture parses");
+tu_seen = 0;
+assert_eq(bayan_toml_inline_parse_a(TU_33, TU_KEY), 0, "toml: inline_parse_a with a quoted key's unescape refused is 0");
+assert_eq(tu_seen, 1, "toml: (the refused request was the key's unescape)");
+# bayan_toml_parse runs on the default allocator, so the lever is ALLOC_MAX (the one the base64
+# and json rows use). At 128 every request of these small documents is granted — the largest is a
+# vec's 16 slots — except a decoded copy of a 200-byte body. Each document parses whole with the
+# limit restored, and to 0 under it: a basic string, a multi-line basic string, a multi-line one
+# whose CRLF normalising copy is refused (it fell back to a view of the RAW bytes, CRs and all, from
+# the default allocator), and a quoted key.
+fn _tu_doc(pre, mid, post): Str {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, pre);
+    var i = 0;
+    while (i < 200) { str_builder_putc(sb, 120); i = i + 1; }
+    str_builder_add_cstr(sb, mid);
+    str_builder_add_cstr(sb, post);
+    return str_builder_build(sb);
+}
+var TU_D1 = _tu_doc("k = \"", "\\t", "\"\n");
+var TU_D2 = _tu_doc("k = \"\"\"", "\\t", "\"\"\"\n");
+var TU_D3 = _tu_doc("k = \"\"\"", "\r\nz", "\"\"\"\n");
+var TU_D4 = _tu_doc("\"", "\\t", "\" = 1\n");
+fn _tu_root_len(src): i64 {
+    var secs = bayan_toml_parse(src);
+    if (secs == 0) { return 0 - 1; }
+    var pairs = bayan_toml_section_pairs(vec_get(secs, 0));
+    if (vec_len(pairs) != 1) { return 0 - 2; }
+    var v = bayan_toml_pair_value(vec_get(pairs, 0));
+    if (str_len(v) == 1) { return str_len(bayan_toml_pair_key(vec_get(pairs, 0))); }
+    return str_len(v);
+}
+assert_eq(_tu_root_len(TU_D1), 201, "toml: the basic-string document decodes (200 + TAB)");
+assert_eq(_tu_root_len(TU_D2), 201, "toml: the multi-line basic document decodes");
+assert_eq(_tu_root_len(TU_D3), 202, "toml: the CRLF document normalises (200 + LF + z)");
+assert_eq(_tu_root_len(TU_D4), 201, "toml: the quoted-key document decodes its key");
+var tu_max = ALLOC_MAX;
+ALLOC_MAX = 128;
+var tu_r1 = bayan_toml_parse(TU_D1);
+var tu_r2 = bayan_toml_parse(TU_D2);
+var tu_r3 = bayan_toml_parse(TU_D3);
+var tu_r4 = bayan_toml_parse(TU_D4);
+var tu_ctl = bayan_toml_parse(str_from("k = \"plain\"\n"));
+ALLOC_MAX = tu_max;
+assert_eq(tu_r1, 0, "toml: parse with a basic string's decode refused is 0 (was k = empty)");
+assert_eq(tu_r2, 0, "toml: parse with a multi-line basic decode refused is 0");
+assert_eq(tu_r3, 0, "toml: parse with a CRLF copy refused is 0 (was the raw CRLF bytes)");
+assert_eq(tu_r4, 0, "toml: parse with a quoted key's decode refused is 0 (was an empty key)");
+assert_neq(tu_ctl, 0, "toml: (the limit alone refuses nothing a small document needs)");
 assert_eq(_ba_strs_same(toml_array_parse(ba_tlist), bayan_toml_array_parse(ba_tlist)), 1, "alias toml_array_parse");
 assert_eq(toml_is_array(ba_tlist), bayan_toml_is_array(ba_tlist), "alias toml_is_array (an array)");
 assert_eq(toml_is_array(bayan_toml_get(ba_troot, "name")), bayan_toml_is_array(bayan_toml_get(ba_troot, "name")),
