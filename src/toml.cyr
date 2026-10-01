@@ -1254,9 +1254,9 @@ fn bayan_toml_parse_file_r(path) : Result {
 # previous comment claimed either form worked; it does not. Passing a Str makes
 # strlen walk its 16-byte header and the lookup returns a silent "not found",
 # which is the same trap 1.4.1 armed a diagnostic for on
-# bayan_json_v_obj_get. Note the asymmetry with bayan_json_get, which takes a
-# Str: the two flat APIs disagree, and correcting that is a breaking change
-# rather than a patch-release fix.
+# bayan_json_v_obj_get (bayan_json_v_obj_get_by_cstr since 1.5.10). Note the
+# asymmetry with bayan_json_get, which takes a Str: the two flat APIs disagree,
+# and correcting that is a breaking change rather than a patch-release fix.
 fn bayan_toml_get(pairs, key): i64 {
     var i = 0;
     var len = vec_len(pairs);

@@ -9,14 +9,14 @@
 # parser in the same file (bayan_json_v_parse_ctx) makes of the document --
 # the workaround available today. It gets all 16 right.
 #
-# Filed with docs/development/issues/2026-09-30-json-parse-flat-misassociates-values.md.
+# Filed with docs/development/issues/archived/2026-09-30-json-parse-flat-misassociates-values.md.
 # Found by abaco (2.4.9 project audit): its currency loader took the next pair's
 # rate as a key's own when the ':' was missing (for row 12's rates object this
 # parser returns GBP = 149.5, JPY's rate), dropped a rate that a CRLF body handed
 # over as "0.79\r" (row 3), and lost every rate after a nested value (row 6).
 #
 # Build and run from the bayan repo root:
-#   cyrius build docs/development/issues/repros/2026-09-30-json-parse-flat-misassociates-values.cyr /tmp/jsonflat
+#   cyrius build docs/development/issues/archived/repros/2026-09-30-json-parse-flat-misassociates-values.cyr /tmp/jsonflat
 #   /tmp/jsonflat; echo "exit=$?"      # -> 14 on bayan 1.5.9 (rows 3-16; rows 1-2 are controls)
 #
 # Two kinds of row:

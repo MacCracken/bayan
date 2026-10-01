@@ -114,6 +114,8 @@ for bundle in dist/bayan.cyr dist/bayan-*.cyr; do
         done < "$deps"
     fi
     echo "include \"${bundle}\"" >> "$src"
+    # The deprecation probe below compiles against this exact include preamble.
+    cp "$src" "$OUT/pre_${name}.cyr"
     cat >> "$src" <<'BODY'
 
 fn main(): i64 { return 0; }
@@ -170,5 +172,277 @@ if [ "$rc" -ne 0 ]; then
     echo "A bundle does not compile from the leaves its .deps sidecar declares."
     echo "Either the sidecar under-declares, or a module gained a dependency it"
     echo "should not have. Regenerate with 'cyrius distlib --all' and re-check."
+fi
+
+# --- Deprecations warn the CALLER, from every bundle that ships them -----------
+# bayan 1.5.10 deprecated bayan_json_v_obj_get and its alias json_v_obj_get: the
+# bare name does not say what the key is (see the banner above
+# bayan_json_v_obj_get_by_cstr in src/json.cyr). A deprecation nobody is warned
+# about is decorative, and two things could make it so with every other gate
+# green: `cyrius distlib` dropping the `#deprecated(...)` line, or a toolchain
+# that stops warning. bayan's own suite cannot see either — it reaches these
+# names only through `&fn` so that it stays warning-free — so this compiles a
+# DIRECT call of each name, against each bundle that ships it, and counts.
+#
+# Per row, the probe makes two calls and must get EXACTLY three warnings, all
+# labelled as the probe's own (cyrius names the entry file `<source>`; anything
+# else is a warning from inside the bundle or the stdlib):
+#   - `fn(0, "k")`  -> one `'fn' is deprecated: <msg>` on that line;
+#   - `fn(0, sk)`, `sk` a Str local -> the deprecation again, plus cyrius's
+#     `passing Str-typed 'sk' ... expects a cstring`. That second warning is what
+#     the deprecated names keep `key: cstring` for; drop the annotation and it goes.
+# <msg> must be EXACTLY the row's DEPRECATED_MSG, at both calls. The advice is
+# the point of the deprecation, and it is directional: it sends a C-string key to
+# `_by_cstr` and a Str key to `_by_str`, so advice with the two swapped, or naming
+# only one of them, would send callers to a silent wrong answer. Each `bayan_*`
+# name in it must also be defined in the same bundle and not itself deprecated.
+#
+# DEPRECATED is exact in both directions: every bundle:fn row must be defined in
+# that bundle and must warn as above, and each bundle's count of `#deprecated`
+# attributes must equal its rows — so deprecating another fn fails this script
+# until it is listed, and therefore probed. The count is taken over CODE ONLY
+# (char literals, strings and comments stripped, line numbers kept) and matches
+# `#deprecated` anywhere on a line, because that is where cyrius 6.6.12 honours it
+# (all measured): on its own line, indented, with whitespace before the `(`, after
+# another attribute (`#must_use #deprecated(..)`), and at the end of the previous
+# fn's line (`fn a() { .. } #deprecated(..)`, which deprecates the NEXT fn). A
+# line-start pattern missed the last two, and a deprecation spelt that way shipped
+# unlisted and unprobed. (The probe calls `fn(0, <key>)`: a future row with
+# another signature fails to compile here, loudly, until it gets a body.)
+DEPRECATED="bayan:bayan_json_v_obj_get bayan:json_v_obj_get bayan-json:bayan_json_v_obj_get bayan-yaml:bayan_json_v_obj_get"
+declare -A DEPRECATED_MSG=(
+    [bayan_json_v_obj_get]="use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key"
+    [json_v_obj_get]="use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key"
+)
+DEP_ATTR='(^|[[:space:]])#deprecated([[:space:]]*\(|[[:space:]]|$)'
+drc=0
+
+# File $1 with char literals, then string literals, then `# ` comments blanked,
+# one output line per input line. Char literals go FIRST: a `'"'` would otherwise
+# pair with the next string's quote and erase the code between them. A `#word`
+# (an attribute or directive) is not a comment and stays.
+SQ="'"
+STRIP_CHR="s/${SQ}(\\\\.|[^${SQ}\\\\])${SQ}/0/g"
+code_only() {
+    sed -E -e "$STRIP_CHR" -e 's/"([^"\\]|\\.)*"/""/g' \
+        -e 's/(^|[[:space:]])#([^a-z].*)?$/\1/' "$1"
+}
+
+# 0 if bundle $1 defines fn $2 under a `#deprecated` attribute. Walks back from the
+# definition over blank and attribute-only lines, and stops at the first line
+# holding other code — after looking at it, since an attribute at the end of the
+# previous fn's line still applies. Code-only text, so a mention in a comment or a
+# string is not an attribute.
+is_deprecated() {
+    code_only "$1" | awk -v fn="$2" '
+        { line[NR] = $0 }
+        $0 ~ ("^[ \t]*fn[ \t]+" fn "[ \t]*[(]") { def[++nd] = NR }
+        END {
+            for (d = 1; d <= nd; d++) {
+                for (k = def[d] - 1; k >= 1; k--) {
+                    if (line[k] ~ /(^|[ \t])#deprecated([ \t]*[(]|[ \t]|$)/) { exit 0 }
+                    if (line[k] !~ /^[ \t]*(#[a-z_]+([ \t]*[(][^)]*[)])?[ \t]*)*$/) { break }
+                }
+            }
+            exit 1
+        }'
+}
+
+for bundle in dist/bayan.cyr dist/bayan-*.cyr; do
+    [ -e "$bundle" ] || continue
+    name=$(basename "$bundle" .cyr)
+    have=$(code_only "$bundle" | grep -oE "$DEP_ATTR" | grep -c . || true)
+    want=0
+    for row in $DEPRECATED; do
+        [ "${row%%:*}" = "$name" ] && want=$((want + 1))
+    done
+    if [ "${have:-0}" -ne "$want" ]; then
+        echo "FAIL    ${name} — carries ${have:-0} #deprecated attribute(s); DEPRECATED lists ${want}."
+        echo "        List a new deprecation in DEPRECATED so it is probed, or restore the lost attribute."
+        drc=1
+    fi
+done
+
+# bayan never calls its own deprecated names. A call that cyrius parses before
+# the definition does not warn at all on 6.6.12, so the probes below would still
+# read "nowhere in the bundle" while the bundle called the name — and every build
+# that includes the bundle would get that warning from inside bayan the day a
+# toolchain closes the gap. Code only: char literals, then string literals, then
+# `# ` comments are stripped (char literals FIRST: a `'"'` would otherwise pair
+# with the next string's quote and erase the code between them), and a fn's own
+# definition (`fn NAME(`) is not a reference. ANY other reference counts, not just
+# `NAME(`: a call cyrfmt splits across lines (`NAME` then `(..)` on the next) and
+# `&NAME` are references too, and bayan has no legitimate one.
+for fn in $(for row in $DEPRECATED; do echo "${row#*:}"; done | sort -u); do
+    calls=""
+    for f in src/*.cyr dist/*.cyr; do
+        [ -e "$f" ] || continue
+        nums=$(code_only "$f" \
+            | sed -E -e "s/(^|[^A-Za-z0-9_])fn[[:space:]]+${fn}[[:space:]]*\(/\1fn (/g" \
+            | grep -nE "(^|[^A-Za-z0-9_])${fn}([^A-Za-z0-9_]|$)" | cut -d: -f1 || true)
+        for n in $nums; do
+            calls="${calls}          ${f}:${n}: $(sed -n "${n}s/^[[:space:]]*//p" "$f")"$'\n'
+        done
+    done
+    if [ -n "$calls" ]; then
+        echo "FAIL    ${fn} is deprecated, and bayan calls it (use the replacement its message names):"
+        printf '%s' "$calls"
+        drc=1
+    else
+        echo "ok      ${fn} — no call in src/ or dist/"
+    fi
+done
+
+for row in $DEPRECATED; do
+    name=${row%%:*}
+    fn=${row#*:}
+    bundle="dist/${name}.cyr"
+    pre="$OUT/pre_${name}.cyr"
+    probe="$OUT/deprecated_${name}_${fn}.cyr"
+    want_msg=${DEPRECATED_MSG[$fn]-}
+    if [ ! -e "$bundle" ] || [ ! -e "$pre" ]; then
+        echo "FAIL    ${name} — DEPRECATED names it but there is no ${bundle}"
+        drc=1; continue
+    fi
+    if ! grep -q "^fn ${fn}(" "$bundle"; then
+        echo "FAIL    ${name} — DEPRECATED names ${fn}, which the bundle does not define"
+        drc=1; continue
+    fi
+    if [ -z "$want_msg" ]; then
+        echo "FAIL    ${name} — ${fn} has no DEPRECATED_MSG entry: write down the exact advice it must give"
+        drc=1; continue
+    fi
+    cp "$pre" "$probe"
+    base=$(wc -l < "$pre")
+    la=$((base + 4))
+    lb=$((base + 5))
+    cat >> "$probe" <<PROBE
+
+fn main(): i64 {
+    var sk = str_from("k");
+    var a = ${fn}(0, "k");
+    var b = ${fn}(0, sk);
+    return a + b;
+}
+var r = main();
+syscall(SYS_EXIT, r);
+PROBE
+    if ! out=$(cyrius build --no-deps "$probe" "$OUT/deprecated_${name}_${fn}.bin" 2>&1); then
+        echo "FAIL    ${name} — the ${fn} deprecation probe does not compile:"
+        echo "$out" | tail -20 | sed 's/^/          /'
+        drc=1; continue
+    fi
+    warns=$(echo "$out" | grep -o 'warning:.*' || true)
+    nw=$(printf '%s\n' "$warns" | grep -c . || true)
+    foreign=$(printf '%s\n' "$warns" | grep -v "^warning:\(<source>\|${probe}\):" | grep . || true)
+    dep_a=$(printf '%s\n' "$warns" | grep -cE "^warning:[^:]*:${la}:[0-9]+: '${fn}' is deprecated: ." || true)
+    dep_b=$(printf '%s\n' "$warns" | grep -cE "^warning:[^:]*:${lb}:[0-9]+: '${fn}' is deprecated: ." || true)
+    strw=$(printf '%s\n' "$warns" \
+        | grep -cE "^warning:[^:]*:${lb}:[0-9]+: passing Str-typed 'sk' to '${fn}' which expects a cstring" || true)
+    msgs=$(printf '%s\n' "$warns" | sed -n "s/^warning:[^:]*:[0-9]*:[0-9]*: '${fn}' is deprecated: //p")
+    nmsg=$(printf '%s\n' "$msgs" | grep -c . || true)
+    nexact=$(printf '%s\n' "$msgs" | grep -cxF -- "$want_msg" || true)
+    repl=$(printf '%s\n' "$msgs" | grep -oE 'bayan_[a-z0-9_]+' | sort -u || true)
+    bad_repl=""
+    for t in $repl; do
+        if ! grep -q "^fn ${t}(" "$bundle"; then
+            bad_repl="${bad_repl} ${t}(not in this bundle)"
+        elif is_deprecated "$bundle" "$t"; then
+            bad_repl="${bad_repl} ${t}(itself deprecated)"
+        fi
+    done
+    if [ "$nw" -eq 3 ] && [ -z "$foreign" ] && [ "$dep_a" -eq 1 ] && [ "$dep_b" -eq 1 ] \
+        && [ "$strw" -eq 1 ] && [ "$nmsg" -eq 2 ] && [ "$nexact" -eq 2 ] && [ -n "$repl" ] && [ -z "$bad_repl" ]; then
+        echo "ok      ${name} — ${fn} warns at both call sites with its exact advice, and nowhere in the bundle"
+    else
+        echo "FAIL    ${name} — ${fn} deprecation: ${nw} warning(s), want 3 (deprecated at lines ${la}"
+        echo "        and ${lb}: ${dep_a}+${dep_b}, want 1+1; Str-typed at ${lb}: ${strw}, want 1;"
+        echo "        exact advice at ${nexact} of ${nmsg} deprecation(s), want 2 of 2);"
+        echo "        replacements named: [$(echo $repl)]${bad_repl:+, unusable:${bad_repl}}"
+        echo "        want advice: ${want_msg}"
+        [ -n "$foreign" ] && echo "        warnings NOT from the caller (the bundle itself warns):"
+        printf '%s\n' "$warns" | sed 's/^/          /'
+        drc=1
+    fi
+done
+
+# --- The replacement keeps the diagnostics the deprecated name had --------------
+# Every `bayan_json_v_obj_get` call is told to move to `_by_cstr` (a C-string key)
+# or `_by_str` (a Str key). `_by_cstr` carries `key: cstring`, which buys two
+# diagnostics: a Str-typed local passed to it warns, and an integer-literal key is
+# a compile error. Dropping the annotation leaves every other gate green, and every
+# migrated call then loses both — so they are pinned here, on the name callers
+# are sent to, against each bundle that ships it. The Str-local probe must get
+# EXACTLY the one `passing Str-typed` warning: no deprecation (the replacement is
+# not deprecated) and nothing from inside the bundle.
+TYPED_CSTR="bayan:bayan_json_v_obj_get_by_cstr bayan-json:bayan_json_v_obj_get_by_cstr bayan-yaml:bayan_json_v_obj_get_by_cstr"
+for row in $TYPED_CSTR; do
+    name=${row%%:*}
+    fn=${row#*:}
+    bundle="dist/${name}.cyr"
+    pre="$OUT/pre_${name}.cyr"
+    if [ ! -e "$bundle" ] || [ ! -e "$pre" ] || ! grep -q "^fn ${fn}(" "$bundle"; then
+        echo "FAIL    ${name} — TYPED_CSTR names ${fn}, which ${bundle} does not define"
+        drc=1; continue
+    fi
+    probe="$OUT/typed_${name}_${fn}.cyr"
+    cp "$pre" "$probe"
+    lb=$(( $(wc -l < "$pre") + 5 ))
+    cat >> "$probe" <<PROBE
+
+fn main(): i64 {
+    var sk = str_from("k");
+    var a = ${fn}(0, "k");
+    var b = ${fn}(0, sk);
+    return a + b;
+}
+var r = main();
+syscall(SYS_EXIT, r);
+PROBE
+    ok=1
+    if ! out=$(cyrius build --no-deps "$probe" "$OUT/typed_${name}_${fn}.bin" 2>&1); then
+        ok=0; warns=$(echo "$out" | tail -20)
+    else
+        warns=$(echo "$out" | grep -o 'warning:.*' || true)
+        nw=$(printf '%s\n' "$warns" | grep -c . || true)
+        strw=$(printf '%s\n' "$warns" \
+            | grep -cE "^warning:(<source>|${probe}):${lb}:[0-9]+: passing Str-typed 'sk' to '${fn}' which expects a cstring" || true)
+        [ "$nw" -eq 1 ] && [ "$strw" -eq 1 ] || ok=0
+    fi
+    lit="$OUT/typed_lit_${name}_${fn}.cyr"
+    cp "$pre" "$lit"
+    cat >> "$lit" <<PROBE
+
+fn main(): i64 {
+    var c = ${fn}(0, 5);
+    return c;
+}
+var r = main();
+syscall(SYS_EXIT, r);
+PROBE
+    if lout=$(cyrius build --no-deps "$lit" "$OUT/typed_lit_${name}_${fn}.bin" 2>&1); then
+        ok=0; litmsg="COMPILED (want a compile error)"
+    elif ! echo "$lout" | grep -q "passing integer literal 5 to '${fn}' which expects a cstring"; then
+        ok=0; litmsg="failed, but not on the cstring check: $(echo "$lout" | grep -m1 -o 'error:.*')"
+    else
+        litmsg="refused"
+    fi
+    if [ "$ok" -eq 1 ]; then
+        echo "ok      ${name} — ${fn} warns on a Str local (and only that), refuses an integer key"
+    else
+        echo "FAIL    ${name} — ${fn} lost a diagnostic of its \`key: cstring\`: want exactly one"
+        echo "        'passing Str-typed' warning at line ${lb} and an integer-literal key refused;"
+        echo "        integer-literal key: ${litmsg}; Str-local probe warnings:"
+        printf '%s\n' "${warns:-(none)}" | sed 's/^/          /'
+        drc=1
+    fi
+done
+
+if [ "$drc" -ne 0 ]; then
+    echo
+    echo "A deprecated bayan fn no longer warns its caller or gives its exact advice, bayan"
+    echo "calls a deprecated fn, a bundle warns on its own, or the C-string lookup lost its"
+    echo "diagnostics. See the DEPRECATED and TYPED_CSTR blocks in this script."
+    rc=1
 fi
 exit "$rc"

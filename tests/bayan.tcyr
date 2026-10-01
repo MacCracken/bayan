@@ -82,19 +82,19 @@ var js = "{\"name\": \"bayan\", \"ver\": 103, \"tags\": [\"json\", \"u128\"], \"
 var doc = bayan_json_v_parse_buf(js, strlen(js));
 assert_eq(doc != 0, 1, "parse nested object");
 assert_eq(bayan_json_v_is_obj(doc), 1, "root is object");
-assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_obj_get(doc, "name"))), "bayan"), 1, "name == bayan");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(doc, "ver")), 103, "ver == 103");
-var tags = bayan_json_v_obj_get(doc, "tags");
+assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(doc, "name"))), "bayan"), 1, "name == bayan");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(doc, "ver")), 103, "ver == 103");
+var tags = bayan_json_v_obj_get_by_cstr(doc, "tags");
 assert_eq(bayan_json_v_arr_len(tags), 2, "tags has 2 elements");
 assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_arr_get(tags, 1))), "u128"), 1, "tags[1] == u128");
-var meta = bayan_json_v_obj_get(doc, "meta");
-assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(meta, "ok")), 1, "meta.ok == true");
+var meta = bayan_json_v_obj_get_by_cstr(doc, "meta");
+assert_eq(bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(meta, "ok")), 1, "meta.ok == true");
 
 # Reentrant ctx path: caller-owned stack state, touches no module globals.
 var ps[48];
 var d2 = bayan_json_v_parse_ctx(&ps, js, strlen(js));
 assert_eq(d2 != 0, 1, "ctx parse ok");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d2, "ver")), 103, "ctx ver == 103");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(d2, "ver")), 103, "ctx ver == 103");
 assert_eq(streq(bayan_json_state_error(&ps), ""), 1, "ctx clean on success");
 assert_eq(bayan_json_parse_state_size(), 48, "state size == 48");
 
@@ -105,7 +105,7 @@ var sa = "[1, 2, 3]"; var sb = "{\"x\": 9}";
 var da = bayan_json_v_parse_ctx(&psa, sa, strlen(sa));
 var db = bayan_json_v_parse_ctx(&psb, sb, strlen(sb));
 assert_eq(bayan_json_v_arr_len(da), 3, "state A array len 3");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(db, "x")), 9, "state B x == 9");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(db, "x")), 9, "state B x == 9");
 
 # Error reporting lives in the per-call state (not the globals).
 var pse[48];
@@ -933,78 +933,79 @@ var y1 = "title: My Note\ncount: 42\npi: 3.14\nok: true\noff: false\nnothing: nu
 var yv1 = bayan_yaml_parse_buf(y1, strlen(y1));
 assert_eq(bayan_json_v_is_obj(yv1), 1, "yaml: mapping -> JTAG_OBJ");
 assert_eq(bayan_json_v_obj_len(yv1), 7, "yaml: 7 entries");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv1, "title")), "My Note"), 1, "yaml: str value");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv1, "count")), 42, "yaml: int value");
-assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get(yv1, "pi")), 1, "yaml: float value");
-assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(yv1, "ok")), 1, "yaml: true");
-assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(yv1, "off")), 0, "yaml: false");
-assert_eq(bayan_json_v_is_null(bayan_json_v_obj_get(yv1, "nothing")), 1, "yaml: null");
-assert_eq(bayan_json_v_is_null(bayan_json_v_obj_get(yv1, "tilde")), 1, "yaml: ~ -> null");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yv1, "title")), "My Note"), 1, "yaml: str value");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yv1, "count")), 42, "yaml: int value");
+assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get_by_cstr(yv1, "pi")), 1, "yaml: float value");
+assert_eq(bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(yv1, "ok")), 1, "yaml: true");
+assert_eq(bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(yv1, "off")), 0, "yaml: false");
+assert_eq(bayan_json_v_is_null(bayan_json_v_obj_get_by_cstr(yv1, "nothing")), 1, "yaml: null");
+assert_eq(bayan_json_v_is_null(bayan_json_v_obj_get_by_cstr(yv1, "tilde")), 1, "yaml: ~ -> null");
 
 # -- quoted scalars: one layer stripped, verbatim body; quote-aware comments --
 var y2 = "a: \"x # not a comment\"\nb: 'single'\nc: \"\"\nu: http://x/y\n";
 var yv2 = bayan_yaml_parse_buf(y2, strlen(y2));
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv2, "a")), "x # not a comment"), 1, "yaml: # inside quotes kept");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv2, "b")), "single"), 1, "yaml: single-quoted");
-assert_eq(str_len(bayan_json_v_str(bayan_json_v_obj_get(yv2, "c"))), 0, "yaml: empty quoted string");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yv2, "u")), "http://x/y"), 1, "yaml: plain url (colon w/o space is not a key split)");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yv2, "a")), "x # not a comment"), 1, "yaml: # inside quotes kept");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yv2, "b")), "single"), 1, "yaml: single-quoted");
+assert_eq(str_len(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yv2, "c"))), 0, "yaml: empty quoted string");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yv2, "u")), "http://x/y"), 1, "yaml: plain url (colon w/o space is not a key split)");
 
 # -- comments, blank lines, CRLF --
 var y3 = "# leading comment\n\nk: 1 # trailing\r\nj: 2\r\n";
 var yv3 = bayan_yaml_parse_buf(y3, strlen(y3));
 assert_eq(bayan_json_v_obj_len(yv3), 2, "yaml: comments/blanks skipped, CRLF ok");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv3, "k")), 1, "yaml: trailing comment stripped");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv3, "j")), 2, "yaml: CRLF line parses");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yv3, "k")), 1, "yaml: trailing comment stripped");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yv3, "j")), 2, "yaml: CRLF line parses");
 
 # -- nested mappings by indentation --
 var y4 = "outer:\n  inner:\n    deep: 3\n  flat: v\ntop: 1\n";
 var yv4 = bayan_yaml_parse_buf(y4, strlen(y4));
-var y4o = bayan_json_v_obj_get(yv4, "outer");
+var y4o = bayan_json_v_obj_get_by_cstr(yv4, "outer");
 assert_eq(bayan_json_v_is_obj(y4o), 1, "yaml: nested mapping is OBJ");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_json_v_obj_get(y4o, "inner"), "deep")), 3, "yaml: 2-deep nesting");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(y4o, "flat")), "v"), 1, "yaml: sibling after deeper block");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yv4, "top")), 1, "yaml: dedent back to top");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(y4o, "inner"), "deep")), 3, "yaml: 2-deep nesting");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(y4o, "flat")), "v"), 1,
+  "yaml: sibling after deeper block");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yv4, "top")), 1, "yaml: dedent back to top");
 
 # -- block sequences: indented AND at parent indent --
 var y5 = "items:\n  - one\n  - 2\nsame:\n- a\n- b\n";
 var yv5 = bayan_yaml_parse_buf(y5, strlen(y5));
-var y5i = bayan_json_v_obj_get(yv5, "items");
+var y5i = bayan_json_v_obj_get_by_cstr(yv5, "items");
 assert_eq(bayan_json_v_arr_len(y5i), 2, "yaml: indented block seq len");
 assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(y5i, 0)), "one"), 1, "yaml: seq[0]");
 assert_eq(bayan_json_v_int(bayan_json_v_arr_get(y5i, 1)), 2, "yaml: seq[1] typed int");
-assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yv5, "same")), 2, "yaml: seq at same indent as key");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(yv5, "same")), 2, "yaml: seq at same indent as key");
 
 # -- sequence of mappings (compact `- key: v` + continuation) — the agnosai
 #    definition-file shape --
 var y6 = "agents:\n  - name: researcher\n    role: digs\n  - name: writer\n";
 var yv6 = bayan_yaml_parse_buf(y6, strlen(y6));
-var y6a = bayan_json_v_obj_get(yv6, "agents");
+var y6a = bayan_json_v_obj_get_by_cstr(yv6, "agents");
 assert_eq(bayan_json_v_arr_len(y6a), 2, "yaml: 2 agent mappings");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_json_v_arr_get(y6a, 0), "name")), "researcher"), 1, "yaml: agents[0].name");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_json_v_arr_get(y6a, 0), "role")), "digs"), 1, "yaml: agents[0].role (continuation line)");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_json_v_arr_get(y6a, 1), "name")), "writer"), 1, "yaml: agents[1].name");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bayan_json_v_arr_get(y6a, 0), "name")), "researcher"), 1, "yaml: agents[0].name");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bayan_json_v_arr_get(y6a, 0), "role")), "digs"), 1, "yaml: agents[0].role (continuation line)");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bayan_json_v_arr_get(y6a, 1), "name")), "writer"), 1, "yaml: agents[1].name");
 
 # -- bare `-` + deeper block; `-` alone -> null item --
 var y7 = "xs:\n  -\n  - v\n";
 var yv7 = bayan_yaml_parse_buf(y7, strlen(y7));
-var y7x = bayan_json_v_obj_get(yv7, "xs");
+var y7x = bayan_json_v_obj_get_by_cstr(yv7, "xs");
 assert_eq(bayan_json_v_is_null(bayan_json_v_arr_get(y7x, 0)), 1, "yaml: bare - is null item");
 assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(y7x, 1)), "v"), 1, "yaml: item after bare -");
 
 # -- flow sequences: typing, nesting, empty, trailing comma --
 var y8 = "tags: [rust, programming]\nnums: [1, 2.5, true, null]\nempty: []\ntrail: [a, b,]\nnest: [[1, 2], [3]]\n";
 var yv8 = bayan_yaml_parse_buf(y8, strlen(y8));
-var y8t = bayan_json_v_obj_get(yv8, "tags");
+var y8t = bayan_json_v_obj_get_by_cstr(yv8, "tags");
 assert_eq(bayan_json_v_arr_len(y8t), 2, "yaml: flow seq len");
 assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(y8t, 0)), "rust"), 1, "yaml: flow[0]");
-var y8n = bayan_json_v_obj_get(yv8, "nums");
+var y8n = bayan_json_v_obj_get_by_cstr(yv8, "nums");
 assert_eq(bayan_json_v_int(bayan_json_v_arr_get(y8n, 0)), 1, "yaml: flow int");
 assert_eq(bayan_json_v_is_float(bayan_json_v_arr_get(y8n, 1)), 1, "yaml: flow float");
 assert_eq(bayan_json_v_bool(bayan_json_v_arr_get(y8n, 2)), 1, "yaml: flow bool");
 assert_eq(bayan_json_v_is_null(bayan_json_v_arr_get(y8n, 3)), 1, "yaml: flow null");
-assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yv8, "empty")), 0, "yaml: [] empty");
-assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yv8, "trail")), 2, "yaml: trailing comma no phantom");
-var y8nest = bayan_json_v_obj_get(yv8, "nest");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(yv8, "empty")), 0, "yaml: [] empty");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(yv8, "trail")), 2, "yaml: trailing comma no phantom");
+var y8nest = bayan_json_v_obj_get_by_cstr(yv8, "nest");
 assert_eq(bayan_json_v_arr_len(y8nest), 2, "yaml: nested flow outer len");
 assert_eq(bayan_json_v_int(bayan_json_v_arr_get(bayan_json_v_arr_get(y8nest, 0), 1)), 2, "yaml: nested flow [0][1]");
 
@@ -1020,7 +1021,7 @@ assert_eq(bayan_json_v_is_null(bayan_yaml_parse_buf(y11, strlen(y11))), 1, "yaml
 
 # -- document markers: one leading ---, one trailing ... --
 var y12 = "---\nk: 1\n...\n";
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_yaml_parse_buf(y12, strlen(y12)), "k")), 1, "yaml: --- and ... markers accepted");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse_buf(y12, strlen(y12)), "k")), 1, "yaml: --- and ... markers accepted");
 
 # -- out-of-subset input fails LOUDLY (never a silent mis-parse) --
 var yr1 = "k: &anchor v\n";
@@ -1085,8 +1086,8 @@ var yfp = bayan_yaml_frontmatter_split(str_from(yfm));
 assert_eq(bayan_yaml_fm_yaml(yfp) != 0, 1, "yaml fm: frontmatter found");
 assert_eq(str_eq_cstr(bayan_yaml_fm_body(yfp), "Body line\n"), 1, "yaml fm: body");
 var yfv = bayan_yaml_parse(bayan_yaml_fm_yaml(yfp));
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yfv, "title")), "T"), 1, "yaml fm: title parses");
-assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(yfv, "tags")), 2, "yaml fm: tags parse");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yfv, "title")), "T"), 1, "yaml fm: title parses");
+assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(yfv, "tags")), 2, "yaml fm: tags parse");
 var yfm2 = "no frontmatter here\n";
 var yfp2 = bayan_yaml_frontmatter_split(str_from(yfm2));
 assert_eq(bayan_yaml_fm_yaml(yfp2), 0, "yaml fm: none -> yaml 0");
@@ -1116,30 +1117,30 @@ assert_eq(bayan_yaml_parse_buf(ya5, strlen(ya5)), 0, "yaml: [a,,b] rejected");
 # strict-JSON number gate — lax scanner tokens fall back to STR
 var ya6 = "a: 1e\nb: 01\nc: 1.\nd: 1e+\ne: -x\n";
 var yav6 = bayan_yaml_parse_buf(ya6, strlen(ya6));
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "a")), "1e"), 1, "yaml: '1e' is STR");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "b")), "01"), 1, "yaml: '01' is STR");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "c")), "1."), 1, "yaml: '1.' is STR");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "d")), "1e+"), 1, "yaml: '1e+' is STR");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav6, "e")), "-x"), 1, "yaml: '-x' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yav6, "a")), "1e"), 1, "yaml: '1e' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yav6, "b")), "01"), 1, "yaml: '01' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yav6, "c")), "1."), 1, "yaml: '1.' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yav6, "d")), "1e+"), 1, "yaml: '1e+' is STR");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yav6, "e")), "-x"), 1, "yaml: '-x' is STR");
 var ya7 = "a: 1e5\nb: -3\nc: 0\nd: -0.5e-2\n";
 var yav7 = bayan_yaml_parse_buf(ya7, strlen(ya7));
-assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get(yav7, "a")), 1, "yaml: 1e5 is FLOAT");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yav7, "b")), 0 - 3, "yaml: -3 is INT");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yav7, "c")), 0, "yaml: 0 is INT");
-assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get(yav7, "d")), 1, "yaml: -0.5e-2 is FLOAT");
+assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get_by_cstr(yav7, "a")), 1, "yaml: 1e5 is FLOAT");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yav7, "b")), 0 - 3, "yaml: -3 is INT");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yav7, "c")), 0, "yaml: 0 is INT");
+assert_eq(bayan_json_v_is_float(bayan_json_v_obj_get_by_cstr(yav7, "d")), 1, "yaml: -0.5e-2 is FLOAT");
 
 # mid-word quotes are literal — comments must still strip, keys still split
 var ya8 = "name: O'Brien # c\nsize: 5\" nail # c\n";
 var yav8 = bayan_yaml_parse_buf(ya8, strlen(ya8));
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav8, "name")), "O'Brien"), 1, "yaml: comment stripped past mid-word apostrophe");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(yav8, "size")), "5\" nail"), 1, "yaml: comment stripped past inch-mark");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yav8, "name")), "O'Brien"), 1, "yaml: comment stripped past mid-word apostrophe");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(yav8, "size")), "5\" nail"), 1, "yaml: comment stripped past inch-mark");
 var ya9 = "t: [it's, x] # c\n";
 var yav9 = bayan_yaml_parse_buf(ya9, strlen(ya9));
-var ya9t = bayan_json_v_obj_get(yav9, "t");
+var ya9t = bayan_json_v_obj_get_by_cstr(yav9, "t");
 assert_eq(bayan_json_v_arr_len(ya9t), 2, "yaml: flow with mid-word quote parses");
 assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(ya9t, 0)), "it's"), 1, "yaml: flow element keeps literal quote");
 var ya10 = "don't: 1\n";
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_yaml_parse_buf(ya10, strlen(ya10)), "don't")), 1, "yaml: plain key with mid-word quote splits");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse_buf(ya10, strlen(ya10)), "don't")), 1, "yaml: plain key with mid-word quote splits");
 
 # implicit flow mappings are loud, in every position
 var ya11 = "[a: b]\n";
@@ -1180,7 +1181,7 @@ var ya20 = alloc(12);
 store8(ya20, 239); store8(ya20 + 1, 187); store8(ya20 + 2, 191);
 store8(ya20 + 3, 107); store8(ya20 + 4, 58); store8(ya20 + 5, 32);
 store8(ya20 + 6, 49); store8(ya20 + 7, 10); store8(ya20 + 8, 0);
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(bayan_yaml_parse_buf(ya20, strlen(ya20)), "k")), 1, "yaml: BOM skipped");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse_buf(ya20, strlen(ya20)), "k")), 1, "yaml: BOM skipped");
 
 # ---- coverage-gap closures ----
 
@@ -1235,7 +1236,7 @@ assert_eq(streq(bayan_yaml_state_error(&ypsn), "null source"), 1, "yaml ctx: nul
 # nested compact sequences '- - x'
 var yn1 = "m:\n  - - a\n    - b\n";
 var ynv1 = bayan_yaml_parse_buf(yn1, strlen(yn1));
-var ynm = bayan_json_v_obj_get(ynv1, "m");
+var ynm = bayan_json_v_obj_get_by_cstr(ynv1, "m");
 assert_eq(bayan_json_v_arr_len(ynm), 1, "yaml: seq-in-seq outer len");
 assert_eq(bayan_json_v_arr_len(bayan_json_v_arr_get(ynm, 0)), 2, "yaml: seq-in-seq inner len");
 assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(bayan_json_v_arr_get(ynm, 0), 1)), "b"), 1, "yaml: seq-in-seq [0][1]");
@@ -1243,15 +1244,15 @@ assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(bayan_json_v_arr_get
 # quoted keys (incl. the pinned empty-quoted-key behavior)
 var yq1 = "\"my key\": 1\n'other': 2\n'': 9\n";
 var yqv1 = bayan_yaml_parse_buf(yq1, strlen(yq1));
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yqv1, "my key")), 1, "yaml: double-quoted key");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yqv1, "other")), 2, "yaml: single-quoted key");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(yqv1, "")), 9, "yaml: quoted empty key (pinned)");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yqv1, "my key")), 1, "yaml: double-quoted key");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yqv1, "other")), 2, "yaml: single-quoted key");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yqv1, "")), 9, "yaml: quoted empty key (pinned)");
 
 # frontmatter edges: CRLF fences, fence-as-last-line, '...' closing fence
 var yfc = "---\r\ntitle: T\r\n---\r\nB\r\n";
 var yfcp = bayan_yaml_frontmatter_split(str_from(yfc));
 assert_eq(bayan_yaml_fm_yaml(yfcp) != 0, 1, "yaml fm: CRLF fences split");
-assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bayan_yaml_parse(bayan_yaml_fm_yaml(yfcp)), "title")), "T"), 1, "yaml fm: CRLF yaml parses");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse(bayan_yaml_fm_yaml(yfcp)), "title")), "T"), 1, "yaml fm: CRLF yaml parses");
 assert_eq(str_eq_cstr(bayan_yaml_fm_body(yfcp), "B\r\n"), 1, "yaml fm: CRLF body");
 var yfl = "---\nk: v\n---";
 var yflp = bayan_yaml_frontmatter_split(str_from(yfl));
@@ -1324,13 +1325,13 @@ test_group("Str-entry dispatch regression (v1.3.0)");
 var d13_sj = str_from("{\"k\": 42, \"s\": \"v\"}");
 var d13_sdoc = bayan_json_v_parse(d13_sj);
 assert_eq(d13_sdoc != 0, 1, "bayan_json_v_parse(Str) returns a value");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d13_sdoc, "k")), 42, "bayan_json_v_parse(Str): k == 42");
-assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_obj_get(d13_sdoc, "s"))), "v"), 1,
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(d13_sdoc, "k")), 42, "bayan_json_v_parse(Str): k == 42");
+assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(d13_sdoc, "s"))), "v"), 1,
   "bayan_json_v_parse(Str): s == v");
 
 var d13_adoc = json_v_parse(d13_sj);
 assert_eq(d13_adoc != 0, 1, "alias json_v_parse(Str) returns a value");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d13_adoc, "k")), 42, "alias json_v_parse(Str): k == 42");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(d13_adoc, "k")), 42, "alias json_v_parse(Str): k == 42");
 
 # The Str entry and the buf entry must agree.
 var d13_bdoc = bayan_json_v_parse_buf(str_data(d13_sj), str_len(d13_sj));
@@ -1344,7 +1345,7 @@ assert_eq(bayan_json_v_parse(0), 0, "bayan_json_v_parse(0) returns 0");
 var d13_sy = str_from("k: 1\n");
 var d13_ydoc = bayan_yaml_parse(d13_sy);
 assert_eq(d13_ydoc != 0, 1, "bayan_yaml_parse(Str) returns a value");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d13_ydoc, "k")), 1, "bayan_yaml_parse(Str): k == 1");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(d13_ydoc, "k")), 1, "bayan_yaml_parse(Str): k == 1");
 assert_eq(bayan_yaml_parse(0), 0, "bayan_yaml_parse(0) returns 0");
 
 # ======================================================================
@@ -1426,7 +1427,7 @@ assert_eq(bayan_json_v_obj_set_a(a_arena, 0, str_from_a(a_arena, "k"), 0), 0 - 1
 assert_eq(bayan_json_v_obj_set_a(a_arena, bayan_json_v_arr_new_a(a_arena),
     str_from_a(a_arena, "k"), 0), 0 - 1,
   "1.4.0: obj_set_a returns -1 when the target is not an object");
-assert_eq(bayan_json_v_int(bayan_json_v_obj_get(a_ok, "k")), 7,
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(a_ok, "k")), 7,
   "1.4.0: obj_set_a stores a retrievable pair");
 
 # --- 5. reset_via actually reclaims, and a fresh parse reuses the space ----
@@ -2078,9 +2079,9 @@ test_group("yaml: unrepresentable and duplicate keys are refused");
 # Out-of-range integers wrapped silently: uid 18446744073709551616 became 0.
 # They now fall through to a string rather than becoming a different number.
 var yi = bayan_yaml_parse_buf("k: 18446744073709551616", 23);
-assert_eq(bayan_json_v_is_int(bayan_json_v_obj_get(yi, "k")), 0,
+assert_eq(bayan_json_v_is_int(bayan_json_v_obj_get_by_cstr(yi, "k")), 0,
   "yaml: an integer past i64 does not come back as a wrong int");
-assert_eq(bayan_json_v_is_int(bayan_json_v_obj_get(bayan_yaml_parse_buf("k: 42", 5), "k")), 1,
+assert_eq(bayan_json_v_is_int(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse_buf("k: 42", 5), "k")), 1,
   "yaml: an in-range integer still types as an int");
 # obj_set APPENDS, so bayan resolved duplicates to the FIRST while the
 # serialiser emitted both and every JSON reader took the LAST.
@@ -2100,7 +2101,7 @@ assert_neq(bayan_yaml_parse_buf("a: 1\nb:\n  a: 2\n", 15), 0,
 # self-consistency; that is how u256_mul shipped for five releases with 46% of
 # its products wrong. Regenerate with scripts/gen-numeric-vectors.py.
 #
-# The vector RUNNERS live in tests/vectors.tcyr — 12,334 u128 checks and 656
+# The vector RUNNERS live in tests/vectors.tcyr — 12,651 u128 checks and 656
 # f64 checks would swamp this file's assert counts. What follows pins the
 # behaviours a vector file cannot express.
 # =============================================================================
@@ -2186,6 +2187,132 @@ assert_eq(bayan_u64_powmod(2, 10, 1000), 24, "u64: powmod 2^10 mod 1000");
 assert_eq(bayan_u64_powmod(12345, 0, 97), 1, "u64: anything to the zero power is 1");
 assert_eq(bayan_u64_powmod(3, 5, 0), 0, "u64: powmod with a zero modulus returns 0");
 assert_eq(bayan_u64_powmod(3, 5, 1), 0, "u64: and mod 1 is 0");
+
+test_group("u128: u64_mulmod's aarch64 division against the wide path (v1.5.10)");
+# Through 1.5.9 aarch64 sent every bayan_u64_mulmod call to _u64_mulmod_wide:
+# 128 shift-subtract rounds a call, ~600x a plain `(a * b) % m` under qemu.
+# 1.5.10 gives it a block of its own (src/u128.cyr): unsigned udiv reduction,
+# mul/umulh, then a two-digit Knuth division of the product. That block is
+# where an aarch64 mulmod can now go wrong, and the group above cannot see it.
+# This one checks every edge against _u64_mulmod_wide, which tests/vectors.tcyr
+# checks against Python; CI runs it on x86 and on aarch64 under qemu.
+#   moduli: 1, 2, 3; either side of 2^31, 2^32 and isqrt(2^63) = 3037000499;
+#     2^62; either side of 2^63, where the normalising shift becomes 0 and
+#     `lsr` by 64 - s would hand back its operand; 2^64 - 59, 2^64 - 2 and
+#     2^64 - 1, where the square of m - 1 drives the first digit's estimate
+#     to 2^32; and 0x80000000FFFFFFFF, the smallest high digit with the
+#     largest low one, where 76% of random products need a digit corrected
+#     (37% for a random 64-bit m).
+#   operands: 0, 1, 2^63, 2^64 - 1, m - 2, m - 1, m, m + 1. The unreduced ones
+#     go through the block's own udiv reduction.
+var mm_mods[184];   # 23 moduli
+var mm_ops[64];     # 8 operands for the modulus under test
+var mm_n = 0;       # triples checked
+fn _mm_edge(m): i64 {
+    var ops = &mm_ops;
+    store64(ops, 0);                    store64(ops + 8, 1);
+    store64(ops + 16, 0x8000000000000000); store64(ops + 24, 0 - 1);
+    store64(ops + 32, m - 2);           store64(ops + 40, m - 1);
+    store64(ops + 48, m);               store64(ops + 56, m + 1);
+    var bad = 0;
+    var i = 0;
+    while (i < 8) {
+        var j = 0;
+        while (j < 8) {
+            var x = load64(ops + i * 8);
+            var y = load64(ops + j * 8);
+            mm_n = mm_n + 1;
+            if (bayan_u64_mulmod(x, y, m) != _u64_mulmod_wide(x, y, m)) { bad = bad + 1; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return bad;
+}
+var mm_p = &mm_mods;
+store64(mm_p, 1);                     store64(mm_p + 8, 2);
+store64(mm_p + 16, 3);                store64(mm_p + 24, 0x7FFFFFFF);
+store64(mm_p + 32, 0x80000000);       store64(mm_p + 40, 0x80000001);
+store64(mm_p + 48, 0xFFFFFFFF);       store64(mm_p + 56, 0x100000000);
+store64(mm_p + 64, 0x100000001);      store64(mm_p + 72, 3037000499);
+store64(mm_p + 80, 3037000500);       store64(mm_p + 88, 3037000501);
+store64(mm_p + 96, 0x3FFFFFFFFFFFFFFF); store64(mm_p + 104, 0x4000000000000000);
+store64(mm_p + 112, 0x4000000000000001); store64(mm_p + 120, 0x7FFFFFFFFFFFFFFF);
+store64(mm_p + 128, 0x8000000000000000); store64(mm_p + 136, 0x8000000000000001);
+store64(mm_p + 144, 0xFFFFFFFFFFFFFFC5); store64(mm_p + 152, 0xFFFFFFFFFFFFFFFE);
+store64(mm_p + 160, 0xFFFFFFFFFFFFFFFF); store64(mm_p + 168, 0x80000000FFFFFFFF);
+store64(mm_p + 176, 0xFFFFFFFF00000001);
+var mm_bad = 0;
+var mm_i = 0;
+while (mm_i < 23) { mm_bad = mm_bad + _mm_edge(load64(mm_p + mm_i * 8)); mm_i = mm_i + 1; }
+assert_eq(mm_n, 1472, "u64: the whole edge grid ran (23 moduli x 8 x 8 operands)");
+assert_eq(mm_bad, 0, "u64: mulmod agrees with the wide path on every edge triple");
+
+# Seeded splitmix64 triples. Each modulus bit length 1..64 comes up twice in a
+# row, once with the operands reduced first and once raw (about half of the
+# raw ones have bit 63 set), so reduced operands meet every length, m >= 2^63
+# included.
+var mm_rs = 0x0123456789ABCDEF;
+fn _mm_lsr(x, n): i64 {
+    if (n == 0) { return x; }
+    return (x >> n) & ((1 << (64 - n)) - 1);
+}
+fn _mm_rnd(): i64 {
+    mm_rs = mm_rs + 0x9E3779B97F4A7C15;
+    var z = mm_rs;
+    z = (z ^ _mm_lsr(z, 30)) * 0xBF58476D1CE4E5B9;
+    z = (z ^ _mm_lsr(z, 27)) * 0x94D049BB133111EB;
+    return z ^ _mm_lsr(z, 31);
+}
+var mm_L = 0; var mm_m = 0; var mm_a = 0; var mm_b = 0;
+mm_bad = 0;
+mm_i = 0;
+while (mm_i < 3000) {
+    mm_L = 1 + (mm_i / 2) % 64;
+    mm_m = _mm_lsr(_mm_rnd(), 64 - mm_L) | (1 << (mm_L - 1));
+    mm_a = _mm_rnd();
+    mm_b = _mm_rnd();
+    if ((mm_i & 1) == 0) { mm_a = _u64_mulmod_wide(mm_a, 1, mm_m); mm_b = _u64_mulmod_wide(mm_b, 1, mm_m); }
+    if (bayan_u64_mulmod(mm_a, mm_b, mm_m) != _u64_mulmod_wide(mm_a, mm_b, mm_m)) { mm_bad = mm_bad + 1; }
+    mm_i = mm_i + 1;
+}
+assert_eq(mm_bad, 0, "u64: and on 3,000 seeded random triples, reduced and raw");
+
+# powmod reduces a base at or above 2^63 through mulmod(base, 1, m) since
+# 1.5.10 (the wide path before). Against square-and-multiply on the wide path,
+# for full 64-bit moduli and raw 64-bit bases.
+fn _mm_pow_wide(x, e, m): i64 {
+    var r = 1;
+    x = _u64_mulmod_wide(x, 1, m);
+    while (e > 0) {
+        if ((e & 1) == 1) { r = _u64_mulmod_wide(r, x, m); }
+        e = e >> 1;
+        if (e > 0) { x = _u64_mulmod_wide(x, x, m); }
+    }
+    return r;
+}
+var mm_pm = 0; var mm_pb = 0; var mm_pe = 0;
+mm_bad = 0;
+mm_i = 0;
+while (mm_i < 64) {
+    mm_pm = _mm_rnd() | 0x8000000000000000;
+    if ((mm_i & 3) == 0) { mm_pm = 0 - 1 - _mm_lsr(_mm_rnd(), 40); }   # just below 2^64
+    mm_pb = _mm_rnd();
+    mm_pe = _mm_lsr(_mm_rnd(), 48);
+    if (bayan_u64_powmod(mm_pb, mm_pe, mm_pm) != _mm_pow_wide(mm_pb, mm_pe, mm_pm)) { mm_bad = mm_bad + 1; }
+    mm_i = mm_i + 1;
+}
+assert_eq(mm_bad, 0, "u64: powmod over 64-bit moduli agrees with the wide path");
+
+test_group("u128: u64_powmod reads the exponent as unsigned (v1.5.10)");
+# Through 1.5.9 the loop was `while (exp > 0)`, a signed test, so for an
+# exponent at or above 2^63 it never ran and the call returned 1. Expected
+# values are Python's pow(); tests/vectors.tcyr has more.
+assert_eq(bayan_u64_powmod(3, 0x8000000000000001, 1000000007), 113884165,
+  "u64: powmod with exp = 2^63 + 1");
+assert_eq(bayan_u64_powmod(2, 0xFFFFFFFFFFFFFFFF, 0x1FFFFFFFFFFFFFFF), 32768,
+  "u64: 2^(2^64 - 1) mod (2^61 - 1) is 2^15");
+assert_eq(bayan_u64_powmod(12345, 0, 1), 0, "u64: x^0 is 1 % m, so 0 when m = 1");
 
 test_group("dtoa: floats round-trip through JSON text (v1.5.2)");
 var d_buf = alloc(64);
@@ -2470,6 +2597,433 @@ vec_push(jf_out, bayan_json_pair_new(str_from("a"), str_from("1")));
 assert_gt(str_len(bayan_json_build(jf_out)), 0, "json: build emits a document");
 assert_eq(str_contains_cstr(bayan_json_build(jf_out), "\"a\""), 1, "json: containing the key");
 
+# Render a flat pair list as `k=[v] k=[v]`, raw bytes, so ONE comparison checks
+# the count, the order, every key and every value. On a mismatch the list that
+# came back goes to stderr under the FAIL line.
+fn _jf_render(pairs): i64 {
+    var sb = str_builder_new();
+    var i = 0;
+    while (i < vec_len(pairs)) {
+        if (i > 0) { str_builder_putc(sb, 32); }
+        var p = vec_get(pairs, i);
+        str_builder_add(sb, bayan_json_key(p));
+        str_builder_add_cstr(sb, "=[");
+        str_builder_add(sb, bayan_json_value(p));
+        str_builder_putc(sb, 93);
+        i = i + 1;
+    }
+    return str_builder_build(sb);
+}
+fn _jf_is_s(src, want): i64 {
+    var got = _jf_render(bayan_json_parse(src));
+    if (str_eq_cstr(got, want) == 1) { return 1; }
+    syscall(1, 2, "    got  ", 9);
+    syscall(1, 2, str_data(got), str_len(got));
+    syscall(1, 2, "\n", 1);
+    return 0;
+}
+fn _jf_is(doc, want): i64 { return _jf_is_s(str_from(doc), want); }
+# The value of `key` (a cstr) as a byte count, or -1 when the key is absent, so a
+# failing assertion reports instead of loading through a 0.
+fn _jf_len(pairs, key): i64 {
+    var v = bayan_json_get(pairs, str_from(key));
+    if (v == 0) { return 0 - 1; }
+    return str_len(v);
+}
+fn _jf_get_is(pairs, key, want): i64 {
+    var v = bayan_json_get(pairs, str_from(key));
+    if (v == 0) { return 0; }
+    return str_eq_cstr(v, want);
+}
+# The opener of level i: `open` itself, or when it is 0 a kind taken from the
+# bits of two odd constants. Not periodic, so a kind stack that read the wrong
+# level's bit could not agree with the right one by luck (alternating [ and {
+# could: every level 8 apart has the same kind).
+fn _jf_kind(i, open): i64 {
+    if (open != 0) { return open; }
+    var w = 0x9E3779B97F4A7C15;
+    if ((i % 128) >= 64) { w = 0xC2B2AE3D27D4EB4F; }
+    if (((w >> (i % 64)) & 1) == 1) { return 123; }
+    return 91;
+}
+# `{"w":0,"d":` + `n` levels of _jf_kind + `1` + the matching closers, `,"e":1}`.
+# An object level holds `"k":`.
+fn _jf_deep(n, open): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"w\":0,\"d\":");
+    var i = 0;
+    while (i < n) {
+        var o = _jf_kind(i, open);
+        str_builder_putc(sb, o);
+        if (o == 123) { str_builder_add_cstr(sb, "\"k\":"); }
+        i = i + 1;
+    }
+    str_builder_putc(sb, 49);
+    while (i > 0) {
+        i = i - 1;
+        str_builder_putc(sb, _jf_kind(i, open) + 2);
+    }
+    str_builder_add_cstr(sb, ",\"e\":1}");
+    return str_builder_build(sb);
+}
+
+# _jf_deep(n, 0) with the closer of level `lv` swapped ([ <-> {, ] <-> }): 1 when
+# the parse then stops at d, keeping only w.
+fn _jf_swapped(n, lv): i64 {
+    var d = _jf_deep(n, 0);
+    var at = str_data(d) + str_len(d) - 7 - 1 - lv;
+    store8(at, 218 - load8(at));
+    return _jf_is_s(d, "w=[0]");
+}
+
+test_group("json: the flat parser keeps every value with its own key (1.5.10)");
+# A key whose `:` was missing took the NEXT pair's value, a CRLF document's last
+# value came back as `0.79\r`, and every member after a nested value was lost.
+# The 16 documents of
+# docs/development/issues/archived/2026-09-30-json-parse-flat-misassociates-values.md,
+# each against its EXACT pair list. Rows 1-2 were right before the fix.
+assert_eq(_jf_is("{\"EUR\": 0.92, \"GBP\": 0.79}", "EUR=[0.92] GBP=[0.79]"), 1,
+  "json flat 1: one line");
+assert_eq(_jf_is("{\n  \"EUR\": 0.92,\n  \"GBP\": 0.79\n}", "EUR=[0.92] GBP=[0.79]"), 1,
+  "json flat 2: LF line endings");
+# Part 1: TAB and CR are JSON whitespace; they ended no value.
+assert_eq(_jf_is("{\r\n  \"EUR\": 0.92,\r\n  \"GBP\": 0.79\r\n}", "EUR=[0.92] GBP=[0.79]"), 1,
+  "json flat 3: CRLF line endings (GBP was 0.79\\r)");
+assert_eq(_jf_is("{\"on\":\ttrue\t,\t\"n\":\t5\t}", "on=[true] n=[5]"), 1,
+  "json flat 4: TAB as whitespace (values kept the TAB)");
+# Part 2: a nested object or array is ONE value, its raw source span.
+assert_eq(_jf_is("{\"x\":{\"a\":1,\"b\":2},\"y\":3}", "x=[{\"a\":1,\"b\":2}] y=[3]"), 1,
+  "json flat 5: nested object, two members (b surfaced, y was lost)");
+assert_eq(_jf_is("{\"x\":{\"a\":1},\"y\":3}", "x=[{\"a\":1}] y=[3]"), 1,
+  "json flat 6: nested object, one member");
+assert_eq(_jf_is("{\"x\":{},\"y\":3}", "x=[{}] y=[3]"), 1, "json flat 7: empty nested object");
+assert_eq(_jf_is("{\"tags\":[\"a\",\"b\"],\"n\":1}", "tags=[[\"a\",\"b\"]] n=[1]"), 1,
+  "json flat 8: array of strings (element b took n's value)");
+assert_eq(_jf_is("{\"y\":3,\"x\":{\"a\":1}}", "y=[3] x=[{\"a\":1}]"), 1, "json flat 9: nested object last");
+assert_eq(_jf_is("{\"x\":{\"s\":\"},{\"},\"y\":3}", "x=[{\"s\":\"},{\"}] y=[3]"), 1,
+  "json flat 10: a nested string holding } and , is text");
+var jm_doc = "{\"meta\":{\"x\":1,\"admin\":\"true\"},\"admin\":\"false\"}";
+assert_eq(_jf_is(jm_doc, "meta=[{\"x\":1,\"admin\":\"true\"}] admin=[false]"), 1,
+  "json flat 11: a nested member does not shadow a top-level key");
+assert_eq(_jf_get_is(bayan_json_parse(str_from(jm_doc)), "admin", "false"), 1,
+  "json flat 11: get(admin) answers the top-level false, not meta's true");
+# Parts 3 and 4, malformed: the pairs before the defect, then nothing.
+var jx_12 = bayan_json_parse(str_from("{\"EUR\":0.92,\"GBP\" 0.79,\"JPY\":149.5}"));
+assert_eq(str_eq_cstr(_jf_render(jx_12), "EUR=[0.92]"), 1, "json flat 12: missing ':' before a number stops");
+assert_eq(bayan_json_get(jx_12, str_from("GBP")), 0, "json flat 12: GBP did not take JPY's 149.5");
+var jx_13 = bayan_json_parse(str_from("{\"a\" \"x\",\"b\":\"y\"}"));
+assert_eq(vec_len(jx_13), 0, "json flat 13: missing ':' before a string stops");
+assert_eq(bayan_json_get(jx_13, str_from("a")), 0, "json flat 13: a did not take b's y");
+var jx_14 = bayan_json_parse(str_from("{\"role\":\"user\",\"admin\",false,\"audit\":true}"));
+assert_eq(str_eq_cstr(_jf_render(jx_14), "role=[user]"), 1, "json flat 14: ',' where ':' belongs stops");
+assert_eq(bayan_json_get(jx_14, str_from("admin")), 0, "json flat 14: admin did not take audit's true");
+var jx_15 = bayan_json_parse(str_from("{\"a\":\"x\" \"y\",\"b\":1}"));
+assert_eq(str_eq_cstr(_jf_render(jx_15), "a=[x]"), 1, "json flat 15: a string where ',' belongs stops");
+assert_eq(bayan_json_get(jx_15, str_from("y")), 0, "json flat 15: the stray y did not take b's 1");
+var jx_16 = bayan_json_parse(str_from("{\"a\":,\"b\":2}"));
+assert_eq(vec_len(jx_16), 0, "json flat 16: ':' then ',' stops");
+assert_eq(bayan_json_get(jx_16, str_from("a")), 0, "json flat 16: a did not take the key name b");
+
+test_group("json: flat parser — nested spans, kinds, depth (1.5.10)");
+assert_eq(_jf_is("{\"x\":{\"s\":\"a\\\"}\"},\"y\":1}", "x=[{\"s\":\"a\\\"}\"}] y=[1]"), 1,
+  "json flat: an escaped quote inside a nested string does not end it");
+# An EVEN run of backslashes before a quote closes the string: `"C:\\"` is C:\.
+assert_eq(_jf_is("{\"p\":\"C:\\\\\",\"q\":1}", "p=[C:\\\\] q=[1]"), 1,
+  "json flat: an escaped backslash before the closing quote");
+assert_eq(_jf_is("{\"x\":{\"p\":\"C:\\\\\"},\"y\":1}", "x=[{\"p\":\"C:\\\\\"}] y=[1]"), 1,
+  "json flat: and inside a nested value");
+assert_eq(_jf_is("{\"x\":{\"a\":1", ""), 1, "json flat: an unclosed nested value is no value");
+assert_eq(_jf_is("{\"w\":0,\"x\":[1,2", "w=[0]"), 1, "json flat: and keeps the pairs before it");
+assert_eq(_jf_is("{\"x\":{\"s\":\"ab", ""), 1, "json flat: nor one whose string never closes");
+assert_eq(_jf_is("{\"a\" : 1}", "a=[1]"), 1, "json flat: whitespace before ':' is allowed");
+assert_eq(_jf_is("{\"a\"\r\n:\t1\r\n}", "a=[1]"), 1, "json flat: CR, LF and TAB around ':' too");
+# The MCP tools/call shape: params came back as `{"name":` and the tool name as
+# a top-level KEY whose value was `{`.
+var jr_sb = str_builder_new();
+str_builder_add_cstr(jr_sb, "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", ");
+str_builder_add_cstr(jr_sb, "\"params\": {\"name\": \"tc\", \"arguments\": {}}}");
+var jr = bayan_json_parse(str_builder_build(jr_sb));
+var jr_want = "jsonrpc=[2.0] id=[1] method=[tools/call] params=[{\"name\": \"tc\", \"arguments\": {}}]";
+assert_eq(str_eq_cstr(_jf_render(jr), jr_want), 1, "json flat: a JSON-RPC body keeps params whole");
+assert_eq(bayan_json_get(jr, str_from("tc")), 0, "json flat: and no member value surfaces as a key");
+# KINDS ARE MATCHED: a wrong-kind closer is malformed, not the end of the span.
+assert_eq(_jf_is("{\"x\":[1},\"y\":2}", ""), 1, "json flat: [ closed by } stops");
+var jk_a = bayan_json_parse(str_from("{\"meta\":{\"x\":],\"admin\":\"true\"},\"admin\":\"false\"}"));
+assert_eq(vec_len(jk_a), 0, "json flat: { closed by ] stops");
+assert_eq(bayan_json_get(jk_a, str_from("admin")), 0, "json flat: and meta's admin does not surface");
+var jk_b = bayan_json_parse(str_from("{\"meta\":{\"x\":[}],\"admin\":\"true\"},\"admin\":\"false\"}"));
+assert_eq(vec_len(jk_b), 0, "json flat: [} inside a value stops (depth alone matched it)");
+assert_eq(bayan_json_get(jk_b, str_from("admin")), 0, "json flat: and meta's admin does not surface");
+assert_eq(_jf_is("{\"w\":0,\"x\":{\"a\":[1}],\"y\":2}", "w=[0]"), 1, "json flat: a mismatch keeps the pairs before it");
+# The kind stack is 128 bits across 16 bytes: mixed kinds 120 deep cross every
+# byte boundary, and one swapped closer must be seen at any level.
+assert_eq(vec_len(bayan_json_parse(_jf_deep(120, 0))), 3, "json flat: 120 levels of mixed kinds are one value");
+assert_eq(_jf_swapped(120, 0), 1, "json flat: a swapped closer at level 0 is seen");
+assert_eq(_jf_swapped(120, 7), 1, "json flat: at level 7, the last bit of byte 0");
+assert_eq(_jf_swapped(120, 8), 1, "json flat: at level 8, the first bit of byte 1");
+assert_eq(_jf_swapped(120, 63), 1, "json flat: at level 63");
+assert_eq(_jf_swapped(120, 64), 1, "json flat: at level 64");
+assert_eq(_jf_swapped(120, 119), 1, "json flat: at level 119, the innermost");
+# DEPTH: the tree parser accepts 128 open containers counting the top-level
+# object; the flat parser refuses at the same place, so a document both parsers
+# accept gives both the same members.
+var jd_127 = _jf_deep(127, 91);
+var jd_128 = _jf_deep(128, 91);
+assert_eq(vec_len(bayan_json_parse(jd_127)), 3, "json flat: a value 127 deep (128 with the object) parses");
+assert_neq(bayan_json_v_parse(jd_127), 0, "json flat: as the tree parser does");
+assert_eq(_jf_is_s(jd_128, "w=[0]"), 1, "json flat: 128 deep stops at that member");
+assert_eq(bayan_json_v_parse(jd_128), 0, "json flat: where the tree parser refuses the document");
+assert_eq(_jf_is_s(_jf_deep(128, 123), "w=[0]"), 1, "json flat: 128 OBJECT levels stop too");
+# A hostile `[[[[...` costs one bounded pass: 100,000 levels stop at the cap,
+# and 100,000 sibling arrays (a 300 KB span) are one value.
+var jd_huge = _jf_deep(100000, 91);
+assert_eq(_jf_is_s(jd_huge, "w=[0]"), 1, "json flat: a 100,000-deep value stops, no crash");
+var jd_open = str_builder_new();
+str_builder_add_cstr(jd_open, "{\"w\":0,\"d\":");
+var jd_i = 0;
+while (jd_i < 100000) { str_builder_putc(jd_open, 91); jd_i = jd_i + 1; }
+assert_eq(_jf_is_s(str_builder_build(jd_open), "w=[0]"), 1, "json flat: and so does 100,000 unclosed");
+var jd_wide = str_builder_new();
+str_builder_add_cstr(jd_wide, "{\"d\":[");
+jd_i = 0;
+while (jd_i < 100000) {
+    if (jd_i > 0) { str_builder_putc(jd_wide, 44); }
+    str_builder_add_cstr(jd_wide, "[]");
+    jd_i = jd_i + 1;
+}
+str_builder_add_cstr(jd_wide, "],\"e\":1}");
+var jd_wv = bayan_json_parse(str_builder_build(jd_wide));
+assert_eq(vec_len(jd_wv), 2, "json flat: 100,000 sibling arrays are one value");
+assert_eq(_jf_len(jd_wv, "d"), 299999 + 2, "json flat: spanning every byte of it");
+# _JP_MAX_DEPTH is a var. Lowering it lowers the flat cap with the tree's;
+# raising it raises the flat cap too, up to the 128 levels the flat scan's
+# 16-byte kind stack holds, and no further.
+_JP_MAX_DEPTH = 4;
+assert_eq(vec_len(bayan_json_parse(_jf_deep(3, 91))), 3, "json flat: a lowered cap still admits 3 inside 1");
+assert_eq(_jf_is_s(_jf_deep(4, 91), "w=[0]"), 1, "json flat: and refuses 4, as the tree parser would");
+# Raised by one, the cap admits 128 levels, as the tree parser does. A stack
+# bound one level short (127) refuses the same documents as 128 at the default
+# cap, so only a raised cap can see it.
+_JP_MAX_DEPTH = 129;
+assert_eq(vec_len(bayan_json_parse(_jf_deep(128, 91))), 3,
+  "json flat: a cap raised by one admits 128 levels, as the tree parser does");
+assert_neq(bayan_json_v_parse(_jf_deep(128, 91)), 0, "json flat: (the tree parser accepts it)");
+# Past 128 the stack's own bound refuses. These rows see an overrun of the stack
+# only when it changes the answer: without the bound, 129 object levels came
+# back as a value, and what a longer overrun does depends on the frame layout,
+# so three shapes are tried. They do NOT see one store past kinds[15], which is
+# what checking the bound after the store instead of before it would make: that
+# store is followed by the same refusal, so the answer is the same. Only the
+# comment at the check in src/json.cyr guards that order.
+_JP_MAX_DEPTH = 100000;
+assert_eq(vec_len(bayan_json_parse(_jf_deep(128, 0))), 3, "json flat: a raised cap admits 128 mixed levels");
+assert_eq(_jf_is_s(_jf_deep(129, 123), "w=[0]"), 1, "json flat: a raised cap stops at the 128-bit stack");
+assert_eq(_jf_is_s(_jf_deep(129, 91), "w=[0]"), 1, "json flat: for arrays too");
+assert_eq(_jf_is_s(_jf_deep(1000, 0), "w=[0]"), 1, "json flat: and mixed kinds 1000 deep");
+_JP_MAX_DEPTH = 128;
+
+test_group("json: flat parser — values that never end, bytes where a key belongs (1.5.10)");
+# A value that never ends is not a value. Each Str below is a PREFIX of a longer
+# buffer whose next bytes would complete it, so a scan that read past the
+# Str's end would return a pair.
+var ju_str = "{\"w\":0,\"a\":\"xyz\"}";
+assert_eq(_jf_is_s(str_new(ju_str, 15), "w=[0]"), 1, "json flat: an unterminated string value is dropped");
+assert_eq(_jf_is("{\"a\":\"xyz", ""), 1, "json flat: was a = xyz");
+assert_eq(_jf_is("{\"a\":\"x\"", "a=[x]"), 1, "json flat: a string value closed by the last byte is whole");
+# A backslash in the last byte steps the scan past the end. The bytes after the
+# cut, `""}`, would close the string for a scan that kept reading.
+var ju_esc = "{\"w\":0,\"a\":\"xyz\\\"\"}";
+assert_eq(_jf_is_s(str_new(ju_esc, 16), "w=[0]"), 1, "json flat: a value ending in a lone backslash is dropped");
+var ju_key = "{\"w\":0,\"a\\\"\":1}";
+assert_eq(_jf_is_s(str_new(ju_key, 10), "w=[0]"), 1, "json flat: a key ending in a lone backslash is no key");
+# An unterminated key ends the parse; carrying on from its -1 end rewound the
+# scan to byte 0, which here reads `:1` as a value for a key of length -5.
+assert_eq(vec_len(bayan_json_parse(str_from(":1{\"a"))), 0, "json flat: an unterminated key ends the parse");
+# So does an unterminated string inside a nested value. Not checking the span's
+# -1 rescanned from byte 0, where `]` closed the span BEFORE its start: x came
+# back with a value of length -5 (a count, since rendering it would fault).
+assert_eq(vec_len(bayan_json_parse(str_from("]{\"x\":[\"a"))), 0,
+  "json flat: an unterminated string inside a nested value ends the parse");
+var ju_num = "{\"w\":0,\"a\":123}";
+assert_eq(_jf_is_s(str_new(ju_num, 13), "w=[0]"), 1, "json flat: a bare value the input ends on may be cut: dropped");
+assert_eq(_jf_is("{\"a\":12 ", "a=[12]"), 1, "json flat: one that whitespace ends is whole");
+assert_eq(_jf_is("{\"a\":", ""), 1, "json flat: ':' at the end has no value");
+assert_eq(_jf_is("{\"a\":}", ""), 1, "json flat: nor ':' then '}'");
+assert_eq(_jf_is("{\"a\":]}", ""), 1, "json flat: nor ':' then ']'");
+assert_eq(_jf_is("{\"a\"::1}", ""), 1, "json flat: nor ':' then ':'");
+assert_eq(_jf_is("{\"a\",:1}", ""), 1, "json flat: ',' between a key and its ':' stops");
+# Where a key belongs only whitespace, ',', '"' and '}' may stand. A stray { or
+# [ used to be stepped over byte by byte, surfacing the nested member.
+var jp_a = bayan_json_parse(str_from("{\"a\":1, {\"b\":2}}"));
+assert_eq(str_eq_cstr(_jf_render(jp_a), "a=[1]"), 1, "json flat: a stray { where a key belongs stops");
+assert_eq(bayan_json_get(jp_a, str_from("b")), 0, "json flat: and its b does not surface");
+assert_eq(_jf_is("{\"a\":1, [\"b\",2]}", "a=[1]"), 1, "json flat: so does a stray [");
+assert_eq(_jf_is("{\"a\":1 x \"b\":2}", "a=[1]"), 1, "json flat: and a stray word");
+# A bare value ends at any structural byte, so it cannot swallow the next pair,
+# and it stands only when whitespace, `,` or `}` ended it. One cut by `"` `:`
+# `[` `]` or `{` is refused: the part before the cut can parse as a number.
+assert_eq(_jf_is("{\"a\":1\"b\":2}", ""), 1, "json flat: a bare value cut by a quote is refused (was a = 1\"b\":2)");
+assert_eq(_jf_is("{\"GBP\":0.7:9,\"JPY\":149.5}", ""), 1, "json flat: one cut by ':' is not returned as 0.7");
+assert_eq(_jf_is("{\"w\":0,\"n\":12[3],\"m\":1}", "w=[0]"), 1, "json flat: nor one cut by '[' as 12");
+assert_eq(_jf_is("{\"w\":0,\"url\":http://x,\"m\":1}", "w=[0]"), 1, "json flat: nor an unquoted URL as http");
+assert_eq(_jf_is("{\"a\":tr\"ue\":1}", ""), 1, "json flat: and a quote inside one makes no key (was ue = 1)");
+assert_eq(_jf_is("{\"a\":1]}", ""), 1, "json flat: ']' cuts one too: the top level is an object");
+assert_eq(_jf_is("{\"a\":1{}", ""), 1, "json flat: as does '{'");
+# A value followed by `:` is the next KEY, so its own key had none: no pair, and
+# the parse stops there. The tree parser refuses every one of these documents.
+assert_eq(_jf_is("{\"a\":\"b\":2}", ""), 1, "json flat: a value followed by ':' is the next key (a took b)");
+assert_eq(bayan_json_v_parse(str_from("{\"a\":\"b\":2}")), 0, "json flat: (the tree parser refuses it)");
+assert_eq(_jf_is("{\"admin\": \"true\": 1}", ""), 1, "json flat: admin did not take the key name true");
+assert_eq(bayan_json_v_parse(str_from("{\"admin\": \"true\": 1}")), 0, "json flat: (the tree parser refuses it)");
+assert_eq(_jf_is("{\"a\":\n  \"b\": 2\n}", ""), 1, "json flat: nor across a line break");
+assert_eq(bayan_json_v_parse(str_from("{\"a\":\n  \"b\": 2\n}")), 0, "json flat: (the tree parser refuses it)");
+assert_eq(_jf_is("{\"a\": true: 1}", ""), 1, "json flat: a bare value followed by ':' is no value");
+assert_eq(bayan_json_v_parse(str_from("{\"a\": true: 1}")), 0, "json flat: (the tree parser refuses it)");
+assert_eq(_jf_is("{\"w\":0,\"a\": true :1}", "w=[0]"), 1, "json flat: nor with whitespace before the ':'");
+assert_eq(_jf_is("{\"w\":0,\"a\":{\"x\":1} :2}", "w=[0]"), 1, "json flat: nor a nested value followed by ':'");
+# The byte after a string or nested value is read, not stepped over.
+assert_eq(_jf_is("{\"a\":\"x\"\"b\":1}", "a=[x] b=[1]"), 1, "json flat: the byte after a string value is read");
+assert_eq(_jf_is("{\"a\":{}\"b\":1}", "a=[{}] b=[1]"), 1, "json flat: the byte after a nested value is read");
+assert_eq(_jf_is("{\"a\":[1]]\"b\":2}", "a=[[1]]"), 1, "json flat: a stray closer after a nested value stops");
+# Tolerated as before: none of these can hand a key another key's bytes.
+assert_eq(_jf_is("{,,\"a\":1,,}", "a=[1]"), 1, "json flat: doubled and trailing commas are skipped");
+assert_eq(_jf_is("{\"a\":1 \"b\":2}", "a=[1] b=[2]"), 1, "json flat: a missing comma is tolerated");
+assert_eq(_jf_is("xyz{\"a\":1}{\"b\":2}", "a=[1]"), 1, "json flat: bytes outside the first object are ignored");
+assert_eq(_jf_is("{\"a\":abc,\"b\":1}", "a=[abc] b=[1]"), 1, "json flat: bare values are not validated");
+assert_eq(vec_len(bayan_json_parse(0)), 0, "json flat: a null source is an empty vec, not a load through 0");
+# Every byte through every byte class (the scanner keeps them as bitmaps). The
+# expected classes are spelled out here, not derived from the bitmaps.
+fn _jf_in(c, set): i64 {
+    var i = 0;
+    while (load8(set + i) != 0) { if (load8(set + i) == c) { return 1; } i = i + 1; }
+    return 0;
+}
+var jb_buf = alloc(16);
+var jb_wrong = 0;
+var jb_c = 0;
+while (jb_c < 256) {
+    var jb_ws = _jf_in(jb_c, " \t\n\r");
+    # Ends a bare value: whitespace and the structural bytes. Whitespace, `,` and
+    # `}` leave it standing; `" : [ ] {` cut it, and a cut value is no value.
+    memcpy(jb_buf, "{\"a\":1", 6);
+    store8(jb_buf + 6, jb_c);
+    store8(jb_buf + 7, 125);
+    var jb_v = bayan_json_get(bayan_json_parse(str_new(jb_buf, 8)), str_from("a"));
+    var jb_ends = jb_ws;
+    if (_jf_in(jb_c, ",}") == 1) { jb_ends = 1; }
+    if (_jf_in(jb_c, "\":[]{") == 1) {
+        if (jb_v != 0) { jb_wrong = jb_wrong + 1; }
+    }
+    elif (jb_v == 0) { jb_wrong = jb_wrong + 1; }
+    elif (str_len(jb_v) != 2 - jb_ends) { jb_wrong = jb_wrong + 1; }
+    # A `:` after a value, with this byte between: whitespace (skipped) or
+    # nothing else lets the `:` make the value the next key. After a string
+    # value any other byte ends the member first, and the pair stands.
+    memcpy(jb_buf, "{\"a\":\"x\"", 8);
+    store8(jb_buf + 8, jb_c);
+    memcpy(jb_buf + 9, ":2}", 3);
+    var jb_colon = jb_ws;
+    if (jb_c == 58) { jb_colon = 1; }
+    if (vec_len(bayan_json_parse(str_new(jb_buf, 12))) != 1 - jb_colon) { jb_wrong = jb_wrong + 1; }
+    # After a bare value only `,` and `}` end the member first; any other byte
+    # either is skipped to the `:` or cuts the value.
+    memcpy(jb_buf, "{\"a\":1", 6);
+    store8(jb_buf + 6, jb_c);
+    memcpy(jb_buf + 7, ":2}", 3);
+    if (vec_len(bayan_json_parse(str_new(jb_buf, 10))) != _jf_in(jb_c, ",}")) { jb_wrong = jb_wrong + 1; }
+    # Skipped where a key belongs: whitespace and `,` only.
+    memcpy(jb_buf, "{\"a\":1,", 7);
+    store8(jb_buf + 7, jb_c);
+    memcpy(jb_buf + 8, "\"b\":2}", 6);
+    var jb_skip = jb_ws;
+    if (jb_c == 44) { jb_skip = 1; }
+    if (vec_len(bayan_json_parse(str_new(jb_buf, 14))) != 1 + jb_skip) { jb_wrong = jb_wrong + 1; }
+    # Skipped around `:`: whitespace only.
+    memcpy(jb_buf, "{\"a\"", 4);
+    store8(jb_buf + 4, jb_c);
+    store8(jb_buf + 5, 58);
+    store8(jb_buf + 6, jb_c);
+    memcpy(jb_buf + 7, "1}", 2);
+    if (vec_len(bayan_json_parse(str_new(jb_buf, 9))) != jb_ws) { jb_wrong = jb_wrong + 1; }
+    jb_c = jb_c + 1;
+}
+assert_eq(jb_wrong, 0, "json flat: all 256 bytes land in the right class, five ways each");
+
+test_group("json: flat parser — re-parsing a nested span (1.5.10)");
+# A nested member is reached by parsing its span again:
+# bayan_json_parse(bayan_json_get(pairs, key)). On 1.5.9 the outer parse cut x
+# at `{"a":1` and lost y: x.a = 1, x.b = 0, y = 0.
+var jdv = bayan_json_parse(str_from("{\"x\":{\"a\":1,\"b\":2},\"y\":3}"));
+var jdv_x = bayan_json_parse(bayan_json_get(jdv, str_from("x")));
+assert_eq(bayan_json_get_int(jdv_x, str_from("a")), 1, "json flat: x.a");
+assert_eq(bayan_json_get_int(jdv_x, str_from("b")), 2, "json flat: x.b (was 0)");
+assert_eq(bayan_json_get_int(jdv, str_from("y")), 3, "json flat: y (was 0)");
+var jdd = bayan_json_parse(str_from("{\"a\": {\"b\": {\"c\": \"deep\", \"n\": [1, {\"m\": 2}]}}, \"z\": 0}"));
+var jdd_a = bayan_json_parse(bayan_json_get(jdd, str_from("a")));
+var jdd_b = bayan_json_parse(bayan_json_get(jdd_a, str_from("b")));
+assert_eq(str_eq_cstr(_jf_render(jdd_b), "c=[deep] n=[[1, {\"m\": 2}]]"), 1,
+  "json flat: two levels down, re-parsed twice");
+assert_eq(_jf_get_is(jdd_b, "c", "deep"), 1, "json flat: c");
+assert_eq(vec_len(bayan_json_parse(bayan_json_get(jdd, str_from("absent")))), 0,
+  "json flat: re-parsing an absent member is an empty vec");
+
+test_group("json: flat parser — a refused allocation returns 0 (1.5.10)");
+# ALLOC_MAX = 0 makes the global alloc refuse every request (the lever the base64
+# encoder's row uses). The vec is refused: 0, never a vec loaded through.
+var jo_src = str_from("{\"a\":1,\"b\":2}");
+var jo_max = ALLOC_MAX;
+ALLOC_MAX = 0;
+var jo_none = bayan_json_parse(jo_src);
+ALLOC_MAX = jo_max;
+assert_eq(jo_none, 0, "json flat: a refused vec returns 0");
+assert_eq(bayan_json_get(jo_none, str_from("a")), 0, "json flat: and get() on that 0 answers absent");
+# 17 members, so the 17th push grows the vec from 16 slots to 32 (256 bytes).
+# ALLOC_MAX = 128 grants the vec (24 and 128 bytes) and every Str and pair (16)
+# and refuses only that growth.
+var jo_sb = str_builder_new();
+str_builder_putc(jo_sb, 123);
+var jo_i = 0;
+while (jo_i < 17) {
+    if (jo_i > 0) { str_builder_putc(jo_sb, 44); }
+    str_builder_add_cstr(jo_sb, "\"k\":\"v\"");
+    jo_i = jo_i + 1;
+}
+str_builder_putc(jo_sb, 125);
+var jo_17 = str_builder_build(jo_sb);
+assert_eq(vec_len(bayan_json_parse(jo_17)), 17, "json flat: the refusal fixture has 17 members");
+ALLOC_MAX = 128;
+var jo_grow = bayan_json_parse(jo_17);
+ALLOC_MAX = jo_max;
+assert_eq(jo_grow, 0, "json flat: a refused push (vec growth) returns 0, not 16 of 17 pairs");
+# Every allocation point of that parse, each refused ALONE with every other
+# request granted, through the allocator-taking core bayan_json_parse wraps. A
+# fail-after allocator would refuse every request from the k-th on, so a check
+# missing on a key Str would hide behind the refused pair that follows it.
+var jo_nth = 0;
+var jo_calls = 0;
+fn _jo_refuse_nth(state, size): i64 {
+    jo_calls = jo_calls + 1;
+    if (jo_calls == jo_nth) { return 0; }
+    return alloc(size);
+}
+var JO_CNT = test_allocator();
+assert_eq(vec_len(bayan_json_parse_a(JO_CNT, jo_17)), 17, "json flat: the counting allocator grants a whole parse");
+var jo_n = test_allocator_alloc_count(JO_CNT);
+assert_eq(jo_n, 2 + 17 * 3 + 1, "json flat: the vec (2), a key, a value and a pair per member (3), one growth");
+var JO_ONE = allocator_new(&_jo_refuse_nth, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
+var jo_k = 1;
+var jo_partial = 0;
+while (jo_k <= jo_n) {
+    jo_nth = jo_k;
+    jo_calls = 0;
+    if (bayan_json_parse_a(JO_ONE, jo_17) != 0) { jo_partial = jo_partial + 1; }
+    jo_k = jo_k + 1;
+}
+assert_eq(jo_partial, 0, "json flat: each allocation point, refused alone, returns 0");
+jo_nth = 0;
+jo_calls = 0;
+assert_eq(vec_len(bayan_json_parse_a(JO_ONE, jo_17)), 17, "json flat: (the one-shot allocator refuses nothing else)");
+
 test_group("json: file loaders read the WHOLE file (v1.5.1 regression)");
 # A fixed 16 KiB buffer used to truncate mid-token and report success: a
 # 52 KB / 2,001-key object parsed to 630 pairs. build/ is gitignored.
@@ -2523,6 +3077,55 @@ assert_eq(bayan_json_v_obj_key(jv_obj, 99), 0, "json: an out-of-range index retu
 assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_str(jv_obj, str_from("y"))), 2,
   "json: obj_get_by_str accepts a Str, which obj_get cannot");
 assert_eq(bayan_json_v_obj_get_by_str(jv_obj, str_from("nope")), 0, "json: and returns 0 when absent");
+
+test_group("json: the typed lookups agree, and _by_cstr matches whole keys only (v1.5.10)");
+# 1.5.10 split the lookup by key type — _by_cstr / _by_str — and deprecated the bare name.
+# The keys here are each other's prefixes on purpose, in BOTH orders: a lookup that compared
+# only min(len) bytes, or accepted a stored key that merely STARTS with the probe, answers
+# the wrong pair rather than 0, and a suite whose keys share no prefix cannot tell.
+var jk_s = "{\"ab\":1,\"a\":2,\"abc\":3,\"\":4}";
+var jk_o = bayan_json_v_parse_buf(jk_s, strlen(jk_s));
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(jk_o, "a")), 2, "json: _by_cstr \"a\" is not \"ab\"");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(jk_o, "ab")), 1, "json: _by_cstr \"ab\" is not \"abc\"");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(jk_o, "abc")), 3,
+  "json: _by_cstr \"abc\" found after its prefixes");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(jk_o, "")), 4, "json: _by_cstr the empty key");
+assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, "abcd"), 0, "json: _by_cstr a key no stored key equals -> 0");
+assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, "b"), 0, "json: _by_cstr a stored key's suffix -> 0");
+assert_eq(bayan_json_v_obj_get_by_cstr(0, "a"), 0, "json: _by_cstr on a null value -> 0");
+assert_eq(bayan_json_v_obj_get_by_cstr(bayan_json_v_arr_new(), "a"), 0, "json: _by_cstr on a non-object -> 0");
+assert_eq(bayan_json_v_obj_get_by_cstr(bayan_json_v_int_new(5), "a"), 0, "json: _by_cstr on a scalar -> 0");
+# The two typed spellings are the same lookup: the SAME node, not merely an equal one.
+assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, "ab"), bayan_json_v_obj_get_by_str(jk_o, str_from("ab")),
+  "json: _by_cstr and _by_str return the same node");
+assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, ""), bayan_json_v_obj_get_by_str(jk_o, str_from("")),
+  "json: _by_cstr and _by_str agree on the empty key");
+# A repeated key is kept as a second pair (the parser accepts it; obj_set appends). Every
+# lookup answers the FIRST, the rule src/yaml.cyr documents, so the typed lookups and the two
+# deprecated names (forwarding to _by_cstr; reached through `&fn`, see the alias rows below)
+# must pick the same pair. The suite above has no repeated key, so a last-match lookup in
+# either typed spelling passed it.
+var jk_d = "{\"a\":1,\"a\":2}";
+var jk_do = bayan_json_v_parse_buf(jk_d, strlen(jk_d));
+var jk_first = bayan_json_v_obj_get_by_str(jk_do, str_from("a"));
+var jk_dep_get = &bayan_json_v_obj_get;
+var jk_dep_alias = &json_v_obj_get;
+assert_eq(bayan_json_v_obj_len(jk_do), 2, "json: a repeated key is kept as a second pair");
+assert_eq(bayan_json_v_int(jk_first), 1, "json: _by_str answers the FIRST of a repeated key");
+assert_eq(bayan_json_v_obj_get_by_cstr(jk_do, "a"), jk_first, "json: _by_cstr picks the same pair as _by_str");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(jk_do, "a")), 1,
+  "json: _by_cstr answers the FIRST of a repeated key");
+assert_eq(fncall2(jk_dep_get, jk_do, "a"), jk_first, "json: deprecated obj_get picks the FIRST of a repeated key");
+assert_eq(fncall2(jk_dep_alias, jk_do, "a"), jk_first,
+  "json: deprecated json_v_obj_get picks the FIRST of a repeated key");
+# A null key returns 0. Through 1.5.9 every lookup died of SIGSEGV on one (strlen(0) /
+# str_data(0)), and obj_key's documented out-of-range 0 leads straight there.
+assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, 0), 0, "json: _by_cstr with a null key -> 0");
+assert_eq(bayan_json_v_obj_get_by_str(jk_o, 0), 0, "json: _by_str with a null key -> 0");
+assert_eq(bayan_json_v_obj_get_by_str(jk_o, bayan_json_v_obj_key(jk_o, 99)), 0,
+  "json: _by_str on obj_key's out-of-range 0 -> 0");
+assert_eq(fncall2(jk_dep_get, jk_o, 0), 0, "json: deprecated obj_get with a null key -> 0");
+assert_eq(fncall2(jk_dep_alias, jk_o, 0), 0, "json: deprecated json_v_obj_get with a null key -> 0");
 
 test_group("json: the remaining parse and pointer entry points (v1.5.2)");
 var jp_ps[48];
@@ -2911,11 +3514,35 @@ while (ba_i < vec_len(BA_TV)) {
 # --- json: container access, parse, build, pointer ---
 var BA_JS = "{\"a\":[10,20],\"b\":{\"c\":true}}";
 var ba_doc = bayan_json_v_parse_buf(BA_JS, strlen(BA_JS));
-var ba_arr = bayan_json_v_obj_get(ba_doc, "a");
+var ba_arr = bayan_json_v_obj_get_by_cstr(ba_doc, "a");
 assert_eq(json_v_arr_get(ba_arr, 1), bayan_json_v_arr_get(ba_arr, 1), "alias json_v_arr_get");
 assert_eq(json_v_obj_key(ba_doc, 1), bayan_json_v_obj_key(ba_doc, 1), "alias json_v_obj_key");
 assert_eq(json_v_obj_val(ba_doc, 1), bayan_json_v_obj_val(ba_doc, 1), "alias json_v_obj_val");
-assert_eq(json_v_obj_get(ba_doc, "b"), bayan_json_v_obj_get(ba_doc, "b"), "alias json_v_obj_get");
+# The two DEPRECATED lookups (1.5.10): bayan_json_v_obj_get and this alias of it. The
+# deprecation is non-breaking only if they keep answering exactly as before, so that is
+# pinned here — the same node as _by_cstr, and 0 wherever _by_cstr gives 0.
+#
+# They are reached through `&fn`. cyrius 6.6.12 does not deprecation-check three call
+# shapes (measured): `&fn`, a method-dot call, and a call parsed before the definition. This
+# suite uses the first, so it stays warning-free with no allowance. A direct call would
+# warn, and `cyrius test` labels a .tcyr's warnings `<source>:line:col` with no file name,
+# so no exact per-file allowance is possible. The WARNING itself is pinned where it ships:
+# scripts/consumer-check.sh compiles a direct call of each name against every bundle that
+# carries it and checks each warning and its exact message. If a future cyrius starts
+# warning on `&fn` too, the test step fails naming both functions. Revisit the arrangement
+# then — `cyrius coverage` still needs these two names referenced from a .tcyr — and never
+# answer it with a pattern allowance on the test step's warning gate.
+var ba_dep_get = &bayan_json_v_obj_get;
+var ba_dep_alias = &json_v_obj_get;
+assert_eq(fncall2(ba_dep_get, ba_doc, "b"), bayan_json_v_obj_get_by_cstr(ba_doc, "b"),
+  "deprecated bayan_json_v_obj_get still answers: the same node as _by_cstr");
+assert_neq(fncall2(ba_dep_get, ba_doc, "b"), 0, "deprecated bayan_json_v_obj_get still finds the key");
+assert_eq(fncall2(ba_dep_get, ba_doc, "zz"), 0, "deprecated bayan_json_v_obj_get: absent key -> 0");
+assert_eq(fncall2(ba_dep_get, ba_arr, "b"), 0, "deprecated bayan_json_v_obj_get: non-object -> 0");
+assert_eq(fncall2(ba_dep_get, 0, "b"), 0, "deprecated bayan_json_v_obj_get: null -> 0");
+assert_eq(fncall2(ba_dep_alias, ba_doc, "b"), bayan_json_v_obj_get_by_cstr(ba_doc, "b"), "alias json_v_obj_get");
+assert_eq(fncall2(ba_dep_alias, ba_doc, "a"), ba_arr, "alias json_v_obj_get: the first key too");
+assert_eq(fncall2(ba_dep_alias, ba_doc, "zz"), 0, "alias json_v_obj_get: absent key -> 0");
 assert_eq(_ba_same(json_v_parse(str_from(BA_JS)), bayan_json_v_parse(str_from(BA_JS))), 1, "alias json_v_parse");
 assert_eq(_ba_same(json_v_parse_buf(BA_JS, strlen(BA_JS)), bayan_json_v_parse_buf(BA_JS, strlen(BA_JS))), 1,
   "alias json_v_parse_buf");

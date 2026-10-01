@@ -2,6 +2,167 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.10] — 2026-10-01
+
+Patch release. Resolves the three open issues, moves the toolchain pin to cyrius **6.6.12**, and
+moves the GitHub Actions to their current majors. Public API: two additions
+(`bayan_json_v_obj_get_by_cstr`, `bayan_json_parse_a`) and two deprecations
+(`bayan_json_v_obj_get`, `json_v_obj_get`); nothing removed.
+
+> ⚠ **`bayan_json_parse` changes what it returns for VALID input.** An object or array value now
+> comes back whole, as its raw source span; its members are no longer top-level pairs, and the
+> members after it are no longer lost. TAB or CR after a bare value no longer stays in it
+> (`0.79\r` is now `0.79`). A member nested deeper than 128 levels (counting the top-level object)
+> now stops the parse, as `bayan_json_v_parse` refuses that document. Malformed input now stops
+> the parse at the first defect instead of pairing a key with another key's bytes.
+
+### Fixed
+
+- **`bayan_json_parse` handed keys the wrong values**
+  ([2026-09-30](docs/development/issues/archived/2026-09-30-json-parse-flat-misassociates-values.md),
+  repro 14 of 16 rows wrong on 1.5.9, 0 now). The flat scan had five defects:
+  - TAB and CR did not end a bare value: a CRLF document's last value came back as `0.79\r`, which
+    a number parse refused. All four JSON whitespace bytes now end one and are skipped around `:`.
+  - A nested object or array was read as a bare value, cut at its first `,` `}` space or LF, and
+    the scan resumed INSIDE it: for `{"meta":{"x":1,"admin":"true"},"admin":"false"}`,
+    `bayan_json_get(pairs, "admin")` answered `true`, from inside meta. A nested value is now ONE
+    value, its raw source span; parse the span again to reach inside it. The span scan is
+    string-aware and **matches closer kinds** — the filing's proposal counted depth only, which let
+    `{"meta":{"x":[}],...}` surface meta's `admin` again. Kinds sit on a 128-bit stack on the
+    frame; the scan never recurses.
+  - A key whose own `:` was missing took the next pair's value: the scan skipped to the next `:`
+    anywhere in the document. `,` was skipped in every state, so `"a":,"b":2` gave a the value `b`.
+  - A value followed by `:` was paired, although the `:` made it the next KEY: `{"a":"b":2}` gave
+    a = `b` (found by review; the filing's fix closed only the `,` spelling of this).
+  - A bare value ran on through `"`, so `{"a":1"b":2}` gave a = `1"b":2`. A bare value now stands
+    only when whitespace, `,` or `}` ends it; one cut by `"` `:` `[` `]` or `{` is refused rather
+    than returned as the part before the cut, which can parse (`{"GBP":0.7:9}` would give 0.7).
+
+  Malformed input now stops the parse; the vec holds the pairs read before the first defect it
+  stops on, never one after it. The defects, and what is still tolerated (bytes outside the first
+  object; missing, doubled or trailing commas; unvalidated bare values), are listed in the
+  function's header. An unterminated string or nested value, or a bare value the input ends on
+  (`"n":12` may be the start of 123), is no longer returned truncated.
+- **`bayan_json_parse` checked no allocation.** It carried on past a refused Str and could return a
+  shorter vec as success, and a refused growth of the vec ended the process. It now returns 0 when
+  any allocation is refused — never a partial vec, the rule 1.5.9 applied to base64 and TOML.
+  `bayan_json_get(0, key)` answers 0. `bayan_json_parse(0)` died of SIGSEGV; it is now an empty
+  vec, so the documented re-parse `bayan_json_parse(bayan_json_get(pairs, key))` is safe on an
+  absent key. `bayan_json_parse_file` and `bayan_json_parse_file_r` pass the 0 on (as 0 and as
+  `Ok(0)`) when an allocation inside the parse is refused.
+- **`bayan_u64_mulmod` ran a 128-round shift-subtract on every aarch64 call**
+  ([2026-09-30](docs/development/issues/archived/2026-09-30-u64-mulmod-aarch64-always-wide.md)).
+  The aarch64 arm is now one asm block: `udiv`/`msub` reduction, `mul`/`umulh` product, and the
+  remainder by two-digit Knuth Algorithm D (Hacker's Delight fig. 9-3 `divlu`), four `udiv`, no
+  loop over bits, no calls. Measured under qemu-aarch64 on release 6.6.12: 19.4–20.2 µs → 63–74 ns
+  per call (1–2× a plain `(a*b)%m` call, from ~600×); Miller–Rabin ×200 4.89 s → 17.6 ms. The 54
+  instructions were re-assembled independently with llvm-mc 22.1.8 (byte-identical to the
+  filing's), every branch checked on its label with objdump, and the frame offsets read from the
+  cyrius 6.6.12 aarch64 backend and confirmed by disassembling the compiled function (ELF and
+  arm64 Mach-O). The block comment proves the first digit is corrected at most once. The x86 and
+  portable code sits under the aarch64 arm's `#else`, so aarch64 compiles only the asm block: its
+  function is 332 bytes against 1.5.9's 444. The x86 function is byte-identical.
+- **`bayan_u64_mulmod` returned 0 on cx** (found while fixing the above). The cx backend
+  predefines no `CYRIUS_ARCH_*` macro, and the function had an x86 arm and an aarch64 arm and
+  nothing else, so every call with a, b and m below 2^63 returned the 0 `result` starts at:
+  measured with cyrius 6.6.12's `cycc_cx` and `cxvm` (a local install; the release ships no
+  `cycc_cx`) over the shipped oracle fixture, 1.5.9 gets 67 of 335 mulmod and 209 of 302 powmod rows
+  wrong (the powmod count includes the exponents ≥ 2^63 below, wrong on every target), and 1.5.10
+  gets 0 of each. The portable path is now the `#else` of the x86 arm.
+- **`bayan_u64_powmod` returned 1 for every exponent at or above 2^63** (found by the same work).
+  Its loop was `while (exp > 0)`, a signed test, so the loop never ran. It now runs until the
+  exponent is 0 and shifts it with `_u128_lshr64`: `powmod(3, 2^63 + 1, 1e9 + 7)` is 113884165, not
+  1. An exponent of 0 still gives `1 % m`.
+- **A null key crashed every JSON object lookup.** `_by_cstr` ran `strlen(0)` and `_by_str`
+  `str_data(0)`: SIGSEGV, reachable from `bayan_json_v_obj_key`'s documented out-of-range 0. Both
+  now return 0, and the deprecated names, which forward to `_by_cstr`, inherit it.
+
+### Changed
+
+- **Deprecated: `bayan_json_v_obj_get` and its alias `json_v_obj_get`**
+  ([2026-08-04](docs/development/issues/archived/2026-08-04-agnosai-json-obj-get-takes-cstr-while-obj-set-takes-str.md);
+  [ADR 0004](docs/adr/0004-json-lookup-states-its-key-type-by-name.md)). The bare name does not
+  say what its key is, and re-measured on 6.6.12 the `: cstring` diagnostic 1.4.1 armed on it
+  still misses the filed spelling: `bayan_json_v_obj_get(o, str_from("k"))` compiles with no
+  warning and returns 0. Overload routing keys on the first argument only, so it cannot help. New
+  **`bayan_json_v_obj_get_by_cstr(v, key: cstring)`** carries the old body; `_by_str` (1.4.1) is
+  the Str half. Both deprecated names forward to `_by_cstr`, so every answer is unchanged; the call
+  site now warns with which replacement to use. Renaming the bare name to take a Str was rejected
+  again: it would silently break every caller passing a non-literal C string. The deprecation flags
+  call sites; it does not widen the diagnostic, which stays a cyrius-side gap — filed as cyrius
+  `docs/development/issues/2026-10-01-str-cstring-diagnostic-misses-call-results.md`.
+- **New `bayan_json_parse_a(a, src)`**, the allocator-threaded form of `bayan_json_parse` (the
+  house `_a` convention; it is what the per-allocation-point refusal tests drive).
+- **Toolchain pin 6.6.11 → 6.6.12.** `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
+  --full`: 22 files changed, and `diff -rq` against the 6.6.12 **release tarball**'s `lib/` reports
+  0 differences (111 files). The local install's `cyrius` wrapper differs from the release's, so
+  every gate and the `dist/` regeneration ran on the release toolchain in an isolated `CYRIUS_HOME`.
+  No source change was needed for 6.6.12 itself (all gates green on the 1.5.9 source first).
+- **`cyrius.lock` is new.** Since 6.6.9 `cyrius deps` writes a stdlib-only project's first lock;
+  bayan never had one. Relocked after the full sync (111 verified). Two CI steps keep it honest:
+  `cyrius deps --verify` on the COMMITTED lock before resolving (exits 1 on a hash mismatch, an
+  unlocked file and a missing lock — each measured), and a check that resolving changes nothing in
+  `lib/` or the lock (`git status`, which sees untracked files; `git diff` does not).
+- **GitHub Actions:** `actions/checkout` v4 → **v7**, `softprops/action-gh-release` v2 → **v3**.
+  Both majors move the action runtime to Node 24; checkout v7 also refuses fork checkouts under
+  `pull_request_target`, which bayan does not use.
+- **CI runs aarch64** for the first time: `qemu-user`, then `cyrius test --aarch64`, then
+  `tests/mulmod_speed.cyr` on both targets (fails above 50× a plain `(a*b)%m` call; it sees a fall
+  back to a bit-serial loop, not x86's ~13× hardware-divide wide path — the threshold's reasoning
+  is in the file's header). `scripts/check-arch-arms.py` applies `bayan_u64_mulmod`'s conditionals
+  as x86, aarch64 and a target with no arch macro, and fails when one has no arm that sets the
+  result or when x86/aarch64 has no asm block (a misspelt macro); it is red on the 1.5.9 source,
+  twice over. CI cannot compile cx (the release tarball has no `cycc_cx`), so this is the gate that
+  sees the cx arm.
+- **CI: Fuzz, Bench, the PDF-fixture build and both mulmod-speed builds fail on any `warning:`**, as
+  Build and Test already did; the Format step covers `tests/*.cyr`; a step forbids defining `bayan_json_v_obj_get_by`, the
+  base that would turn `_by_str`/`_by_cstr` into live overload slots.
+- **`scripts/consumer-check.sh` gates the deprecations.** Against every bundle that ships a
+  deprecated name it compiles direct calls and requires exactly the expected warnings, with the
+  exact advice text, and none from the bundle; it counts `#deprecated` attributes over code only
+  (comments and strings stripped) wherever on a line cyrius 6.6.12 honours one — its own line,
+  after another attribute, and at the end of the previous fn's line, all measured; it refuses any reference to a deprecated name in `src/` or `dist/` (a call parsed
+  before the definition does not warn on 6.6.12); and it pins `_by_cstr`'s own `key: cstring`
+  diagnostics.
+- `dist/` regenerated with the release toolchain (reproducible; `--check` green). `bayan.cyr`,
+  `bayan-json.cyr`, `bayan-yaml.cyr` and `bayan-u128.cyr` carry the fixes; `bayan-pdf.cyr` and
+  `bayan-toml.cyr` carry a comment that now names `_by_cstr`; the other four change only their
+  version header. No `.deps` sidecar changes.
+
+### Tests
+
+- `tests/bayan.tcyr`: **1,437** assertions (from 1,281), 0 failed, on x86_64 and on `--aarch64`
+  under qemu. `vectors` 13 (u128 checks **12,651**, from 12,334), `pdf_flate` 19, `src/test.cyr` 3.
+  Reference coverage **503/503**.
+  - json flat parser (+120): the issue's 16 documents against exact pair lists; nested spans and
+    kind matching; the depth cap at 127/128 levels, lowered, raised by one and raised to 100,000;
+    unterminated strings and spans; every byte through five byte classes; what may follow a value;
+    allocation refusals, including each of a 17-member parse's 54 allocation points refused ALONE
+    through a one-shot allocator (a fail-after allocator would let a later check hide a missing
+    earlier one).
+  - json lookups (+29): `_by_cstr` and `_by_str` agree on prefix keys, the empty key and a repeated
+    key (the FIRST wins); null keys return 0; the deprecated names are pinned through `&fn` +
+    `fncall2`, a call shape that does not warn on 6.6.12, so the suite needs no warning allowance.
+  - u64 (+7): an edge grid and random triples (reduced/raw now independent of modulus length) for
+    mulmod; powmod with exponents at or above 2^63.
+- `scripts/gen-numeric-vectors.py` adds 317 rows to `u128.vec`, expected values all Python's:
+  79 mulmod rows aimed at the Algorithm-D correction steps and large quotient estimates; 56 mulmod
+  rows CONSTRUCTED to leave each correction loop at `rhat == 2^32` exactly (both digits, s = 0 and
+  s > 0) — a random triple lands there about once in 2^31, and no earlier row told `b.lo` from
+  `b.ls` there; 32 powmod rows over 64-bit moduli; and 150 powmod rows with exponents ≥ 2^63.
+- New `tests/json.fcyr` (in `cyrius fuzz`): 40,000 valid, 120,000 damaged and 40,000 random
+  documents; every key is followed by its own `:`, every value lies inside the source, and the pair
+  list equals an independent reader of the documented grammar (and, for valid documents, the
+  generator's spans and the tree parser's members). Every document, and every prefix of eight edge
+  documents, is also parsed flush against a PROT_NONE page, so a one-byte read past the end
+  faults: six over-read mutants passed both suites without the page.
+- Mutation-checked: 59 single-edit mutants of the flat parser (57 red; one equivalent, one —
+  checking the depth bound after the kind store — guarded by a comment at the check); the asm block
+  (each correction step, the csel, the `stur` offset, `umulh`, both `b.lo` exits; the survivors are
+  the documented equivalent instructions); powmod's signed loop; and the deprecation gates (lost or
+  respelt attributes, swapped advice, a deprecated call in src, a harness or the alias body, either
+  null-key guard).
+
 ## [1.5.9] — 2026-09-30
 
 Patch release, from cyrius 6.6.12 bite B13 (items SA2, SA10, SA12). ⛔ **Tag it before cyrius

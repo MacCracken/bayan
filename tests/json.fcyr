@@ -1,0 +1,681 @@
+# json fuzz harness — the flat key/value parser over generated and damaged
+# documents (1.5.10).
+#
+# Issue 2026-09-30: bayan_json_parse handed keys the wrong values. A key whose
+# `:` was missing took the next pair's value, a nested value was cut at its
+# first `,` or `}` and the parse resumed inside it, and TAB / CR stayed inside a
+# bare value. No test had ever fed the flat parser anything but well-formed
+# one-level objects, and no harness called it at all. This one does, at a volume
+# no fixture can hold.
+#
+# Three corpora, each run through bayan_json_parse:
+#   VALID    documents this harness generates, recording where every top-level
+#            key and value lies as it writes them. Random whitespace (space,
+#            TAB, LF, CR) between tokens; strings carrying escapes and `{ } [ ]
+#            , :`; nested values of every kind, and one in eight documents with
+#            a member nested 120..135 levels deep, across the tree parser's cap.
+#   DAMAGED  each valid document again after 1..3 random edits (replace, insert,
+#            delete a byte, or cut the document short).
+#   SOUP     short random strings over `{ } [ ] " : , \` whitespace and `a1`.
+#
+# Properties. Any failure prints the document and exits non-zero:
+#   (a) every returned key is followed in the source, after JSON whitespace, by
+#       `:`. Keys and values BORROW the source bytes (str_new does not copy —
+#       lib/str.cyr), so a returned Str's data pointer is its source position.
+#   (b) every returned value lies inside the source buffer.
+#   (c) no pair is returned after a defect, and the parse does not stop before
+#       one: the pair list equals, pointer for pointer, what an independent
+#       reader of the documented grammar (fz_member below) finds. It shares no
+#       code with src/json.cyr: strings close where the run of backslashes before
+#       a quote is EVEN (src scans forward, skipping escaped bytes), and nested
+#       values balance on a byte stack (src keeps a bit stack).
+#   (d) for every VALID document, the pairs are exactly the spans the generator
+#       recorded, and they agree with the tagged-tree parser's top-level members
+#       (bayan_json_v_parse): same count, same decoded keys, and each value
+#       re-parsed from its raw span serialises as the tree's member does. A
+#       document with a member past the depth cap is refused by the tree parser,
+#       and the flat parse stops at that member. The same tree comparison runs on
+#       every DAMAGED document the tree parser still accepts as an object.
+#   (e) no load past the source. Every document is parsed a second time from
+#       the END of a mapping whose next page is PROT_NONE, and so is every
+#       prefix of the edge documents in fz_edges, so a load at data[slen] is a
+#       SIGSEGV instead of a read of whatever byte follows. Everywhere else the
+#       source sits inside a larger buffer, and most such reads do not change
+#       the pairs: a one-byte over-read in skip_ws, bare_end or span_end, or a
+#       dropped `ji >= slen` test after a key or its `:`, left both suites green.
+#
+# xorshift64, seeded as tests/dtoa.fcyr is (0x9E3779B97F4A7C15), so a failure
+# reproduces exactly. The heap is rewound after every document: nothing the
+# harness keeps lives on it.
+
+# NOTE: a file carrying include directives skips the [deps].stdlib
+# auto-prepend, so the stdlib prerequisites are listed explicitly here, exactly
+# as src/main.cyr does.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/mmap.cyr"
+
+include "src/dtoa.cyr"
+include "src/json.cyr"
+
+var g_x = 0x9E3779B97F4A7C15;
+
+fn xs64(): i64 {
+    g_x = g_x ^ (g_x << 13);
+    g_x = g_x ^ (g_x >> 7);
+    g_x = g_x ^ (g_x << 17);
+    return g_x;
+}
+# Uniform in 0..n-1.
+fn fz_rand(n): i64 { return ((xs64() >> 1) % n); }
+
+# The buffers live in one anonymous mapping, not on the heap (main rewinds the
+# heap after every document) and not in static data (a global `var x[N]` costs N
+# 8-byte slots of it).
+var FZ_CAP = 32768;
+var g_doc = 0;          # FZ_CAP: the document being parsed
+var g_val = 0;          # FZ_CAP: the VALID document a damaged one was made from
+var g_mem = 0;          # 1024: generator record, 32 members x { ks, kl, vs, vl }
+var g_ref = 0;          # 4096: fz_reference record, 128 members, the same layout
+var g_stk = 0;          # 256: fz_span_close's byte stack
+var g_out = 0;          # 32: one fz_member result
+var g_n = 0;            # generator: members written
+var g_stop = 0 - 1;     # generator: first member past the depth cap, or -1
+
+fn fz_say(m): i64 { print(m, strlen(m)); return 0; }
+fn fz_num(n): i64 { var b[24]; var l = fmt_int_buf(n, &b); print(&b, l); return 0; }
+
+var g_bad = 0;
+
+# Print a document with its control bytes made visible.
+fn fz_show(p, len): i64 {
+    var i = 0;
+    while (i < len) {
+        var c = load8(p + i);
+        if (c == 13) { fz_say("\\r"); }
+        elif (c == 9) { fz_say("\\t"); }
+        elif (c == 10) { fz_say("\\n"); }
+        elif (c < 32 || c > 126) {
+            fz_say("\\x");
+            print("0123456789abcdef" + (c >> 4), 1);
+            print("0123456789abcdef" + (c & 15), 1);
+        }
+        else { print(p + i, 1); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fz_fail(what, len): i64 {
+    g_bad = g_bad + 1;
+    if (g_bad <= 8) {
+        fz_say("  "); fz_say(what); fz_say(" ["); fz_show(g_doc, len); fz_say("]\n");
+    }
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# The generator. Every emitter takes the write position and returns the new one.
+# ---------------------------------------------------------------------------
+
+fn fz_put(p, c): i64 { if (p < FZ_CAP) { store8(g_doc + p, c); } return p + 1; }
+fn fz_puts(p, s): i64 {
+    var i = 0;
+    while (load8(s + i) != 0) { p = fz_put(p, load8(s + i)); i = i + 1; }
+    return p;
+}
+
+# 0..2 whitespace bytes, any of the four.
+fn fz_ws(p): i64 {
+    var n = fz_rand(5);
+    if (n > 2) { return p; }
+    while (n > 0) {
+        var w = fz_rand(4);
+        if (w == 0) { p = fz_put(p, 32); }
+        elif (w == 1) { p = fz_put(p, 9); }
+        elif (w == 2) { p = fz_put(p, 10); }
+        else { p = fz_put(p, 13); }
+        n = n - 1;
+    }
+    return p;
+}
+
+# A string BODY (no quotes): text, structural bytes, and escapes.
+fn fz_body(p): i64 {
+    var n = fz_rand(9);
+    while (n > 0) {
+        var k = fz_rand(16);
+        if (k < 6) { p = fz_put(p, 97 + fz_rand(26)); }
+        elif (k == 6) { p = fz_puts(p, "\\\""); }
+        elif (k == 7) { p = fz_puts(p, "\\\\"); }
+        elif (k == 8) { p = fz_puts(p, "\\n"); }
+        elif (k == 9) { p = fz_puts(p, "\\u00e9"); }
+        elif (k == 10) { p = fz_put(p, 123 + fz_rand(3) * 2); }
+        elif (k == 11) { p = fz_put(p, 91 + fz_rand(2) * 2); }
+        elif (k == 12) { p = fz_put(p, 44); }
+        elif (k == 13) { p = fz_put(p, 58); }
+        elif (k == 14) { p = fz_put(p, 32); }
+        else { p = fz_put(p, 48 + fz_rand(10)); }
+        n = n - 1;
+    }
+    return p;
+}
+
+# A JSON number: -?(0|[1-9][0-9]{0,5})(.[0-9]{1,4})?([eE][+-]?[0-9]{1,2})?
+fn fz_number(p): i64 {
+    if (fz_rand(3) == 0) { p = fz_put(p, 45); }
+    if (fz_rand(4) == 0) { p = fz_put(p, 48); }
+    else {
+        p = fz_put(p, 49 + fz_rand(9));
+        var n = fz_rand(6);
+        while (n > 0) { p = fz_put(p, 48 + fz_rand(10)); n = n - 1; }
+    }
+    if (fz_rand(3) == 0) {
+        p = fz_put(p, 46);
+        var f = 1 + fz_rand(4);
+        while (f > 0) { p = fz_put(p, 48 + fz_rand(10)); f = f - 1; }
+    }
+    if (fz_rand(4) == 0) {
+        p = fz_put(p, 101 - fz_rand(2) * 32);
+        var s = fz_rand(3);
+        if (s == 1) { p = fz_put(p, 43); }
+        if (s == 2) { p = fz_put(p, 45); }
+        p = fz_put(p, 48 + fz_rand(10));
+        if (fz_rand(2) == 0) { p = fz_put(p, 48 + fz_rand(10)); }
+    }
+    return p;
+}
+
+# Any JSON value, nested at most `room` more levels.
+fn fz_value(p, room): i64 {
+    var k = fz_rand(8);
+    if (room <= 0 && k >= 6) { k = fz_rand(6); }
+    if (k == 0 || k == 1) { p = fz_put(p, 34); p = fz_body(p); return fz_put(p, 34); }
+    if (k == 2 || k == 3) { return fz_number(p); }
+    if (k == 4) { if (fz_rand(2) == 0) { return fz_puts(p, "true"); } return fz_puts(p, "false"); }
+    if (k == 5) { return fz_puts(p, "null"); }
+    var obj = 0;
+    if (k == 7) { obj = 1; }
+    if (obj == 1) { p = fz_put(p, 123); } else { p = fz_put(p, 91); }
+    p = fz_ws(p);
+    var n = fz_rand(4);
+    var i = 0;
+    while (i < n) {
+        if (i > 0) { p = fz_ws(p); p = fz_put(p, 44); p = fz_ws(p); }
+        if (obj == 1) {
+            p = fz_put(p, 34); p = fz_body(p); p = fz_put(p, 34);
+            p = fz_ws(p); p = fz_put(p, 58); p = fz_ws(p);
+        }
+        p = fz_value(p, room - 1);
+        i = i + 1;
+    }
+    p = fz_ws(p);
+    if (obj == 1) { return fz_put(p, 125); }
+    return fz_put(p, 93);
+}
+
+# A chain `depth` containers deep, kinds at random, a number at the bottom.
+fn fz_chain(p, depth): i64 {
+    var kinds[160];
+    var i = 0;
+    while (i < depth) {
+        var o = 91;
+        if (fz_rand(2) == 0) { o = 123; }
+        store8(&kinds + i, o);
+        p = fz_put(p, o);
+        if (o == 123) { p = fz_puts(p, "\"k\":"); }
+        i = i + 1;
+    }
+    p = fz_number(p);
+    while (i > 0) { i = i - 1; p = fz_put(p, load8(&kinds + i) + 2); }
+    return p;
+}
+
+# A whole VALID document; returns its length. Records each member in g_mem and,
+# in g_stop, the first member whose value nests past the cap: the top-level
+# object is level 1, as in the tree parser, so 127 levels inside it are allowed.
+fn fz_document(): i64 {
+    g_n = 0;
+    g_stop = 0 - 1;
+    var deep = 0 - 1;
+    var n = fz_rand(7);
+    if (n > 0 && fz_rand(8) == 0) { deep = fz_rand(n); }
+    var p = fz_ws(0);
+    p = fz_put(p, 123);
+    p = fz_ws(p);
+    var i = 0;
+    while (i < n) {
+        if (i > 0) { p = fz_ws(p); p = fz_put(p, 44); p = fz_ws(p); }
+        p = fz_put(p, 34);
+        store64(g_mem + i * 32, p);
+        p = fz_body(p);
+        store64(g_mem + i * 32 + 8, p - load64(g_mem + i * 32));
+        p = fz_put(p, 34);
+        p = fz_ws(p); p = fz_put(p, 58); p = fz_ws(p);
+        var vs = p;
+        if (i == deep) {
+            var d = 120 + fz_rand(16);
+            p = fz_chain(p, d);
+            if (d > 127 && g_stop < 0) { g_stop = i; }
+        } else {
+            p = fz_value(p, fz_rand(4));
+        }
+        var ve = p;
+        if (load8(g_doc + vs) == 34) { vs = vs + 1; ve = ve - 1; }
+        store64(g_mem + i * 32 + 16, vs);
+        store64(g_mem + i * 32 + 24, ve - vs);
+        i = i + 1;
+    }
+    g_n = n;
+    p = fz_ws(p);
+    p = fz_put(p, 125);
+    p = fz_ws(p);
+    return p;
+}
+
+# ---------------------------------------------------------------------------
+# The independent reader (property c).
+# ---------------------------------------------------------------------------
+
+fn fz_is_ws(c): i64 {
+    if (c == 32 || c == 9 || c == 10 || c == 13) { return 1; }
+    return 0;
+}
+# A byte that can be part of a bare value: not whitespace, not structural.
+fn fz_is_bare(c): i64 {
+    if (fz_is_ws(c) == 1) { return 0; }
+    if (c == 123 || c == 125 || c == 91 || c == 93 || c == 44 || c == 58 || c == 34) { return 0; }
+    return 1;
+}
+fn fz_skip_ws(d, len, j): i64 {
+    while (j < len && fz_is_ws(load8(d + j)) == 1) { j = j + 1; }
+    return j;
+}
+
+# The quote that closes a string whose body starts at s, or -1: the first `"`
+# preceded by an EVEN run of backslashes (counted back no further than s).
+fn fz_str_close(d, len, s): i64 {
+    var k = s;
+    while (k < len) {
+        if (load8(d + k) == 34) {
+            var run = 0;
+            var b = k - 1;
+            while (b >= s && load8(d + b) == 92) { run = run + 1; b = b - 1; }
+            if (run % 2 == 0) { return k; }
+        }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+# Index just past the object / array opening at d[p], or -1: the closers must
+# match their openers, strings are text, and at most 127 levels may be open (the
+# documented cap for a member's value).
+fn fz_span_close(d, len, p): i64 {
+    var top = 0;
+    var j = p;
+    while (j < len) {
+        var c = load8(d + j);
+        if (c == 34) {
+            j = fz_str_close(d, len, j + 1);
+            if (j < 0) { return 0 - 1; }
+        } elif (c == 123 || c == 91) {
+            if (top >= 127) { return 0 - 1; }
+            store8(g_stk + top, c);
+            top = top + 1;
+        } elif (c == 125 || c == 93) {
+            top = top - 1;
+            if (load8(g_stk + top) + 2 != c) { return 0 - 1; }
+            if (top == 0) { return j + 1; }
+        }
+        j = j + 1;
+    }
+    return 0 - 1;
+}
+
+# Read one member whose key opens at d[pos] == '"'. Returns the index just past
+# it with { ks, kl, vs, vl } in g_out, or -1 at a defect.
+fn fz_member(d, len, pos): i64 {
+    var ks = pos + 1;
+    var ke = fz_str_close(d, len, ks);
+    if (ke < 0) { return 0 - 1; }
+    var j = fz_skip_ws(d, len, ke + 1);
+    if (j >= len) { return 0 - 1; }
+    if (load8(d + j) != 58) { return 0 - 1; }
+    j = fz_skip_ws(d, len, j + 1);
+    if (j >= len) { return 0 - 1; }
+    var c = load8(d + j);
+    var vs = j;
+    var end = 0;
+    if (c == 34) {
+        vs = j + 1;
+        var ve = fz_str_close(d, len, vs);
+        if (ve < 0) { return 0 - 1; }
+        store64(g_out + 24, ve - vs);
+        end = ve + 1;
+    } elif (c == 123 || c == 91) {
+        end = fz_span_close(d, len, j);
+        if (end < 0) { return 0 - 1; }
+        store64(g_out + 24, end - j);
+    } else {
+        var e = j;
+        while (e < len && fz_is_bare(load8(d + e)) == 1) { e = e + 1; }
+        # Nothing there, or the input ends on it (it may have been cut).
+        if (e == j || e >= len) { return 0 - 1; }
+        # Cut by `"` `:` `[` `]` or `{`: only whitespace, `,` or `}` follows a
+        # whole one.
+        var t = load8(d + e);
+        if (fz_is_ws(t) == 0 && t != 44 && t != 125) { return 0 - 1; }
+        store64(g_out + 24, e - j);
+        end = e;
+    }
+    # A value followed by `:`, after whitespace, was the next key: no value.
+    var nx = fz_skip_ws(d, len, end);
+    if (nx < len && load8(d + nx) == 58) { return 0 - 1; }
+    store64(g_out, ks);
+    store64(g_out + 8, ke - ks);
+    store64(g_out + 16, vs);
+    return end;
+}
+
+# The reference pair list for d[0..len), into g_ref. Returns its count.
+fn fz_reference(d, len): i64 {
+    var j = 0;
+    while (j < len && load8(d + j) != 123) { j = j + 1; }
+    if (j >= len) { return 0; }
+    j = j + 1;
+    var n = 0;
+    while (j < len && n < 128) {
+        var c = load8(d + j);
+        if (fz_is_ws(c) == 1 || c == 44) { j = j + 1; }
+        elif (c == 34) {
+            var e = fz_member(d, len, j);
+            if (e < 0) { return n; }
+            var q = 0;
+            while (q < 4) { store64(g_ref + n * 32 + q * 8, load64(g_out + q * 8)); q = q + 1; }
+            n = n + 1;
+            j = e;
+        } else {
+            return n;    # `}` ends the object; anything else is a defect.
+        }
+    }
+    return n;
+}
+
+# ---------------------------------------------------------------------------
+# The checks.
+# ---------------------------------------------------------------------------
+
+var g_pairs = 0;
+
+# 1 when pair p borrows exactly the spans in record r ({ ks, kl, vs, vl } as
+# offsets into d).
+fn fz_pair_at(p, d, r): i64 {
+    var k = bayan_json_key(p);
+    var v = bayan_json_value(p);
+    if (str_data(k) != d + load64(r) || str_len(k) != load64(r + 8)) { return 0; }
+    if (str_data(v) != d + load64(r + 16) || str_len(v) != load64(r + 24)) { return 0; }
+    return 1;
+}
+
+# (a) (b) (c) on any document. `pairs` is bayan_json_parse's result.
+fn fz_check_any(len, pairs): i64 {
+    var d = g_doc;
+    var n = vec_len(pairs);
+    var i = 0;
+    while (i < n) {
+        var p = vec_get(pairs, i);
+        var k = bayan_json_key(p);
+        var v = bayan_json_value(p);
+        var ko = str_data(k) - d;
+        var ke = ko + str_len(k);
+        if (ko < 1 || ke >= len) { fz_fail("(a) a key outside the source", len); return 0; }
+        if (load8(d + ko - 1) != 34 || load8(d + ke) != 34) { fz_fail("(a) a key not between quotes", len); return 0; }
+        var j = fz_skip_ws(d, len, ke + 1);
+        if (j >= len) { fz_fail("(a) a key not followed by ':'", len); return 0; }
+        if (load8(d + j) != 58) { fz_fail("(a) a key not followed by ':'", len); return 0; }
+        var vo = str_data(v) - d;
+        if (vo < 0 || str_len(v) < 0 || vo + str_len(v) > len) {
+            fz_fail("(b) a value outside the source", len); return 0;
+        }
+        i = i + 1;
+    }
+    var rn = fz_reference(d, len);
+    var m = n;
+    if (rn < m) { m = rn; }
+    i = 0;
+    while (i < m) {
+        if (fz_pair_at(vec_get(pairs, i), d, g_ref + i * 32) == 0) {
+            fz_fail("(c) a pair differs from the grammar's", len); return 0;
+        }
+        i = i + 1;
+    }
+    if (n > rn) { fz_fail("(c) a pair after a defect", len); return 0; }
+    if (n < rn) { fz_fail("(c) the parse stopped before a defect", len); return 0; }
+    g_pairs = g_pairs + n;
+    return 1;
+}
+
+# (d) against the tree parser: `tree` is an object node; the flat pairs must be
+# its members, in order, with equal decoded keys and equal values.
+fn fz_check_tree(len, pairs, tree): i64 {
+    var d = g_doc;
+    var n = vec_len(pairs);
+    if (bayan_json_v_obj_len(tree) != n) { fz_fail("(d) member count differs from the tree parser's", len); return 0; }
+    var i = 0;
+    while (i < n) {
+        var p = vec_get(pairs, i);
+        var k = bayan_json_key(p);
+        var v = bayan_json_value(p);
+        # Decode the raw key by parsing it, quotes included, as a JSON string.
+        var kd = bayan_json_v_parse_buf(str_data(k) - 1, str_len(k) + 2);
+        if (kd == 0) { fz_fail("(d) a key the tree parser cannot read", len); return 0; }
+        if (str_eq(bayan_json_v_str(kd), bayan_json_v_obj_key(tree, i)) != 1) {
+            fz_fail("(d) a key differs from the tree parser's", len); return 0;
+        }
+        var vp = str_data(v);
+        var vl = str_len(v);
+        if (vp > d && load8(vp - 1) == 34 && vp + vl < d + len && load8(vp + vl) == 34) {
+            # A string value: its span includes the quotes. (A bare or nested
+            # value never starts right after a quote: a ':' and whitespace do.)
+            vp = vp - 1;
+            vl = vl + 2;
+        }
+        var vv = bayan_json_v_parse_buf(vp, vl);
+        if (vv == 0) { fz_fail("(d) a value the tree parser cannot read", len); return 0; }
+        if (str_eq(bayan_json_v_build(vv), bayan_json_v_build(bayan_json_v_obj_val(tree, i))) != 1) {
+            fz_fail("(d) a value differs from the tree parser's", len); return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# (d) for a VALID document: the generator's record, then the tree parser.
+fn fz_check_valid(len, pairs): i64 {
+    var d = g_doc;
+    var want = g_n;
+    if (g_stop >= 0) { want = g_stop; }
+    if (vec_len(pairs) != want) { fz_fail("(d) pair count differs from the generator's", len); return 0; }
+    var i = 0;
+    while (i < want) {
+        if (fz_pair_at(vec_get(pairs, i), d, g_mem + i * 32) == 0) {
+            fz_fail("(d) a pair differs from the span the generator wrote", len); return 0;
+        }
+        i = i + 1;
+    }
+    var tree = bayan_json_v_parse_buf(d, len);
+    if (g_stop >= 0) {
+        if (tree != 0) { fz_fail("(d) the tree parser accepted a member past the cap", len); return 0; }
+        return 1;
+    }
+    if (tree == 0) { fz_fail("(d) the tree parser refused a valid document", len); return 0; }
+    return fz_check_tree(len, pairs, tree);
+}
+
+# A byte that matters to the grammar, most of the time.
+fn fz_palette(): i64 {
+    var k = fz_rand(16);
+    if (k == 0) { return 123; }
+    if (k == 1) { return 125; }
+    if (k == 2) { return 91; }
+    if (k == 3) { return 93; }
+    if (k == 4) { return 34; }
+    if (k == 5) { return 58; }
+    if (k == 6) { return 44; }
+    if (k == 7) { return 92; }
+    if (k == 8) { return 32; }
+    if (k == 9) { return 9; }
+    if (k == 10) { return 13; }
+    if (k == 11) { return 10; }
+    if (k == 12) { return 97; }
+    if (k == 13) { return 49; }
+    return fz_rand(256);
+}
+
+# Damage the document in g_doc (a copy of the valid one) with 1..3 edits.
+fn fz_damage(len): i64 {
+    var edits = 1 + fz_rand(3);
+    while (edits > 0 && len > 0) {
+        var e = fz_rand(8);
+        var at = fz_rand(len);
+        if (e < 3) {
+            store8(g_doc + at, fz_palette());
+        } elif (e < 5) {
+            if (len < FZ_CAP) {
+                var j = len;
+                while (j > at) { store8(g_doc + j, load8(g_doc + j - 1)); j = j - 1; }
+                store8(g_doc + at, fz_palette());
+                len = len + 1;
+            }
+        } elif (e < 7) {
+            var j2 = at;
+            while (j2 + 1 < len) { store8(g_doc + j2, load8(g_doc + j2 + 1)); j2 = j2 + 1; }
+            len = len - 1;
+        } else {
+            len = at;
+        }
+        edits = edits - 1;
+    }
+    return len;
+}
+
+# (e): g_fence is the end of a mapping whose next page is PROT_NONE.
+var g_fence = 0;
+
+# Parse src[0..len) copied flush against the fence.
+fn fz_fenced(src, len): i64 {
+    if (len > FZ_CAP) { return 0; }
+    memcpy(g_fence - len, src, len);
+    bayan_json_parse(str_new(g_fence - len, len));
+    return 0;
+}
+
+# Every prefix of `doc` (a cstr), the empty one through the whole, at the fence.
+fn fz_fenced_prefixes(doc): i64 {
+    var n = strlen(doc);
+    var l = 0;
+    while (l <= n) { fz_fenced(doc, l); l = l + 1; }
+    return 1;
+}
+
+# Documents whose prefixes end the input in every scanner state: inside a key,
+# after one, before and after its `:`, inside a string value and right after a
+# backslash in it, inside a bare value, inside a nested value and a string in
+# it, and in the whitespace after a value.
+fn fz_edges(): i64 {
+    var n = 0;
+    n = n + fz_fenced_prefixes("{\"a\":12");
+    n = n + fz_fenced_prefixes("{\"a\" ");
+    n = n + fz_fenced_prefixes("{\"a\":");
+    n = n + fz_fenced_prefixes("{\"a\":{\"b\":[1,\"\\");
+    n = n + fz_fenced_prefixes("{\"a\":\"x\\");
+    n = n + fz_fenced_prefixes(" {\r\n\t\"k\\\"\" :\t\"v\\\"\\\\\" ,\"n\" : -1.5e3\r\n,\"t\":true\t,\"u\":null }\n");
+    n = n + fz_fenced_prefixes("{\"o\":{\"p\":[\"q\",{\"r\":\"}]\\\"\"}]} , \"e\":[] }");
+    n = n + fz_fenced_prefixes("{\"a\":\"b\" :1,\"c\":[[{}]] \"d\" 1}");
+    return n;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var fm = mmap_anon(FZ_CAP + 4096);
+    if (fm == 0) { fz_say("json fuzz: mmap failed\n"); return 1; }
+    if (cyr_mprotect(fm + FZ_CAP, 4096, 0) != 0) { fz_say("json fuzz: mprotect failed\n"); return 1; }
+    g_fence = fm + FZ_CAP;
+    var nedge = fz_edges();
+    var m = mmap_anon(FZ_CAP * 2 + 1024 + 4096 + 256 + 32);
+    if (m == 0) { fz_say("json fuzz: mmap failed\n"); return 1; }
+    g_doc = m;
+    g_val = m + FZ_CAP;
+    g_mem = m + FZ_CAP * 2;
+    g_ref = g_mem + 1024;
+    g_stk = g_ref + 4096;
+    g_out = g_stk + 256;
+    var nvalid = 0;
+    var ndeep = 0;
+    var ndamaged = 0;
+    var ntree = 0;
+    var nsoup = 0;
+    var it = 0;
+    while (it < 40000) {
+        alloc_reset();
+        var len = fz_document();
+        if (len > FZ_CAP) { it = it + 1; continue; }
+        fz_fenced(g_doc, len);
+        var pairs = bayan_json_parse(str_new(g_doc, len));
+        fz_check_any(len, pairs);
+        fz_check_valid(len, pairs);
+        nvalid = nvalid + 1;
+        if (g_stop >= 0) { ndeep = ndeep + 1; }
+        memcpy(g_val, g_doc, len);
+        var r = 0;
+        while (r < 3) {
+            alloc_reset();
+            memcpy(g_doc, g_val, len);
+            var dl = fz_damage(len);
+            fz_fenced(g_doc, dl);
+            var dp = bayan_json_parse(str_new(g_doc, dl));
+            fz_check_any(dl, dp);
+            var tree = bayan_json_v_parse_buf(g_doc, dl);
+            if (tree != 0 && bayan_json_v_is_obj(tree) == 1) {
+                fz_check_tree(dl, dp, tree);
+                ntree = ntree + 1;
+            }
+            ndamaged = ndamaged + 1;
+            r = r + 1;
+        }
+        it = it + 1;
+    }
+    it = 0;
+    while (it < 40000) {
+        alloc_reset();
+        var sl = fz_rand(40);
+        var s = 0;
+        while (s < sl) { store8(g_doc + s, fz_palette()); s = s + 1; }
+        if (sl > 0 && fz_rand(2) == 0) { store8(g_doc, 123); }
+        fz_fenced(g_doc, sl);
+        fz_check_any(sl, bayan_json_parse(str_new(g_doc, sl)));
+        nsoup = nsoup + 1;
+        it = it + 1;
+    }
+
+    fz_say("json fuzz: "); fz_num(nvalid); fz_say(" valid ("); fz_num(ndeep);
+    fz_say(" past the depth cap), "); fz_num(ndamaged); fz_say(" damaged ("); fz_num(ntree);
+    fz_say(" still valid objects), "); fz_num(nsoup); fz_say(" soup; ");
+    fz_num(g_pairs); fz_say(" pairs checked; every document and the prefixes of ");
+    fz_num(nedge); fz_say(" edge documents parsed at a PROT_NONE page; "); fz_num(g_bad); fz_say(" wrong\n");
+    if (g_bad > 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+syscall(60, r);

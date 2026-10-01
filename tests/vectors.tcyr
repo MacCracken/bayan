@@ -9,7 +9,7 @@
 #
 # Kept in its own file so ~13,000 machine-generated checks do not swamp the
 # hand-written assertion counts in bayan.tcyr. It contributes a handful of
-# asserts — "0 of 12,334 wrong" — rather than one per vector.
+# asserts — "0 of 12,651 wrong" — rather than one per vector.
 #
 # Regenerate the vectors with:
 #   python3 scripts/gen-numeric-vectors.py tests/fixtures/numeric

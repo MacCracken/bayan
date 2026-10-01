@@ -667,7 +667,7 @@ fn _yp_parse_mapping(ps, yc, indent): i64 {
         # DUPLICATE KEYS are rejected (1.5.1). YAML 1.2 makes them an error,
         # and accepting them here produced a genuine divergence rather than a
         # cosmetic one: obj_set APPENDS, so `role: admin` / `role: guest` built
-        # a two-entry object where bayan_json_v_obj_get returns the FIRST
+        # a two-entry object where bayan_json_v_obj_get_by_* returns the FIRST
         # ("admin") while the serialiser emits {"role":"admin","role":"guest"}
         # — and every downstream JSON reader takes the LAST. Two components
         # reading the same document disagreeing about a role is exactly the

@@ -1,6 +1,21 @@
 # `bayan_u64_mulmod` on aarch64 runs the 128-step bit-serial division on every call
 
-**Status:** 🟡 **OPEN** — found by abaco 2.4.9's project audit; not repaired.
+> **RESOLVED — bayan 1.5.10 (2026-10-01).** The proposed asm block landed after independent
+> checks: re-assembled from mnemonics with llvm-mc 22.1.8 (byte-identical), every branch checked
+> on its label with objdump, the frame offsets read from cyrius 6.6.12's aarch64 backend and
+> confirmed by disassembling the compiled function (ELF and arm64 Mach-O), and a 64-bit proof in
+> the block comment that the first digit is corrected at most once. The repro exits 0 under
+> qemu-aarch64 (3 on 1.5.9): 63–74 ns per call against 19.4–20.2 µs.
+>
+> Fixing it found two more defects in the same functions, both fixed: on cx, which predefines no
+> `CYRIUS_ARCH_*` macro, `bayan_u64_mulmod` returned 0 for every call with a, b and m below 2^63;
+> and `bayan_u64_powmod` returned 1 for every exponent at or above 2^63 (a signed loop test).
+> CI now runs the suite under qemu-aarch64, times mulmod on both targets, and checks structurally
+> that every target compiles an arm that sets the result. The "third route" (an aarch64 fast path
+> in `bayan_u128_divmod`) was not taken: no aarch64 mulmod path reaches it any more.
+> See CHANGELOG [1.5.10].
+
+**Status:** ✅ **RESOLVED** in bayan 1.5.10 — found by abaco 2.4.9's project audit.
 **Placement:** unpinned.
 **Discovered:** 2026-09-30, abaco 2.4.9 project audit (the aarch64 cross-target pass under
 qemu-aarch64, finding `gap-aarch64-cross-target-mulmod-wide-perf`: `is_prime`, `next_prime`,
@@ -58,9 +73,9 @@ cyrius 6.6.11, bayan's pin. abaco rows use cyrius 6.6.12, abaco's pin.
 the number of wrong rows.
 
 ```
-cyrius build --aarch64 docs/development/issues/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_a64
+cyrius build --aarch64 docs/development/issues/archived/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_a64
 qemu-aarch64 /tmp/mulmod_a64; echo "exit=$?"   # -> 3 on 1.5.9: the three speed rows
-cyrius build docs/development/issues/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_x86
+cyrius build docs/development/issues/archived/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_x86
 /tmp/mulmod_x86; echo "exit=$?"                 # -> 0: x86_64 is the control
 ```
 

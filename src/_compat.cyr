@@ -50,9 +50,18 @@ fn json_v_arr_get(v, i): i64 { return bayan_json_v_arr_get(v, i); }
 fn json_v_obj_len(v): i64 { return bayan_json_v_obj_len(v); }
 fn json_v_obj_key(v, i): i64 { return bayan_json_v_obj_key(v, i); }
 fn json_v_obj_val(v, i): i64 { return bayan_json_v_obj_val(v, i); }
-# `key: cstring` mirrors bayan_json_v_obj_get — without it the ~40 consumers using the
-# short `json_v_*` spelling get no diagnostic. bayan 1.4.1.
-fn json_v_obj_get(v, key: cstring): i64 { return bayan_json_v_obj_get(v, key); }
+# `key: cstring` mirrors bayan_json_v_obj_get, so a named Str-typed local passed through the
+# short `json_v_*` spelling is diagnosed too. bayan 1.4.1.
+# Deprecated in 1.5.10 with the name it aliases, and for the same reason (see the banner
+# above bayan_json_v_obj_get_by_cstr in src/json.cyr). ⚠ It forwards to `_by_cstr`, NOT
+# to the deprecated `bayan_json_v_obj_get`: a deprecated callee warns at every call site,
+# including this body, so that one-word difference is a warning in every build that
+# includes dist/bayan.cyr. scripts/consumer-check.sh refuses any call of a deprecated name
+# inside src/ or dist/, and counts the warnings a direct call gets.
+#
+# DEPRECATED (1.5.10): use bayan_json_v_obj_get_by_cstr (C-string key) or bayan_json_v_obj_get_by_str (Str key).
+#deprecated("use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key")
+fn json_v_obj_get(v, key: cstring): i64 { return bayan_json_v_obj_get_by_cstr(v, key); }
 fn json_v_parse(src): i64 { return bayan_json_v_parse(src); }
 fn json_v_parse_buf(buf, len): i64 { return bayan_json_v_parse_buf(buf, len); }
 fn json_v_build(v): i64 { return bayan_json_v_build(v); }

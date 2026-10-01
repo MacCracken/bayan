@@ -1,0 +1,129 @@
+# tests/mulmod_speed.cyr — bayan_u64_mulmod must cost about one division, on
+# every target CI runs (1.5.10).
+#
+# Through 1.5.9 aarch64 sent every mulmod through _u64_mulmod_wide, whose
+# 128-round shift-subtract cost ~600x a plain `(a * b) % m` call under
+# qemu-aarch64. Every answer was right, so a suite that checks answers stayed
+# green on aarch64 the whole time. This program checks the cost instead.
+#
+# Each row times bayan_u64_mulmod on reduced operands against a plain-Cyrius
+# `(a * b) % m` helper — one call, one multiply, one divide: the floor any
+# mulmod pays — in the same process. Floor and mulmod windows (~2 ms each)
+# alternate 15 times and the FASTEST window of each is compared: load can slow
+# a window down but never speed one up, so the minimum is the stable statistic.
+# A row fails above 50x its floor, three attempts running. Measured on cyrius
+# 6.6.12 (rows: 31-, 62- and 64-bit modulus):
+#   x86_64                        2x / 2x / 12-14x  (64-bit m takes the wide
+#                                                    path, with a hardware div)
+#   aarch64 under qemu, 1.5.10    2x / 2x / 2-3x
+#   aarch64 under qemu, 1.5.9     ~650-750x on all three
+# On a host loaded to 2.7 runnable threads per core, thirty runs per target
+# peaked at 36x (x86, 64-bit row) and 16x (aarch64) and never failed, and the
+# lowest of 45 attempts on 1.5.9 was 383x. 50x has room on both sides.
+#
+#   cyrius build tests/mulmod_speed.cyr build/mulmod-speed && ./build/mulmod-speed
+#   cyrius build --aarch64 tests/mulmod_speed.cyr build/mulmod-speed-a64
+#   qemu-aarch64 build/mulmod-speed-a64
+#
+# Exit code = the number of rows over the limit.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/fmt.cyr"
+include "lib/chrono.cyr"
+
+include "src/u128.cyr"
+
+var LIMIT = 50;
+var ROUNDS = 15;
+var _sink = 0;
+
+fn say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+
+fn _floor_mulmod(a, b, m): i64 { return (a * b) % m; }
+
+# kind 0: the floor helper; kind 1: bayan_u64_mulmod. Each call feeds the next,
+# so neither loop can be hoisted or skipped.
+fn _run(kind, n, a, b, m): i64 {
+    var x = a;
+    var i = 0;
+    if (kind == 0) { while (i < n) { x = _floor_mulmod(x, b, m); i = i + 1; } }
+    if (kind == 1) { while (i < n) { x = bayan_u64_mulmod(x, b, m); i = i + 1; } }
+    _sink = _sink + x;
+    return 0;
+}
+
+# Picoseconds per call over one window of n calls.
+fn _window(kind, n, a, b, m): i64 {
+    var t0 = clock_now_ns();
+    _run(kind, n, a, b, m);
+    return ((clock_now_ns() - t0) * 1000) / n;
+}
+
+# Calls per window for `kind`: doubled until one window takes >= 2 ms. Each
+# side is sized on its own, so a slow mulmod costs as long as a fast one.
+fn _calls(kind, a, b, m): i64 {
+    var n = 16;
+    while ((_window(kind, n, a, b, m) * n) / 1000 < 2000000) { n = n * 2; }
+    return n;
+}
+
+# The floor always runs on the 31-bit row's operands, where `(a * b) % m`
+# cannot overflow, so every row is measured against the same divide.
+var FA = 0x1D2C3B4A;
+var FB = 0x5A4B3C2D;
+var FM = 0x6A3F92C5;
+
+# One measurement: 1 when this attempt is over the limit.
+fn _attempt(label: cstring, a, b, m): i64 {
+    var nf = _calls(0, FA, FB, FM);
+    var nm = _calls(1, a, b, m);
+    var best_floor = 0;
+    var best_mm = 0;
+    var r = 0;
+    while (r < ROUNDS) {
+        var tf = _window(0, nf, FA, FB, FM);
+        var tm = _window(1, nm, a, b, m);
+        if (r == 0 || tf < best_floor) { best_floor = tf; }
+        if (r == 0 || tm < best_mm) { best_mm = tm; }
+        r = r + 1;
+    }
+    if (best_floor < 1) { best_floor = 1; }
+    var x10 = (best_mm * 10) / best_floor;      # the ratio, one decimal
+    var over = 0;
+    if (best_mm > best_floor * LIMIT) { over = 1; }
+    if (over == 1) { say("  SLOW  "); } else { say("  ok    "); }
+    say(label);
+    fmt_int(x10 / 10); say("."); fmt_int(x10 % 10); say("x the floor (");
+    fmt_int(best_mm); say(" ps/call vs "); fmt_int(best_floor); say(" ps), limit ");
+    fmt_int(LIMIT); say("x\n");
+    return over;
+}
+
+# A row fails only when all three attempts are over the limit. The defect is
+# deterministic — the bit-serial path is slow every time — so a retry cannot
+# hide it; it can only outlast a load spike on a shared runner.
+fn row(label: cstring, a, b, m): i64 {
+    var k = 0;
+    while (k < 3) {
+        if (_attempt(label, a, b, m) == 0) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+fn main(): i64 {
+    say("bayan_u64_mulmod on reduced operands vs a plain (a * b) % m call\n");
+    var slow = 0;
+    slow = slow + row("31-bit modulus  ", FA, FB, FM);
+    slow = slow + row("62-bit modulus  ", 0x1A2B3C4D5E6F7081, 0x2C3D4E5F60718293, 0x2E4F7A1C9B3D5E87);
+    slow = slow + row("64-bit modulus  ", 0x9E3779B97F4A7C15, 0xB7E151628AED2A6B, 0xC3A5C85C97CB3127);
+    say("rows over the limit: "); fmt_int(slow); say("\n");
+    if (_sink == 7) { say("\n"); }
+    return slow;
+}
+
+var rc = main();
+sys_exit_group(rc);

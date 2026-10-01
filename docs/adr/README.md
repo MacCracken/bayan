@@ -24,10 +24,13 @@ Decisions about bayan — what we chose, the context, and the consequences we ac
 | [0001](0001-flate-via-hooks-not-a-sankoch-dependency.md) | Flate compression via consumer-installed hooks, not a sankoch dependency | Accepted |
 | [0002](0002-pdf-objects-do-not-reuse-the-json-value-tree.md) | The PDF object graph does not reuse the JSON value tree | Accepted |
 | [0003](0003-f64-parse-exact-fallback-not-eisel-lemire.md) | The f64 parser falls back to an exact decimal, not Eisel–Lemire | Accepted |
+| [0004](0004-json-lookup-states-its-key-type-by-name.md) | A JSON object lookup states its key type in its name; the bare name is deprecated | Accepted |
 
 0001 and 0002 were written at 1.5.0, alongside `bayan_pdf_*`. They record the
 two decisions in that module a future reader is most likely to try to
 "simplify" — and in both cases the simplification has a specific, non-obvious
 cost. 0003 (1.5.7) is the same kind of record for the f64 parser: the obvious
 one-line fix to the reported defect would have left 936 wrong answers in a
-390,000-input sample.
+390,000-input sample. 0004 (1.5.10) records why bayan's JSON object lookup
+was deprecated rather than fixed in place: the in-place fix the filing
+proposed would silently break every caller passing a non-literal C string.

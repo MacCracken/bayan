@@ -22,14 +22,14 @@
 # The Miller-Rabin row is the shape of abaco's is_prime (ntheory.cyr): 12
 # fixed witnesses, x^d then repeated squaring through powmod.
 #
-# Filed with docs/development/issues/2026-09-30-u64-mulmod-aarch64-always-wide.md.
+# Filed with docs/development/issues/archived/2026-09-30-u64-mulmod-aarch64-always-wide.md.
 # Found by abaco 2.4.9's project audit: is_prime(9007199254740881) x200 takes
 # ~2 ms on x86_64 and ~4.3 s on aarch64 under qemu-aarch64.
 #
 # Build and run from the bayan repo root:
-#   cyrius build --aarch64 docs/development/issues/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_a64
+#   cyrius build --aarch64 docs/development/issues/archived/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_a64
 #   qemu-aarch64 /tmp/mulmod_a64; echo "exit=$?"   # -> 3 on bayan 1.5.9: all three speed rows
-#   cyrius build docs/development/issues/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_x86
+#   cyrius build docs/development/issues/archived/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_x86
 #   /tmp/mulmod_x86; echo "exit=$?"                 # -> 0: x86 is the control
 # With the filing's proposed fix aarch64 exits 0; with only the small-modulus
 # fast path it exits 2 (the 62- and 64-bit rows stay slow). ~10 s under qemu.

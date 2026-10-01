@@ -52,6 +52,157 @@ def interesting_128():
     return v
 
 
+def _divlu_steps(a, b, m):
+    """For (a*b mod m) / m by Hacker's Delight 2nd ed. fig. 9-3 (`divlu`),
+    per quotient digit: (corrections, estimate reached 2^32, left the
+    correction loop because rhat reached 2^32, left it at rhat == 2^32
+    EXACTLY where one more retest would have decremented the digit again).
+
+    The last one is the exit only `rhat < 2^32` gets right: a loop that
+    retested at rhat == 2^32 (`<=`) would read `rhat << 32` as 0 there."""
+    B = 1 << 32
+    p = (a % m) * (b % m)
+    u1, u0 = p >> 64, p & M64
+    s = 64 - m.bit_length()
+    v = m << s
+    vn1, vn0 = v >> 32, v & (B - 1)
+    un32 = ((u1 << s) | (u0 >> (64 - s) if s else 0)) & M64
+    un10 = (u0 << s) & M64
+    out = []
+    num = un32
+    for low in (un10 >> 32, un10 & (B - 1)):
+        q, rhat = divmod(num, vn1)
+        dec, big, rexit, exact = 0, q >= B, False, False
+        while q >= B or q * vn0 > B * rhat + low:
+            q, rhat, dec = q - 1, rhat + vn1, dec + 1
+            if rhat >= B:
+                rexit = True
+                exact = rhat == B and (q >= B or q * vn0 > low)
+                break
+        out.append((dec, big, rexit, exact))
+        num = num * B + low - q * v
+    return out
+
+
+def mulmod_aimed(quota=8):
+    """u64 mulmod triples aimed at the correction steps of the two-digit
+    division bayan's aarch64 mulmod uses (1.5.10). Random rows almost never
+    reach them: of the 200 MM rows main() emits first, 9 correct the first
+    quotient digit, 3 correct the second one twice, and none has a digit
+    estimate of 2^32. _divlu_steps only CHOOSES the inputs; the expected
+    value is still Python's (a * b) % m.
+
+    Each pick is also emitted with the largest representatives of the same
+    residues below 2^64 (bit 63 set whenever m < 2^63), which is what the
+    block's unsigned reduction has to undo. The first digit never needs a
+    second correction for a product of reduced operands (the proof is in
+    src/u128.cyr, above the aarch64 block), so there is no quota for it."""
+    rnd = random.Random(15101)
+    want = ["d1", "d1-s0", "big1", "d2x2-s0", "d2x2-s>0", "big2-s0", "big2-s>0",
+            "rexit1", "rexit2-s0", "rexit2-s>0"]
+    got = {t: 0 for t in want}
+    rows = []
+    for it in range(100000):
+        if all(got[t] >= quota for t in want):
+            break
+        kind = it % 4
+        if kind == 0:                                  # operands just below m
+            L = rnd.randint(2, 64)
+            m = rnd.getrandbits(L) | (1 << (L - 1))
+            a = m - 1 - rnd.getrandbits(rnd.randint(1, 40)) % m
+            b = m - 1 - rnd.getrandbits(rnd.randint(1, 64)) % m
+        elif kind == 1:                                # m just below 2^64
+            m = M64 - rnd.getrandbits(rnd.randint(1, 34))
+            a = m - 1 - rnd.getrandbits(rnd.randint(1, 34))
+            b = m - 1 - rnd.getrandbits(rnd.randint(1, 64)) % m
+        elif kind == 2:                                # a*b just below m * 2^32
+            L = rnd.randint(34, 64)
+            m = rnd.getrandbits(L) | (1 << (L - 1))
+            a = (1 << 32) + rnd.getrandbits(rnd.randint(1, L - 33))
+            b = (m << 32) // a
+        else:                                          # uniform
+            L = rnd.randint(2, 64)
+            m = rnd.getrandbits(L) | (1 << (L - 1))
+            a, b = rnd.getrandbits(64) % m, rnd.getrandbits(64) % m
+        if a >= m or b >= m:
+            continue
+        (d1, g1, r1, _), (d2, g2, r2, _) = _divlu_steps(a, b, m)
+        sfx = "-s0" if m >> 63 else "-s>0"             # normalising shift 0 or not
+        hit = []
+        if d1 == 1: hit.append("d1-s0" if m >> 63 else "d1")
+        if g1: hit.append("big1")
+        if d2 == 2: hit.append("d2x2" + sfx)
+        if g2: hit.append("big2" + sfx)
+        if r1: hit.append("rexit1")
+        if r2: hit.append("rexit2" + sfx)
+        if not any(got[t] < quota for t in hit):
+            continue
+        for t in hit:
+            got[t] += 1
+        rows += _with_top_reps(a, b, m)
+    assert all(got[t] >= quota for t in want), got
+    return rows
+
+
+def _with_top_reps(a, b, m):
+    """(a, b, m), then the same residues at their largest representatives
+    below 2^64, when that is a different triple (m near 2^64 may have none)."""
+    raw = (a + (M64 - a) // m * m, b + (M64 - b) // m * m, m)
+    return [(a, b, m)] + ([raw] if raw != (a, b, m) else [])
+
+
+def mulmod_rhat_exact(quota=8):
+    """u64 mulmod triples that leave a digit's correction loop at rhat == 2^32
+    exactly, `quota` each for digit 1 and digit 2, with s = 0 and with s > 0
+    (1.5.10). That exit is the one place where the routine's `rhat < 2^32`
+    and a `<=` differ, and a random triple reaches it about once in 2^31, so
+    mulmod_aimed never does. Built instead: take rhat = 2^32 - vn1 and an
+    estimate q-hat large enough to need one correction, which fixes that
+    digit's numerator; then find reduced a, b whose normalised product has
+    it as its top bits. _divlu_steps confirms each pick, and the expected
+    value is still Python's (a * b) % m."""
+    B = 1 << 32
+    rnd = random.Random(15103)
+    rows = []
+    for digit in (1, 2):
+        for s0 in (True, False):
+            got = 0
+            while got < quota:
+                if s0:
+                    m = rnd.getrandbits(64) | (1 << 63)
+                else:                                  # s in 1..8
+                    L = rnd.randint(56, 63)
+                    m = rnd.getrandbits(L) | (1 << (L - 1))
+                s = 64 - m.bit_length()
+                v = m << s
+                vn1, vn0 = v >> 32, v & (B - 1)
+                rh = B - vn1                           # rhat + vn1 == 2^32
+                if rh >= vn1 or vn0 == 0:
+                    continue
+                qmin = rh * B // vn0 + 1               # q-hat * vn0 > rh * 2^32
+                qmax = (v - 1 - rh) // vn1             # numerator below v
+                if qmin > qmax:
+                    continue
+                num = rnd.randint(qmin, qmax) * vn1 + rh
+                if digit == 1:                         # top 64 bits of u << s
+                    lo, hi = num << (64 - s), (num + 1) << (64 - s)
+                else:                                  # top 96 bits; q1 = k
+                    t = rnd.getrandbits(rnd.randint(0, 12)) * v + num
+                    lo, hi = t << (32 - s), (t + 1) << (32 - s)
+                amin = lo // (m - 1) + 1
+                if amin >= m:
+                    continue
+                a = rnd.randint(amin, min(m - 1, amin + (hi - lo)))
+                b = -(-lo // a)
+                if b >= m or a * b >= hi:
+                    continue
+                if not _divlu_steps(a, b, m)[digit - 1][3]:
+                    continue
+                got += 1
+                rows += _with_top_reps(a, b, m)
+    return rows
+
+
 def main():
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "."
     os.makedirs(out_dir, exist_ok=True)
@@ -118,6 +269,29 @@ def main():
         base = random.getrandbits(64)
         e = random.getrandbits(random.choice([1, 8, 16, 32]))
         emit("PM", base, e, m, pow(base, e, m))
+
+    # 1.5.10: aimed mulmod rows, and powmod over 64-bit moduli. Appended, with
+    # their own Random instances, so every line above is unchanged.
+    for a, b, m in mulmod_aimed() + mulmod_rhat_exact():
+        emit("MM", a, b, m, (a * b) % m)
+    rnd = random.Random(15102)
+    for i in range(32):
+        m = rnd.getrandbits(64) | (1 << 63)
+        if i % 4 == 0:
+            m = M64 - rnd.getrandbits(rnd.randint(1, 34))     # just below 2^64
+        base = rnd.getrandbits(64)
+        e = rnd.getrandbits(rnd.choice([8, 16, 32, 62]))
+        emit("PM", base, e, m, pow(base, e, m))
+    # Exponents at or above 2^63. Through 1.5.9 bayan_u64_powmod looped
+    # `while (exp > 0)`, a signed test, so for each of these it never ran
+    # and returned 1.
+    rnd = random.Random(15104)
+    for e in (1 << 63, (1 << 63) + 1, M64,
+              (1 << 63) | rnd.getrandbits(63), M64 - rnd.getrandbits(32)):
+        for m in (1, 2, 3, 1000000007, (1 << 61) - 1, (1 << 63) - 1,
+                  1 << 63, (1 << 63) + 1, M64 - 58, M64):
+            for base in (3, M64, rnd.getrandbits(64)):
+                emit("PM", base, e, m, pow(base, e, m))
 
     p = os.path.join(out_dir, "u128.vec")
     with open(p, "w") as f:

@@ -1,11 +1,23 @@
 # `bayan_json_v_obj_get` takes a cstr key while `bayan_json_v_obj_set` takes a `Str`
 
+> **RESOLVED — bayan 1.5.10 (2026-10-01), by deprecation**
+> ([ADR 0004](../../../adr/0004-json-lookup-states-its-key-type-by-name.md)). Lookups now state
+> their key type by name: `bayan_json_v_obj_get_by_cstr(v, key: cstring)` (new) and
+> `bayan_json_v_obj_get_by_str(v, key: Str)` (1.4.1). The bare `bayan_json_v_obj_get` and its
+> alias `json_v_obj_get` are `#deprecated` and forward to `_by_cstr`, so every answer is unchanged
+> and every call site of the ambiguous name now warns with the replacement to use — including the
+> inline `str_from(..)` spelling below, which still compiled with no diagnostic on cyrius 6.6.12.
+> The filing's option 1 (the bare name takes a `Str`) was rejected: it would silently break every
+> caller passing a non-literal C string. The remaining gap — cyrius's Str-to-cstring diagnostic
+> does not type call results, globals or fields — is cyrius's, filed there as
+> `docs/development/issues/2026-10-01-str-cstring-diagnostic-misses-call-results.md`.
+
 **Filed by**: agnosai (Rust → Cyrius port, M7 bite 10)
 **Date**: 2026-08-04
 **Version**: bayan 1.4.x (as vendored by `cyrius deps` at cyrius 6.5.6)
 **Severity**: Low — no wrong answers, but the failure mode is a segfault rather
 than an error return.
-**Status**: OPEN, and the header line above is now inaccurate — see the
+**Status**: RESOLVED in bayan 1.5.10 (banner above). Before that: OPEN, and the header line above was inaccurate — see the
 2026-08-28 re-measurement below.
 
 > **Re-measured 2026-08-28 at bayan 1.5.3 / cyrius 6.5.36. Still open, but the

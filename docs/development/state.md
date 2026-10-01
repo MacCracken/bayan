@@ -2,11 +2,38 @@
 
 > Refreshed every release. CLAUDE.md is preferences/process/procedures
 > (durable); this file is **state** (volatile).
-> Last refreshed: 2026-09-30.
+> Last refreshed: 2026-10-01.
 
 ## Version
 
-**1.5.9** — a patch, from cyrius 6.6.12 bite B13: `bayan_base64_encode` returns 0 when its output
+**1.5.10** — a patch that closes all three open issues (archived with resolution banners) and
+moves the pin to cyrius 6.6.12:
+
+- **`bayan_json_parse` returns the right pairs.** A nested value is one value (its raw span,
+  closer kinds matched); TAB/CR end a bare value; malformed input stops the parse at the first
+  defect instead of pairing a key with another key's bytes; a refused allocation returns 0. This
+  changes answers for VALID input too (nested values, trailing `\r`, nesting past 128), which is
+  why the CHANGELOG leads with a banner.
+- **aarch64 `bayan_u64_mulmod` is one asm block** (~600× → 1–2× a plain `(a*b)%m` under qemu).
+  Fixing it found two more wrong answers in the same functions: mulmod returned 0 on cx, and
+  powmod returned 1 for every exponent ≥ 2^63. CI runs aarch64 for the first time.
+- **`bayan_json_v_obj_get` is deprecated** in favour of `_by_cstr` / `_by_str`, which state the key
+  type by name ([ADR 0004](../adr/0004-json-lookup-states-its-key-type-by-name.md)). The remaining
+  diagnostic gap is cyrius's, filed there as
+  `docs/development/issues/2026-10-01-str-cstring-diagnostic-misses-call-results.md`.
+
+**Two lessons worth keeping.**
+
+- **Review found what the filings did not.** Both 2026-09-30 filings came with a tested patch. The
+  adversarial review of each still found a live defect of the filed class that the patch left open
+  (`{"a":"b":2}` gave a = `b`; `{"GBP":0.7:9}` gave GBP = 0.7), and fixing mulmod surfaced two
+  wrong answers nobody had reported. A tested patch is evidence, not a verdict.
+- **A target CI cannot build needs a structural gate.** The cx arm of mulmod was dead on both CI
+  targets, and the release toolchain ships no `cycc_cx`, so no test could see it.
+  `scripts/check-arch-arms.py` applies the conditionals as each target would instead — and it is
+  red on 1.5.9 twice over (cx has no arm; aarch64 has no hardware arm).
+
+Before it, **1.5.9** — a patch, from cyrius 6.6.12 bite B13: `bayan_base64_encode` returns 0 when its output
 alloc is refused (it stored through 0 and died of SIGSEGV), `bayan_toml_array_parse_a` returns 0
 on any allocator refusal instead of loading through a refused vec or handing back a short one, the
 toolchain pin moves to 6.6.11, and the CI coverage floor goes back to 100 (6.6.11's `cyrius
@@ -120,40 +147,33 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.6.11`, bumped at 1.5.9 from `6.6.9` (`cyrius.cyml
-  [package].cyrius`); `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
-  --full` against the 6.6.11 release slot (`diff -rq`: 111 files, 0 differ), and
-  `dist/` regenerated under it (`bayan-pdf.deps` gains `result`). The 6.6.9 notes
-  that follow are kept as the previous bump's record.
-  At 6.6.9 `cyrius version` reported `manifest-pin: 6.6.9` with no
-  drift line; build and test emit neither the pin-drift nor the shadow-lib
-  warning. The only source change the bump needed was the `src/pdf.cyr:6126`
-  lint pointer (6.6.5's cyrlint folds case).
-- **`lib/` matches the pin exactly, and the pin matches the RELEASE**:
-  `diff -rq lib ~/.cyrius/versions/6.6.6/lib`: 111 files, 0 differ, after
-  `cyrius deps` then `cyrius lib sync --full` (`deps` alone refreshed only the 9
-  declared leaves and left 25 files stale). The snapshot's `lib/` is byte-identical
-  to the 6.6.6 release tarball's. 40 files changed at this bump, plus one new
-  file (`alloc_cx.cyr`).
-
-  This settles the 1.5.5 caveat. That bump was measured against a pre-release
-  6.6.0 snapshot, and the `pdf_flate` RED it recorded was the snapshot's, not
-  the release's (Known gaps #2).
-
-  `bin/` still differs from the release in the same way it has since 6.5.36.
-  Of the release's entries, `ci.sh` is **absent** locally and `cybs`
-  **differs**, and the local tree carries four the release does not
-  (`cycc-native-aarch64`, `cycc_cx`, `cyrius-repl.sh`, `dlopen-helper.c`).
-  `cycc`, `cyrfmt`, `cyrlint` and the `cyrius` wrapper are identical, measured
-  by `diff -rq` against the tarball. `dist/` was regenerated with the release
-  toolchain in an isolated `CYRIUS_HOME` regardless, and the local toolchain
-  produces byte-identical bundles.
+- **Cyrius pin**: `6.6.12`, bumped at 1.5.10 from `6.6.11` (`cyrius.cyml
+  [package].cyrius`). `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
+  --full` (22 files changed); `diff -rq` against the **6.6.12 release tarball**'s
+  `lib/` (sha256 checked against the release's `.sha256`): 111 files, 0 differ.
+  Every gate was green on the unchanged 1.5.9 source under 6.6.12 before any fix
+  went in; the bump itself needed no source change.
+- **`cyrius.lock` exists from 1.5.10.** Since 6.6.9 `cyrius deps` writes a
+  stdlib-only project's first lock, and the bump wrote one (111 entries). `deps`
+  locks BEFORE `lib sync --full` refreshes the non-leaf files, so 14 entries were
+  stale until `cyrius deps --relock`; order matters on every bump: `deps`, `lib
+  sync --full`, `deps --relock`, `deps --verify`. CI verifies the committed lock
+  before resolving and requires resolving to change nothing.
+- **`bin/` differs from the release more than it used to.** At 6.6.12 the local
+  `cyrius` wrapper and `cybs` differ from the tarball's, `ci.sh` is absent locally,
+  and the local tree carries `cycc-native-aarch64`, `cycc_cx`, `cyrius-repl.sh` and
+  `dlopen-helper.c`, which the release does not; `cycc` is identical. (At 6.6.6
+  the wrapper was identical.) So every 1.5.10 gate and the `dist/` regeneration
+  ran on the release toolchain in an isolated `CYRIUS_HOME` — the recipe under CI
+  below. **The release has no `cycc_cx`**, so cx can be compiled only with a
+  local install; CI cannot (see Known gaps).
 
   **Verify by comparing the trees, not by trusting the sync's exit code.** At
   1.4.0 a green `cyrius lib sync --full` still left five files behind.
 - **Pin history**: 6.4.68 → 6.5.4 (1.4.0) → 6.5.16 (commit `97a3476`,
   2026-08-10, **undocumented**) → 6.5.28 (1.4.2) → 6.5.33 (1.5.0) → 6.5.36
-  (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8) → 6.6.11 (1.5.9).
+  (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8) → 6.6.11 (1.5.9)
+  → 6.6.12 (1.5.10).
 - **Caveat on the local snapshot — still live.** `~/.cyrius/versions/<pin>/lib`
   on a machine that also develops cyrius can carry unreleased in-flight edits at
   the same version number: at 6.5.28 its `freelist.cyr` had been edited in place
@@ -165,19 +185,19 @@ Eight data/big-integer modules carved byte-identical from cyrius stdlib
 (public functions prefixed `bayan_`), plus two greenfield modules written
 in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
 `json.cyr` in bundle order) and `pdf` (1.5.0 — cross-dep-free, so its position
-is convention rather than necessity). Re-measured from the tree 2026-09-23:
+is convention rather than necessity). Re-measured from the tree 2026-10-01:
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
-| `src/pdf.cyr`    | 9528 | 152 | `bayan_pdf_*` |
-| `src/json.cyr`   | 1922 | 69 | `bayan_json_*` |
-| `src/toml.cyr`   | 1632 | 33 | `bayan_toml_*` |
+| `src/pdf.cyr`    | 9530 | 152 | `bayan_pdf_*` |
+| `src/json.cyr`   | 2153 | 71 | `bayan_json_*` |
+| `src/toml.cyr`   | 1648 | 33 | `bayan_toml_*` |
 | `src/yaml.cyr`   | 899  | 12 | `bayan_yaml_*` |
 | `src/dtoa.cyr`   | 889  | 3  | `bayan_f64_*` |
-| `src/u128.cyr`   | 567  | 35 | `bayan_u128_*` / `bayan_u64_*` |
+| `src/u128.cyr`   | 688  | 35 | `bayan_u128_*` / `bayan_u64_*` |
 | `src/cyml.cyr`   | 576  | 17 | `bayan_cyml_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
-| `src/base64.cyr` | 214  | 4  | `bayan_base64_*` |
+| `src/base64.cyr` | 217  | 4  | `bayan_base64_*` |
 | `src/csv.cyr`    | 149  | 3  | `bayan_csv_*` |
 
 `toml` has gone 17 -> 21 -> **33** public functions across 1.5.3 and 1.5.4,
@@ -191,8 +211,14 @@ the defects both releases fixed were invisible to every test that existed.
 exact decimal tier (`_d_dec_*`, `_d_exact`), the error-window rounding, and
 the derivation of the window in the comment that sets it.
 
-**Allocator-threaded surface: 51 public `_a` functions** across the bundle —
-pdf 26, json 15, toml 7, cyml 2, yaml 1. (Measured. The "21" this file carried
+`json` grew 1922 -> **2153** lines and 69 -> **71** public functions at 1.5.10:
+the flat parser's four scanners and its header contract, `bayan_json_parse_a`,
+and `bayan_json_v_obj_get_by_cstr` (the bare `bayan_json_v_obj_get` is now a
+deprecated forwarder). `u128` grew 567 -> **688**: the aarch64 asm block and the
+proof in its comment.
+
+**Allocator-threaded surface: 52 public `_a` functions** across the bundle —
+pdf 26, json 16, toml 7, cyml 2, yaml 1. (Measured. The "21" this file carried
 from 1.4.0 predated pdf's entire `_a` surface and was stale for three releases;
 that is the hazard of writing a count into a file nobody re-measures.) The JSON
 value API is complete end to end — construct, mutate, parse and serialize. A consumer can run a whole parse → mutate → serialize cycle on an
@@ -201,28 +227,29 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **17,026**-line bundle, regenerated via `cyrius distlib`
-  at 1.5.7 with the **release** 6.6.6 toolchain. This is the artifact folded into
-  `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,528 of those lines, so the fold's cost to
+- `dist/bayan.cyr` — **17,408**-line bundle, regenerated via `cyrius distlib`
+  at 1.5.10 with the **release** 6.6.12 toolchain (a second run is byte-identical). This is the artifact folded into
+  `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
 - `dist/bayan-<format>.cyr` — per-format sublibs, each `cyrius distlib <name>`-
   generated and compile-verified self-contained, with a `.deps` stdlib-leaf
   sidecar. Canonical `bayan_*` names only. Every sidecar is complete:
   `scripts/consumer-check.sh` builds all 10 bundles from their declared leaves
-  alone, and goes red when a needed one is deleted (checked at 1.5.7).
+  alone, and goes red when a needed one is deleted (checked at 1.5.7). Leaf
+  counts below are what consumer-check reports at 1.5.10 (6.6.12's distlib).
 
   | Sublib | Lines | Stdlib leaves |
   |---|---|---|
-  | `bayan-pdf`    | 9536 | 8 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
-  | `bayan-yaml`   | 3724 | 9 (carries `json.cyr` — shared value tree / parser state) |
-  | `bayan-json`   | 2822 | 9 |
-  | `bayan-toml`   | 1640 | 7 |
-  | `bayan-cyml`   | 584  | 7 |
-  | `bayan-u128`   | 575  | 2 |
-  | `bayan-bigint` | 458  | 2 |
-  | `bayan-base64` | 222  | 2 |
-  | `bayan-csv`    | 157  | 3 |
+  | `bayan-pdf`    | 9538 | 7 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
+  | `bayan-yaml`   | 3955 | 9 (carries `json.cyr` — shared value tree / parser state) |
+  | `bayan-json`   | 3053 | 9 |
+  | `bayan-toml`   | 1656 | 6 |
+  | `bayan-cyml`   | 584  | 6 |
+  | `bayan-u128`   | 696  | 1 |
+  | `bayan-bigint` | 458  | 3 |
+  | `bayan-base64` | 225  | 3 |
+  | `bayan-csv`    | 157  | 4 |
 
   `bayan-toml` and `bayan-cyml` stopped listing `fmt` at 1.5.7, and that is
   correct: cyrius 6.6.6's `lib/io.cyr` includes `fmt.cyr` itself, so the `io`
@@ -231,10 +258,23 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,281 asserts, green** @1.5.9 (1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
+- `tests/bayan.tcyr` — **1,437 asserts, green** @1.5.10 on x86_64 and on `--aarch64` (1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
+
+  **1.5.10 adds** (+156): the flat JSON parser's groups (+120 — the 2026-09-30
+  issue's 16 documents against exact pair lists, nested spans and kind matching,
+  the depth cap at 127/128 and with the cap lowered and raised, every byte through
+  the scanners' five byte classes, what may follow a value, and each of a 17-member
+  parse's 54 allocation points refused ALONE through a one-shot allocator); the
+  typed JSON lookups (+29 — `_by_cstr`/`_by_str` agreement, the first of a repeated
+  key, null keys, and the deprecated names pinned through `&fn` + `fncall2`, a shape
+  that does not warn, so the suite needs no warning allowance); and u64 (+7 — an
+  edge grid and random triples for mulmod, powmod with exponents ≥ 2^63). Each
+  new rule was mutation-checked (59 flat-parser mutants; the asm block's
+  correction steps, csel, `stur`, `umulh` and both `b.lo` exits; the deprecation
+  gates); the survivors are documented equivalent instructions or orders.
 
   **1.5.7 adds the f64 parse group** (+43): the 27 vectors from the prakash
   issue, each checked as the literal string and through the emitter, plus
@@ -262,7 +302,10 @@ this is mutation-verified.
   either one removed. A test that cannot fail is a test that has stopped being
   a test.
 - `tests/vectors.tcyr` — **oracle-driven, expected values from Python**:
-  12,334 u128 checks, 656 f64 round-trip checks, **7,736 f64 parse vectors**
+  **12,651** u128 checks (12,334 before 1.5.10 added 317 rows: 79 mulmod rows
+  aimed at the Algorithm-D correction steps, 56 CONSTRUCTED to leave each
+  correction loop at `rhat == 2^32` exactly, 32 powmod rows over 64-bit moduli
+  and 150 with exponents ≥ 2^63), 656 f64 round-trip checks, **7,736 f64 parse vectors**
   (`f64parse.vec`, new at 1.5.7), and **1,494 TOML vectors** from `tomllib`
   (1,476 string + **18 structural**, the latter new at 1.5.4). A string vector
   can only see what a value decodes to; a structural one carries a table name
@@ -284,6 +327,11 @@ this is mutation-verified.
   (`u128.vec`, `f64.vec`, `f64parse.vec`, `strings.vec`) to be byte-identical.
 - `tests/pdf_flate.tcyr` — the compression path, isolated because it is the
   only test that pulls in `lib/sankoch.cyr`. **19 asserts, green.**
+- `tests/mulmod_speed.cyr` — **new at 1.5.10**, run by its own CI step on
+  x86_64 and under qemu-aarch64: per-call mulmod cost against a plain `(a*b)%m`
+  call in the same process, failing above 50×. It sees a fall back to a bit-serial
+  loop (~600×), not x86's ~13× hardware-divide wide path. Timing stays out of the
+  deterministic suite.
 - `tests/pdf_fixture.cyr` — writes a representative document for CI to run
   through `scripts/pdfcheck.py`. The writer's real gate: the assertions cannot
   see a byte-accounting bug, and an independent strict parser can.
@@ -301,15 +349,24 @@ this is mutation-verified.
   where the tiered parser must agree with the exact tier alone. That checks
   every tier-2 answer against an independent algorithm without Python. The
   old parser fails 31 of the round-trips. ~8 s, most of it the emitter.
+- `tests/json.fcyr` — **new at 1.5.10**, the flat JSON parser: 40,000 valid,
+  120,000 damaged and 40,000 random documents. Every key is followed by its own
+  `:`, every value lies in the source, and the pair list equals an independent
+  reader of the documented grammar (and, for valid documents, the generator's
+  spans and the tree parser's members). Every document, and every prefix of eight
+  edge documents, is also parsed flush against a PROT_NONE page, so a one-byte
+  read past the end faults — six over-read mutants passed both suites without it.
+  ~2.5 s.
 - `tests/bayan.bcyr` — real benchmarks, including one f64-parse row per tier
   (1.5.7). Results in [`benchmarks.md`](../benchmarks.md).
 - `src/main.cyr` — full-bundle compile smoke (exits 42).
 
 ### Coverage
 
-`cyrius coverage` — **465/465 fns (100%)**, 13/13 files, gated at `--min 100`
-(re-measured at 1.5.7; 1.5.7 adds no public function, so the tier-3 helpers are
-covered by the oracle and fuzz layers, not by this count).
+`cyrius coverage` — **503/503 fns (100%)**, 11/11 files, gated at `--min 100`
+(re-measured at 1.5.10 on 6.6.12, whose counter matches whole references and
+excludes `main`; 1.5.10 adds `bayan_json_parse_a` and
+`bayan_json_v_obj_get_by_cstr`).
 
 **It is reference coverage.** A function being called is not a function being
 correct — and 1.5.3 is the sharpest available demonstration: `src/toml.cyr` sat
@@ -352,6 +409,13 @@ guards are what check answers.
     a build whose only diagnostic was one warning passed, and the consumer gate
     had been reporting one missing symbol per bundle where there were two.
 
+- **A local mirror must run `ci.yml` itself.** 1.5.10 added steps a hand-kept
+  mirror did not (the aarch64 suite, the speed check, the arch-arm check, the
+  naming step, zero-warning fuzz/bench/pdf). Running every `run:` block of the
+  workflow in order, on the release toolchain, is what showed the integrated tree
+  green; a mirror that drifts is the same trap as a gate that proves less than
+  it says.
+
 - **`scripts/consumer-check.sh` must build with `--no-deps`**, or a consumer
   missing a declared leaf still compiles and the check passes vacuously. It also
   subtracts a **measured harness floor** — `lib/syscalls.cyr` alone emits
@@ -362,13 +426,19 @@ guards are what check answers.
   catch.
 
 Gates: pin-drift · version consistency (VERSION / manifest / CHANGELOG / all 10
-dist headers) · `lib/` vs snapshot tree diff · format (src **and** tests) ·
-lint (0 warnings, 0 deferrals) · vet · build with 0 warnings · smoke exits 42 ·
-test · **pdf oracle** · **pdf fixture polarity** · **pdf metric-table
-regeneration** · **pdf naming hazards** · fuzz · bench · `coverage --min 100` ·
-**numeric vectors regenerate identically** · **toml vectors regenerate
-identically** (new at 1.5.3) · `distlib --all --check` · regeneration leaves no
-tree diff · consumer-check.
+dist headers) · **`cyrius.lock` verifies, and resolving changes nothing** (1.5.10) ·
+`lib/` vs snapshot tree diff · format (src, tests and `tests/*.cyr`) · lint (0
+warnings, 0 deferrals) · vet · build with 0 warnings · smoke exits 42 · test ·
+**aarch64 suite under qemu** (1.5.10) · **mulmod cost on both targets** (1.5.10) ·
+**pdf oracle** (fixture build with 0 warnings) · **pdf fixture polarity** · **pdf
+metric-table regeneration** · **pdf naming hazards** · **every target compiles a
+mulmod arm** (`scripts/check-arch-arms.py`, 1.5.10) · **no overload base for the
+typed JSON lookups** (1.5.10) · fuzz with 0 warnings · bench with 0 warnings ·
+`coverage --min 100` · **numeric vectors regenerate identically** · **toml vectors
+regenerate identically** · `distlib --all --check` · regeneration leaves no tree
+diff · consumer-check (also the **deprecation gate** since 1.5.10: exact warnings
+and advice at a caller, none from a bundle, no reference to a deprecated name in
+`src/` or `dist/`, and `_by_cstr`'s own diagnostics).
 
 The 1.5.0 gate lessons still hold and generalise:
 
@@ -429,14 +499,14 @@ The 1.5.0 gate lessons still hold and generalise:
    every bump, so deleting it is not durable; the durable fix is upstream (a
    `lib sync` self-exclusion) or a build-time guard.
 
-   At 1.5.7 the 6.6.6 snapshot carries bayan **1.5.6**, one release behind. It
-   is fixed in toml, but it is the `bayan_f64_parse` with **all four f64
-   misrounding classes** this release fixes. An accidental include would bring
-   the misrounding back with no warning beyond the duplicate-definition ones.
+   At 1.5.10 the 6.6.12 snapshot carries bayan **1.5.9**: the flat JSON parser
+   that misassociates values, the aarch64 bit-serial mulmod, mulmod returning 0
+   on cx and powmod returning 1 for exponents ≥ 2^63. An accidental include would
+   bring all four back with no warning beyond the duplicate-definition ones.
 5. **`docs/` is still largely scaffold, but less so.** 1.5.0 added the first two
-   ADRs and `docs/benchmarks.md`. Still unrecorded: the carve itself, `_compat`
-   aliases, the sublib split, yaml-into-json's-tree, the 1.4.1 `obj_get`
-   non-rename, and now the 1.5.3 decision to decode in the parser rather than
+   ADRs and `docs/benchmarks.md`; 1.5.7 added ADR 0003 and 1.5.10 ADR 0004 (the
+   `obj_get` deprecation, which also records the 1.4.1 non-rename). Still unrecorded: the carve itself, `_compat`
+   aliases, the sublib split, yaml-into-json's-tree, and the 1.5.3 decision to decode in the parser rather than
    in an accessor — which is the best ADR candidate on the list, because the
    reasoning generalises to yaml and cyml.
 6. **`docs/development/roadmap.md` M1/M2 are still unfilled template stubs.**
@@ -448,15 +518,22 @@ The 1.5.0 gate lessons still hold and generalise:
    wrong claim still standing on `bayan_toml_get_array`, and the same
    undocumented trap on `bayan_toml_get_sections`. Both are now stated.
    Reconciling the signatures is still a breaking change and wants its own
-   release.
-8. **The 1.4.1 Str→cstring diagnostic misses the inline form.**
+   release. Also: `bayan_toml_get`'s key carries no `: cstring` annotation, so
+   even the named-Str-local diagnostic cannot fire on it (noted at 1.5.10, not
+   changed — one change at a time).
+8. ~~**The 1.4.1 Str→cstring diagnostic misses the inline form.**~~ **Resolved
+   bayan-side in 1.5.10 by deprecation**
+   ([2026-08-04](issues/archived/2026-08-04-agnosai-json-obj-get-takes-cstr-while-obj-set-takes-str.md),
+   [ADR 0004](../adr/0004-json-lookup-states-its-key-type-by-name.md)): the bare
+   name warns at every call site, whatever the argument; `_by_cstr` and `_by_str`
+   state the key type. The diagnostic gap itself is cyrius's and still open there
+   (filed 2026-10-01). The history:
    `bayan_json_v_obj_get(o, str_from("k"))` — the spelling in the filed
    issue's own reproduction — compiles with zero warnings. The `: cstring`
    annotation fires only when the argument is a named `Str`-typed local. And the
    symptom has changed since filing: it no longer segfaults, it returns a silent
    0, which defers the fault to whatever the caller does with it. Annotated on
-   [2026-08-04](issues/2026-08-04-agnosai-json-obj-get-takes-cstr-while-obj-set-takes-str.md).
-   **Re-measured at 1.5.7 / cyrius 6.6.6: unchanged.** 6.6.6 reworked the
+   2026-08-04. **Re-measured at 1.5.7 / cyrius 6.6.6: unchanged.** 6.6.6 reworked the
    `: cstring` gate (non-zero integer literals are now refused), and the inline
    form still compiles clean and returns 0.
 9. ~~**`src/cyml.cyr` carries the project's two remaining fixed read caps.**~~
@@ -482,13 +559,39 @@ The 1.5.0 gate lessons still hold and generalise:
    field is not emitted (`a,` parses to one field where the RFC has two, so a
    round trip loses a column), records are LF-terminated where the RFC says
    CRLF, and CR does not trigger quoting. Documented at 1.5.3, not fixed.
+11. **aarch64 `bayan_u128_div` / `_mod` / `_divmod` are still bit-serial** for a
+   64-bit divisor (the 2026-09-30 mulmod issue's "third route", not taken at
+   1.5.10: no aarch64 mulmod path reaches them any more). On x86, mulmod with a
+   modulus ≥ 2^63 takes the hardware-divide wide path at ~13× a plain call; the
+   speed gate's 50× limit does not see that path.
+12. **CI cannot compile cx.** The release tarball ships `cxvm` but no `cycc_cx`,
+   so the cx arm of `bayan_u64_mulmod` is checked only structurally
+   (`scripts/check-arch-arms.py`); the 1.5.10 cx measurements (1.5.9: 67/335
+   mulmod and 209/302 powmod oracle rows wrong; 1.5.10: 0) used a local
+   install's `cycc_cx`.
+13. **`src/u128.cyr`'s comment above `_u128_lshr64` says cyrius `>>` sign-extends.**
+   Measured LOGICAL on 6.6.12 (x86_64, aarch64 and cx: `-16 >> 2` is
+   `0x3ffffffffffffffc`), so powmod's ≥ 2^63 defect was the signed loop test
+   alone. The comment was left as it is in 1.5.10.
+14. **`bayan_json_build` quotes every value and escapes nothing.** Pre-existing,
+   but more visible from 1.5.10: a nested value now comes back whole, so
+   `bayan_json_build(bayan_json_parse(doc))` on a document with nested values
+   emits invalid JSON (1.5.9 already did for `{"x":{"a":1}}`).
 
 ## Scripts
 
 - `scripts/consumer-check.sh` — compiles a throwaway consumer against every
-  `dist/` bundle from exactly the leaves its `.deps` sidecar declares.
+  `dist/` bundle from exactly the leaves its `.deps` sidecar declares. Since
+  1.5.10 it is also the deprecation gate (the DEPRECATED and TYPED_CSTR blocks).
+- `scripts/check-arch-arms.py` — **new at 1.5.10.** Applies a function's
+  `#ifdef` arms as x86, aarch64 and a target with no `CYRIUS_ARCH_*` macro (cx),
+  and fails when one is left with no arm that sets `result`, or x86/aarch64 with
+  no asm block. Stdlib only.
 - `scripts/gen-numeric-vectors.py` — u128 + f64 vectors from Python, and at
-  1.5.7 `f64parse.vec` (the aimed parse vectors). The latter uses its own
+  1.5.7 `f64parse.vec` (the aimed parse vectors). At 1.5.10 it also aims mulmod
+  rows at the Algorithm-D correction steps, constructs rows that exit each
+  correction loop at `rhat == 2^32`, and adds powmod rows over 64-bit moduli and
+  with exponents ≥ 2^63. The latter uses its own
   `random.Random`, so adding it left the other two byte-identical.
 - `scripts/gen-toml-vectors.py` — **new at 1.5.3.** TOML string vectors from
   `tomllib`. Every line is verified with the oracle before it is written: a
@@ -504,7 +607,9 @@ vec, str, syscalls, assert, bench, result, fnptr, tagged. The dist bundle
 strips includes — consumers must supply these (notably `result`, which is
 NOT in cyrius's own stdlib auto-prepend set).
 
-No sibling `[deps.NAME]` entries, so `cyrius deps` writes no `cyrius.lock`.
+No sibling `[deps.NAME]` entries. Since 1.5.10 there is a `cyrius.lock` anyway:
+cyrius ≥ 6.6.9 locks every vendored stdlib file of a stdlib-only project (111
+entries). CI verifies it before resolving.
 
 ## Consumers
 

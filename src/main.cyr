@@ -58,7 +58,7 @@ fn main(): i64 {
     var ydoc = "k: 42\n";
     var yv = bayan_yaml_parse_buf(ydoc, strlen(ydoc));
     if (bayan_json_v_is_obj(yv) != 1) { return 5; }
-    if (bayan_json_v_int(bayan_json_v_obj_get(yv, "k")) != 42) { return 6; }
+    if (bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yv, "k")) != 42) { return 6; }
 
     return 42;
 }

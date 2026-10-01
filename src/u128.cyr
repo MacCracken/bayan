@@ -485,9 +485,10 @@ fn bayan_u128_modeq(dst, src): i64 { return bayan_u128_mod(dst, dst, src); }
 # Operands are reduced up front when that is provably safe with
 # Cyrius's SIGNED `%` (both operands and the modulus below 2^63),
 # which is the overwhelmingly common case and costs two hardware
-# divisions. Anything else goes through the wide path, which is
-# what aarch64 always did. Callers that already reduce — Miller-
-# Rabin, Pollard rho, RSA — pay only the two extra divisions.
+# divisions. Anything else goes through the wide path. aarch64
+# takes neither: its asm block reduces with the unsigned `udiv`.
+# Callers that already reduce — Miller-Rabin, Pollard rho, RSA —
+# pay only the two extra divisions.
 # The wide fallback: full 128-bit product, then a 128-bit
 # remainder by shift-subtract. Correct for every input including
 # unreduced operands and a modulus at or above 2^63. Kept in its
@@ -508,11 +509,121 @@ fn _u64_mulmod_wide(a, b, m): i64 {
 
 fn bayan_u64_mulmod(a, b, m): i64 {
     var result = 0;
-    # NOTE: `result` must stay local index 3 — the x86 asm block below
-    # addresses a/b/m/result at fixed frame offsets. Locals declared AFTER it
-    # take higher indices and do not disturb those slots; a local declared
-    # before it would shift every offset and silently corrupt the block.
+    # NOTE: `result` must stay local index 3 — the x86 and aarch64 asm blocks
+    # below address it at a fixed frame offset ([rbp-32] / [x29, #-32]). Locals
+    # declared AFTER it take higher indices and do not disturb that slot; a
+    # local declared before it would shift every offset and silently corrupt
+    # the blocks.
     if (m == 0) { return 0; }
+    #ifdef CYRIUS_ARCH_AARCH64
+    # aarch64 has no 128/64 divide, so the remainder of the 128-bit product
+    # (mul + umulh) is taken by Knuth's Algorithm D with two 32-bit digits
+    # (TAOCP vol. 2, 4.3.1; Hacker's Delight 2nd ed., fig. 9-3 `divlu`,
+    # remainder only), in registers: four udiv, no loop over bits, no calls.
+    # Through 1.5.9 every aarch64 call went to _u64_mulmod_wide instead, whose
+    # 128-round shift-subtract in bayan_u128_divmod (three to five helper calls
+    # a round) cost ~18 us per call under qemu-aarch64 — ~600x a plain
+    # `(a * b) % m` call, where x86 sits at 2x — and powmod paid it once or
+    # twice per exponent bit.
+    #
+    # Operands are reduced first with udiv/msub, which is unsigned, so this
+    # takes every input with m != 0 — unreduced operands and m >= 2^63 too.
+    # Then a, b < m, so the high word of a*b is below m: the precondition of
+    # the two-digit division. The normalising shift s = clz(m) is 0 for
+    # m >= 2^63, and `lsr` takes its count mod 64, so `u0 >> (64 - s)` would be
+    # u0 rather than 0 there; the csel zeroes it. Each digit's correction loop
+    # runs at most twice (Knuth's q-hat - 2 <= q <= q-hat), and rhat starts
+    # below vn1 < 2^32 and is re-checked against 2^32 before every retest, so
+    # `rhat << 32` never loses bits. That re-check must be `b.lo`: a loop that
+    # retested at rhat == 2^32 exactly would read `rhat << 32` as 0.
+    #
+    # Three parts stay for fidelity to the textbook routine although removing
+    # any one of them changes no result (a mutation pass sees them survive;
+    # that is not a gap in the tests):
+    #  - L1's back-edge. The first digit corrects at most once for a product
+    #    of reduced operands, so the retest the back-edge leads to always
+    #    passes and L2 never runs twice. With D = un32:un1 (96 bits) and
+    #    q1 = D / v, a second pass needs q-hat >= q1 + 2, so
+    #    D >= (q1 + 2) * vn1 * 2^32; with D < (q1 + 1) * v that forces
+    #    vn1 * 2^32 < (q1 + 1) * vn0, so q1 >= vn1. But a, b < m gives
+    #    q1 <= (m - 1)^2 * 2^s / (2^32 * v) < (vn1 + 1) / 2^s. For s >= 1 that
+    #    contradicts q1 >= vn1. For s = 0 it forces q1 = vn1 and
+    #    vn0 = 2^32 - 1, and then D <= (m - 1)^2 / 2^32
+    #    = (vn1 + 1)^2 * 2^32 - 4 * (vn1 + 1), short of the
+    #    ((vn1 + 1)^2 - 1) * 2^32 that q-hat >= vn1 + 2 needs, because
+    #    4 * (vn1 + 1) > 2^32.
+    #  - the `b.hs` tests, which 64-bit registers make redundant
+    #    (q-hat <= 2^32 + 1, so q-hat * vn0 cannot overflow).
+    #  - one of the two udiv/msub reductions. Either alone already puts the
+    #    high word below m (a < 2^64 and b < m give a * b < 2^64 * m).
+    #
+    # Locals: a(0)=[x29,#-8], b(1)=[x29,#-16], m(2)=[x29,#-24],
+    #         result(3)=[x29,#-32]. cyrius never enables regalloc on aarch64
+    # or in a fn containing asm, so these slots are fixed. Scratch is x0-x15,
+    # caller-saved under AAPCS64 and never live across a statement in cyrius's
+    # aarch64 codegen; x16-x18 and x28 (the arm64 Mach-O argv park) are
+    # untouched. Encoded with llvm-mc 22.1.8 and read back with objdump, which
+    # also places every branch on the label named beside it.
+    asm {
+        param_load(x0, 0);        # a
+        param_load(x1, 1);        # b
+        param_load(x2, 2);        # m
+        0x03; 0x08; 0xC2; 0x9A;   #      udiv  x3, x0, x2
+        0x60; 0x80; 0x02; 0x9B;   #      msub  x0, x3, x2, x0     ; a %= m
+        0x23; 0x08; 0xC2; 0x9A;   #      udiv  x3, x1, x2
+        0x61; 0x84; 0x02; 0x9B;   #      msub  x1, x3, x2, x1     ; b %= m
+        0x03; 0x7C; 0x01; 0x9B;   #      mul   x3, x0, x1         ; u0 = lo
+        0x04; 0x7C; 0xC1; 0x9B;   #      umulh x4, x0, x1         ; u1 = hi < m
+        0x45; 0x10; 0xC0; 0xDA;   #      clz   x5, x2             ; s
+        0x42; 0x20; 0xC5; 0x9A;   #      lsl   x2, x2, x5         ; v = m << s
+        0x46; 0xFC; 0x60; 0xD3;   #      lsr   x6, x2, #32        ; vn1
+        0x47; 0x7C; 0x40; 0x92;   #      and   x7, x2, #0xffffffff ; vn0
+        0x88; 0x20; 0xC5; 0x9A;   #      lsl   x8, x4, x5
+        0xE9; 0x03; 0x05; 0xCB;   #      neg   x9, x5
+        0x69; 0x24; 0xC9; 0x9A;   #      lsr   x9, x3, x9         ; u0 >> (64 - s)
+        0xBF; 0x00; 0x00; 0xF1;   #      cmp   x5, #0
+        0xE9; 0x03; 0x89; 0x9A;   #      csel  x9, xzr, x9, eq    ; 0 when s == 0
+        0x08; 0x01; 0x09; 0xAA;   #      orr   x8, x8, x9         ; un32
+        0x6A; 0x20; 0xC5; 0x9A;   #      lsl   x10, x3, x5        ; un10
+        0x4B; 0xFD; 0x60; 0xD3;   #      lsr   x11, x10, #32      ; un1
+        0x4A; 0x7D; 0x40; 0x92;   #      and   x10, x10, #0xffffffff ; un0
+        0x2F; 0x00; 0xC0; 0xD2;   #      mov   x15, #0x100000000  ; b = 2^32
+        0x0C; 0x09; 0xC6; 0x9A;   #      udiv  x12, x8, x6        ; q1
+        0x8D; 0xA1; 0x06; 0x9B;   #      msub  x13, x12, x6, x8   ; rhat
+        0x9F; 0x01; 0x0F; 0xEB;   # L1:  cmp   x12, x15
+        0xC2; 0x00; 0x00; 0x54;   #      b.hs  L2                 ; q1 >= b
+        0x8E; 0x7D; 0x07; 0x9B;   #      mul   x14, x12, x7
+        0xA9; 0x7D; 0x60; 0xD3;   #      lsl   x9, x13, #32
+        0x29; 0x01; 0x0B; 0xAA;   #      orr   x9, x9, x11
+        0xDF; 0x01; 0x09; 0xEB;   #      cmp   x14, x9
+        0xA9; 0x00; 0x00; 0x54;   #      b.ls  L3                 ; q1*vn0 <= b*rhat+un1
+        0x8C; 0x05; 0x00; 0xD1;   # L2:  sub   x12, x12, #1
+        0xAD; 0x01; 0x06; 0x8B;   #      add   x13, x13, x6
+        0xBF; 0x01; 0x0F; 0xEB;   #      cmp   x13, x15
+        0xC3; 0xFE; 0xFF; 0x54;   #      b.lo  L1
+        0x09; 0x7D; 0x60; 0xD3;   # L3:  lsl   x9, x8, #32
+        0x29; 0x01; 0x0B; 0xAA;   #      orr   x9, x9, x11
+        0x89; 0xA5; 0x02; 0x9B;   #      msub  x9, x12, x2, x9    ; un21
+        0x2C; 0x09; 0xC6; 0x9A;   #      udiv  x12, x9, x6        ; q0
+        0x8D; 0xA5; 0x06; 0x9B;   #      msub  x13, x12, x6, x9   ; rhat
+        0x9F; 0x01; 0x0F; 0xEB;   # L4:  cmp   x12, x15
+        0xC2; 0x00; 0x00; 0x54;   #      b.hs  L5                 ; q0 >= b
+        0x8E; 0x7D; 0x07; 0x9B;   #      mul   x14, x12, x7
+        0xA8; 0x7D; 0x60; 0xD3;   #      lsl   x8, x13, #32
+        0x08; 0x01; 0x0A; 0xAA;   #      orr   x8, x8, x10
+        0xDF; 0x01; 0x08; 0xEB;   #      cmp   x14, x8
+        0xA9; 0x00; 0x00; 0x54;   #      b.ls  L6                 ; q0*vn0 <= b*rhat+un0
+        0x8C; 0x05; 0x00; 0xD1;   # L5:  sub   x12, x12, #1
+        0xAD; 0x01; 0x06; 0x8B;   #      add   x13, x13, x6
+        0xBF; 0x01; 0x0F; 0xEB;   #      cmp   x13, x15
+        0xC3; 0xFE; 0xFF; 0x54;   #      b.lo  L4
+        0x28; 0x7D; 0x60; 0xD3;   # L6:  lsl   x8, x9, #32
+        0x08; 0x01; 0x0A; 0xAA;   #      orr   x8, x8, x10
+        0x88; 0xA1; 0x02; 0x9B;   #      msub  x8, x12, x2, x8
+        0x08; 0x25; 0xC5; 0x9A;   #      lsr   x8, x8, x5         ; remainder
+        0xA8; 0x03; 0x1E; 0xF8;   #      stur  x8, [x29, #-32]    ; result
+    }
+    #else
     var wide = 0;
     if (m < 0) { wide = 1; }        # modulus >= 2^63 read as unsigned
     if (a < 0) { wide = 1; }        # operand  >= 2^63 read as unsigned
@@ -532,11 +643,16 @@ fn bayan_u64_mulmod(a, b, m): i64 {
         0x48; 0xF7; 0x75; 0xE8;   # div qword [rbp-24]  ; rax=quot rdx=rem
         0x48; 0x89; 0x55; 0xE0;   # mov [rbp-32], rdx   ; result = rem
     }
-    #endif
-    #ifdef CYRIUS_ARCH_AARCH64
-    # Portable path — the same helper the wide fallback uses, so both targets
-    # compute the identical answer for every input.
+    #else
+    # A target with neither arch macro: the cx bytecode backend predefines
+    # CYRIUS_TARGET_CX and no CYRIUS_ARCH_*. Through 1.5.9 this arm was `#ifdef
+    # CYRIUS_ARCH_AARCH64`, so on cx neither arm compiled and every call with
+    # a, b and m below 2^63 returned the 0 `result` starts at: mulmod(3, 5, 7)
+    # said 0, and so did every powmod with 1 < m < 2^63 and exp > 0 (cxvm,
+    # cyrius 6.6.12). CI cannot build cx, so scripts/check-arch-arms.py checks
+    # that this arm is still here.
     result = _u64_mulmod_wide(a, b, m);
+    #endif
     #endif
     return result;
 }
@@ -544,22 +660,27 @@ fn bayan_u64_mulmod(a, b, m): i64 {
 # Return base^exp mod m, all u64. Square-and-multiply via
 # bayan_u64_mulmod on every step, so the inner loop cost is two hardware
 # `div` instructions per iteration instead of a 128-iter shift-
-# subtract. Loop count is exactly the bit-length of `exp`.
+# subtract. Loop count is exactly the bit-length of `exp`, read as
+# unsigned. Through 1.5.9 the loop was `while (exp > 0)`, a signed test,
+# so for every exp at or above 2^63 it never ran and the call returned 1.
+# It now runs until exp is 0, shifting with _u128_lshr64, which is
+# logical whatever a backend's `>>` does.
 fn bayan_u64_powmod(base, exp, m): i64 {
     if (m == 0) { return 0; }
     if (m == 1) { return 0; }
     var result = 1;
     # `base % m` is the SIGNED remainder, so it is only the unsigned one when
-    # both are below 2^63. Outside that, let mulmod's wide path do the
-    # reduction rather than feeding it a negative value (1.5.2).
+    # both are below 2^63. Outside that, let mulmod do the reduction (its
+    # wide path on x86, the unsigned udiv on aarch64) rather than feeding it
+    # a negative value (1.5.2).
     if (base >= 0 && m > 0) { base = base % m; }
-    else { base = _u64_mulmod_wide(base, 1, m); }
-    while (exp > 0) {
+    else { base = bayan_u64_mulmod(base, 1, m); }
+    while (exp != 0) {
         if ((exp & 1) == 1) {
             result = bayan_u64_mulmod(result, base, m);
         }
-        exp = exp >> 1;
-        if (exp > 0) {
+        exp = _u128_lshr64(exp, 1);
+        if (exp != 0) {
             base = bayan_u64_mulmod(base, base, m);
         }
     }

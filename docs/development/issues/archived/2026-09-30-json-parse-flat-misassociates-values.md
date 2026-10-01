@@ -1,6 +1,23 @@
 # `bayan_json_parse` hands keys the wrong values: a missing `:` borrows the next pair's value, a nested value is cut at its first `,` or `}`, and TAB / CR do not end a value
 
-**Status:** 🟡 **OPEN** — found by abaco 2.4.9's project audit; not repaired.
+> **RESOLVED — bayan 1.5.10 (2026-10-01).** The repro exits 0 (14 on 1.5.9; measured on the
+> cyrius 6.6.12 release, x86_64 and aarch64). All four proposed parts landed, and review of the
+> fix went further than the filing:
+> - closer **kinds are matched**, so the "Limitation" below is closed: `{"meta":{"x":[}],...}`
+>   now stops the parse instead of surfacing meta's `admin`;
+> - a value followed by `:` stops the parse. `{"a":"b":2}` gave a = `b` — row 16's harm through a
+>   comma-less spelling, which the proposal did not close;
+> - a bare value cut by `"` `:` `[` `]` or `{` is refused rather than returned as the part before
+>   the cut (`{"GBP":0.7:9}` would give 0.7); an unterminated string or nested value, or a bare
+>   value the input ends on, is no longer returned truncated;
+> - nesting is capped where the tree parser caps it (128 levels counting the top-level object);
+> - any refused allocation returns 0, never a partial vec, and `bayan_json_parse(0)` is an empty vec.
+>
+> Follow-ups done: the 16 rows are in `tests/bayan.tcyr`; the key-followed-by-`:` invariant is in
+> the new `tests/json.fcyr`, which also parses every document flush against a PROT_NONE page; the
+> header's stale `bayan_json_v_parse_str` pointer is corrected. See CHANGELOG [1.5.10].
+
+**Status:** ✅ **RESOLVED** in bayan 1.5.10 — found by abaco 2.4.9's project audit.
 **Placement:** unpinned.
 **Discovered:** 2026-09-30, abaco 2.4.9 project audit. The context is abaco's currency-rate loader `_ccy_load_body`, which passed the `rates` object of a fetched body to `bayan_json_parse`. Two findings came from it: `ai-io-04`, and the final review's "a rates body with a missing `:` loaded the next pair's value as this key's rate".
 **Severity:** Medium. The parser returns silently wrong pairs, on valid JSON as well as malformed JSON. No measured input crashed it. A strict parser in the same file is a workaround. The repro's row 11 (the `meta` row in the table below) goes wrong the way 1.5.1's escaped-quote case did: the parser resumes inside a value and reads the rest of it as top-level pairs. That may argue for a higher rating.
@@ -56,7 +73,7 @@ Part 2 was already known on the cyrius side but never filed here. The cyrius `#d
 - **Malformed documents (rows 12–16)** must give the pairs that come before the defect. After that point, only pairs the document really contains may follow, so a parser that stops and one that skips the bad pair both pass. Any pair that carries another key's value fails.
 
 ```
-cyrius build docs/development/issues/repros/2026-09-30-json-parse-flat-misassociates-values.cyr /tmp/jsonflat
+cyrius build docs/development/issues/archived/repros/2026-09-30-json-parse-flat-misassociates-values.cyr /tmp/jsonflat
 /tmp/jsonflat; echo "exit=$?"      # -> 14 on 1.5.9 (rows 3-16)
 ```
 
