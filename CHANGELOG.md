@@ -106,17 +106,38 @@ moves the GitHub Actions to their current majors. Public API: two additions
 - **GitHub Actions:** `actions/checkout` v4 → **v7**, `softprops/action-gh-release` v2 → **v3**.
   Both majors move the action runtime to Node 24; checkout v7 also refuses fork checkouts under
   `pull_request_target`, which bayan does not use.
-- **CI runs aarch64** for the first time: `qemu-user`, then `cyrius test --aarch64`, then
-  `tests/mulmod_speed.cyr` on both targets (fails above 50× a plain `(a*b)%m` call; it sees a fall
-  back to a bit-serial loop, not x86's ~13× hardware-divide wide path — the threshold's reasoning
-  is in the file's header). `scripts/check-arch-arms.py` applies `bayan_u64_mulmod`'s conditionals
-  as x86, aarch64 and a target with no arch macro, and fails when one has no arm that sets the
-  result or when x86/aarch64 has no asm block (a misspelt macro); it is red on the 1.5.9 source,
-  twice over. CI cannot compile cx (the release tarball has no `cycc_cx`), so this is the gate that
-  sees the cx arm.
-- **CI: Fuzz, Bench, the PDF-fixture build and both mulmod-speed builds fail on any `warning:`**, as
-  Build and Test already did; the Format step covers `tests/*.cyr`; a step forbids defining `bayan_json_v_obj_get_by`, the
-  base that would turn `_by_str`/`_by_cstr` into live overload slots.
+- **CI is six parallel jobs instead of one 32-step job:** `toolchain` (pin, manifest, lock, `lib/`),
+  `static` (format, lint, include audit, naming and arch-arm checks), `x86_64` (build, smoke, suite,
+  fuzz, bench, coverage, mulmod cost), `aarch64`, `oracles` (PDF validator, font metrics, numeric
+  and TOML vector regeneration) and `dist` (bundles, their regeneration, the consumer/deprecation
+  gate). A lint slip is no longer reported only after the whole x86 suite, and `release.yml`
+  needs all six. Each job installs the pin through one composite action
+  (`.github/actions/setup-cyrius`, which also fails on pin drift; `release.yml` uses it too), and
+  every build/test/fuzz/bench goes through `scripts/no-warnings.sh`, which fails on the exit status
+  or on a `warning:` anywhere in the output — one copy of that rule instead of eight. Run locally
+  with each job in its own fresh copy of the tree, all six pass, and none relies on another's
+  `cyrius deps` or `build/`; planted defects turn red exactly the jobs that own them.
+- **aarch64 is its own track, for the first time in CI.** The program is cross-built by the
+  release's x86-hosted `cycc_aarch64` and run under `qemu-user`: build with zero warnings and the
+  smoke entry (exit 42), the suite (`cyrius test --aarch64`), all three fuzz harnesses (built and
+  run by hand — `cyrius fuzz` has no `--aarch64`; the f64 harness takes minutes under qemu, which is
+  why this is not a step in the x86 job), the bench harness, the mulmod cost check, and the PDF
+  fixture, whose output must be **byte-identical** to x86_64's (it is: 3,331 bytes) and pass the
+  oracle on its own. A native `ubuntu-24.04-arm` runner is not an option: the aarch64-linux release
+  tarball ships `cycc` but no `cyrius` CLI, `cyrfmt` or `cyrlint`.
+- **The mulmod cost check** (`tests/mulmod_speed.cyr`, both tracks) fails above 50× a plain
+  `(a*b)%m` call. It sees a fall back to a bit-serial loop (planted: ~690× on aarch64, red), not
+  x86's ~13× hardware-divide wide path; the threshold's reasoning is in the file's header.
+  `scripts/check-arch-arms.py` applies `bayan_u64_mulmod`'s conditionals as x86, aarch64 and a
+  target with no arch macro, and fails when one has no arm that sets the result or when
+  x86/aarch64 has no asm block (a misspelt macro); it is red on the 1.5.9 source, twice over. CI
+  cannot compile cx (the release tarball has no `cycc_cx`), so this is the gate that sees the cx arm.
+- **CI: every build, fuzz and bench fails on any `warning:`** (Fuzz, Bench, the PDF-fixture and
+  mulmod-speed builds used to pass a build that only warned); the Format step covers `tests/*.cyr`;
+  the dist regeneration check uses `git status`, which sees a newly created bundle `git diff`
+  cannot; a step forbids defining `bayan_json_v_obj_get_by`, the base that would turn
+  `_by_str`/`_by_cstr` into live overload slots; and the workflow's token is read-only
+  (`permissions: contents: read`).
 - **`scripts/consumer-check.sh` gates the deprecations.** Against every bundle that ships a
   deprecated name it compiles direct calls and requires exactly the expected warnings, with the
   exact advice text, and none from the bundle; it counts `#deprecated` attributes over code only

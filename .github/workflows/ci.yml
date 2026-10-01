@@ -11,48 +11,39 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 defaults:
   run:
     shell: bash
 
+# Six independent jobs, run in parallel (1.5.10; until then one 32-step job ran
+# everything in series, so a lint slip was reported only after the whole x86
+# suite, and aarch64 sat in the middle of the x86 steps). Each job checks out,
+# installs the pinned toolchain through .github/actions/setup-cyrius (which also
+# fails on pin drift), and gates one concern:
+#
+#   toolchain  the pin, the manifest's version claims, cyrius.lock and lib/
+#   static     format, lint, include audit, and the source-level naming checks
+#   x86_64     build, smoke, suite, fuzz, bench, coverage, mulmod cost
+#   aarch64    the same program cross-built for aarch64 and run under qemu
+#   oracles    independent oracles: the PDF validator, font metrics, vectors
+#   dist       the bundles, their regeneration, and the consumer/deprecation gate
+#
+# The committed lib/ is what every job builds against; only `toolchain` runs
+# `cyrius deps`, and it proves that resolving changes nothing, so the other jobs
+# skipping it measure the same tree. release.yml needs ALL six.
+
 jobs:
-  build-and-test:
-    name: Build & Test
+  # --- the pin, the manifest, the lock, the vendored stdlib ----------------
+  toolchain:
+    name: Toolchain · manifest · lib/
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-
-      # The `[package].cyrius` pin is the single source of truth — no version is
-      # hardcoded in this YAML. Hand it to the UPSTREAM INSTALLER rather than
-      # untarring by hand: the installer lays out
-      # ~/.cyrius/versions/<v>/{bin,lib} and symlinks ~/.cyrius/{bin,lib} at it.
-      # `cyrius deps` requires versions/<v>/lib specifically and errors with
-      # "pins version <v> but it is not installed" if only ~/.cyrius/lib exists,
-      # which is exactly what the previous hand-rolled tar step produced.
-      - name: Install Cyrius toolchain
-        run: |
-          # pipefail matters here: without it only `sh`'s status counts, so a
-          # failed download pipes empty input to sh, sh exits 0, and the install
-          # silently no-ops until some later step fails for the wrong reason.
-          set -eo pipefail
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          test -n "$CYRIUS_VERSION" || { echo "::error::no [package].cyrius pin found in cyrius.cyml"; exit 1; }
-          echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
-            CYRIUS_VERSION="$CYRIUS_VERSION" sh
-          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> "$GITHUB_ENV"
-          echo "CYRIUS_VERSION=$CYRIUS_VERSION" >> "$GITHUB_ENV"
-
-      # `cyrius version` prints `manifest-pin: X` — and appends
-      # `(drift — wrapper is Y)` when the installed compiler is not the pin.
-      # Drift makes every gate below a measurement of the wrong toolchain.
-      - name: Toolchain pin resolves with no drift
-        run: |
-          set -euo pipefail
-          cyrius version
-          cyrius version | grep -qx "manifest-pin: ${CYRIUS_VERSION}" || {
-            echo "::error::cyrius does not report a clean manifest-pin of ${CYRIUS_VERSION}"; exit 1; }
+      - uses: ./.github/actions/setup-cyrius
 
       # VERSION is the source of truth; everything that restates it must agree.
       # release.yml separately checks VERSION == git tag.
@@ -75,8 +66,8 @@ jobs:
       # stdlib-only project's first lock, and bayan never had one. A committed
       # lock that nothing verifies is decorative, so check the COMMITTED lock
       # against the COMMITTED lib/ before `cyrius deps` gets a chance to rewrite
-      # it. `--verify` exits 1 on a hash mismatch and on a vendored file the
-      # lock does not cover (both measured against a tampered copy at 1.5.10).
+      # it. `--verify` exits 1 on a hash mismatch, on a vendored file the lock
+      # does not cover, and on a missing lock (each measured at 1.5.10).
       - name: cyrius.lock covers the vendored lib/
         run: cyrius deps --verify
 
@@ -87,8 +78,7 @@ jobs:
       # file, no rewritten lock. A change here means lib/ or cyrius.lock was
       # committed stale. `git status --porcelain`, not `git diff`: diff cannot
       # see an UNTRACKED file, which is exactly what an uncommitted lock or a
-      # newly vendored leaf is. (A missing lock already fails the step above:
-      # `--verify` exits 1 with "no cyrius.lock found".)
+      # newly vendored leaf is.
       - name: Resolving dependencies leaves no tree change
         run: |
           set -euo pipefail
@@ -107,16 +97,26 @@ jobs:
           set -euo pipefail
           SNAP="$HOME/.cyrius/versions/${CYRIUS_VERSION}/lib"
           test -d "$SNAP" || { echo "::error::no stdlib snapshot at $SNAP"; exit 1; }
-          if ! diff -rq lib "$SNAP" > /tmp/lib-drift.txt 2>&1; then
+          if ! diff -rq lib "$SNAP" > "${RUNNER_TEMP}/lib-drift.txt" 2>&1; then
             echo "::error::lib/ does not match the ${CYRIUS_VERSION} snapshot — run 'cyrius lib sync --full' and commit"
-            cat /tmp/lib-drift.txt
+            cat "${RUNNER_TEMP}/lib-drift.txt"
             exit 1
           fi
           echo "lib/ matches ${CYRIUS_VERSION} exactly ($(find lib -type f | wc -l) files, 0 differ)"
 
-      # tests/*.cyr are the standalone programs CI builds and runs itself
-      # (pdf_fixture.cyr, mulmod_speed.cyr): source like any other, so formatted
-      # like any other (1.5.10).
+  # --- source-level checks: nothing here runs bayan ------------------------
+  static:
+    name: Format · lint · static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-cyrius
+
+      # A per-file loop, never `cyrius fmt src/*.cyr --check`: cyrfmt reads only
+      # argv[1] and silently ignores the rest. tests/*.cyr are the standalone
+      # programs CI builds and runs itself (pdf_fixture.cyr, mulmod_speed.cyr):
+      # source like any other, so formatted like any other (1.5.10).
       - name: Format
         run: |
           set -euo pipefail
@@ -157,60 +157,154 @@ jobs:
           printf '%s\n' "$out" | grep -Eq '[0-9]+ deps, 0 untrusted, 0 missing' || {
             echo "::error::cyrius vet reported untrusted or missing include deps"; exit 1; }
 
-      # `cyrius build` exits non-zero on error but only warns on the diagnostics
-      # that matter most here (bad pointer typing, lib/ shadowing, pin drift),
-      # so the warning text is the gate.
-      - name: Build — zero compiler warnings
+      # Two naming hazards, both of which are silent in cyrius.
+      - name: PDF — naming hazards
         run: |
           set -euo pipefail
-          mkdir -p build
-          out=$(cyrius build src/main.cyr "build/${{ github.event.repository.name }}" 2>&1)
-          printf '%s\n' "$out"
-          # Match `warning:` ANYWHERE, not at line start (fixed 1.5.3). cyrius
-          # prints the FIRST warning concatenated onto the
-          # `compile <src> -> <out> [arch] ` prefix line, so `^warning:` never
-          # matched it — a build whose ONLY diagnostic was one warning passed
-          # this gate. Found in scripts/consumer-check.sh, where it had been
-          # hiding half of a real under-declaration for months, and the same
-          # anchor was here. Same family as the `lint`-always-exits-0 and
-          # `cyrfmt`-reads-only-argv[1] traps: the gate ran and proved less
-          # than it said.
-          if printf '%s\n' "$out" | grep -q 'warning:'; then
-            echo "::error::build emitted compiler warnings"
-            printf '%s\n' "$out" | grep -o 'warning:.*'
-            exit 1
+          # A trailing _str/_int/_cstr/_ptr claims a compiler overload slot.
+          # `_by_str` is the one deliberate exception, mirroring json.cyr's
+          # bayan_json_v_obj_get_by_str / _by_cstr: their base name `..._get_by`
+          # does not exist, so no dispatch is ambiguous (the next step keeps it so).
+          if grep -nE '^fn bayan_pdf_[a-z0-9_]*_(int|cstr|ptr)\(|^fn bayan_pdf_[a-z0-9_]*[^y]_str\(' src/pdf.cyr; then
+            echo "::error::a public bayan_pdf_ name claims a reserved overload slot"; exit 1
           fi
+          # A duplicate fn name in cyrius is only a warning, and last-definition
+          # -wins rebinds even textually-earlier call sites. mneme's
+          # src/io_export_pdf.cyr defines 14 bare _pdf_* helpers and is the named
+          # consumer for this API, so it will have both files in scope during its
+          # migration window. Forbid the whole bare shape, not just today's 14.
+          if grep -nE '^fn _pdf_[a-z0-9]+\(' src/pdf.cyr; then
+            echo "::error::bare _pdf_ helper collides with mneme/src/io_export_pdf.cyr — use a subsystem prefix"; exit 1
+          fi
+          echo "pdf naming hazards clear"
+
+      # bayan_json_v_obj_get_by_str and _by_cstr (1.5.10) end in cyrius overload-slot
+      # suffixes. They are inert only because the base they would attach to,
+      # `bayan_json_v_obj_get_by`, does not exist. Define it and every
+      # `bayan_json_v_obj_get_by(<Str>, ..)` call of matching arity is silently rerouted
+      # to `_by_str` (measured on cyrius 6.6.12; the `_cstr` slot is registered but not
+      # yet dispatched on, so it would join the moment a toolchain starts reading it).
+      - name: JSON — the typed lookups keep no overload base
+        run: |
+          set -euo pipefail
+          if grep -nE '^[[:space:]]*((pub|public)[[:space:]]+)?fn[[:space:]]+bayan_json_v_obj_get_by[[:space:]]*\(' src/*.cyr; then
+            echo "::error::defining bayan_json_v_obj_get_by turns _by_str/_by_cstr into live overload slots"; exit 1
+          fi
+          echo "json typed-lookup naming clear"
+
+      # CI compiles x86_64 and aarch64, and the cx compiler is not in the
+      # release toolchain, so no test compiles what a target with no
+      # CYRIUS_ARCH_* macro compiles. Through 1.5.9 bayan_u64_mulmod had an x86
+      # arm and an aarch64 arm and nothing else: on cx every call with a, b and
+      # m below 2^63 returned 0, and both suites stayed green. This applies the
+      # fn's conditionals as each target would and fails when one of them is
+      # left with no arm that sets `result`, or when x86_64 or aarch64 is left
+      # with no asm block (a misspelt arch macro drops the hardware arm and every
+      # suite still passes, at several times the cost). It is red on the 1.5.9
+      # source twice over: cx has no arm, and aarch64 has no hardware one.
+      - name: u64 mulmod — every target compiles an arm that sets the result
+        run: python3 scripts/check-arch-arms.py src/u128.cyr bayan_u64_mulmod
+
+  # --- x86_64: the host target ---------------------------------------------
+  x86_64:
+    name: x86_64 — build · test · fuzz · bench · coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-cyrius
+
+      # Every build/test/fuzz/bench here goes through scripts/no-warnings.sh:
+      # it fails on the exit status OR on a `warning:` anywhere in the output,
+      # because cyrius only WARNS on the diagnostics that matter most (bad
+      # pointer typing, lib/ shadowing, pin drift, a deprecated call) and fuzz
+      # and bench exit 0 on a harness build that only warns.
+      - name: Build — zero compiler warnings
+        run: |
+          mkdir -p build
+          ./scripts/no-warnings.sh cyrius build src/main.cyr build/bayan
 
       - name: Smoke — full-bundle entry exits 42
         run: |
-          set +e; "./build/${{ github.event.repository.name }}"; rc=$?; set -e
+          set +e; ./build/bayan; rc=$?; set -e
           test "$rc" -eq 42 || { echo "::error::smoke exited $rc, expected 42"; exit 1; }
           echo "smoke ok (exit 42)"
 
       # v5.6.28: bare `cyrius test` picks up the [build].test entry AND
       # auto-discovers tests/*.tcyr. It exits 1 on a failed assert.
       - name: Test
+        run: ./scripts/no-warnings.sh cyrius test
+
+      # `cyrius fuzz` discovers tests/*.fcyr; a harness exits non-zero on any
+      # wrong answer.
+      - name: Fuzz
+        run: ./scripts/no-warnings.sh cyrius fuzz
+
+      - name: Bench harness compiles and runs
+        run: ./scripts/no-warnings.sh cyrius bench
+
+      # A floor that ratchets, not a target. Raise it whenever real coverage
+      # lands; never lower it to make a red build green.
+      #
+      # 1.5.2 set this to 100, and the reason still holds: 1.5.1 found two heap
+      # overflows, a wrong 256-bit multiply and 18 other defects in modules that
+      # had built clean and passed every gate for five releases while untested.
+      # But that 100 was measured by the OLD counter, which matched SUBSTRINGS.
+      # Every back-compat alias in src/_compat.cyr (json_parse, u256_add, ...)
+      # is a substring of the bayan_* name it forwards to, so all 153 were
+      # credited while the suite called ten. cyrius 6.6.8+ counts REFERENCES —
+      # whole identifiers outside comments and strings — and measured 70%
+      # (355/503) here. 1.5.8 added a test row for every alias (and for the
+      # three canonicals nothing referenced), which makes it 501/503.
+      #
+      # The two left were the `main` entry points of src/main.cyr and
+      # src/test.cyr, which no test can reference, so 1.5.8 set the floor to 99
+      # (a correction of what 100 measured, not a lowering to go green). cyrius
+      # 6.6.11 excludes the entry point `main` from `cyrius coverage`, and 1.5.9
+      # moved the pin to it, so the measured figure is 501/501 and the floor is
+      # back at 100. It rides the pin: under a <=6.6.10 CLI this step reads 99.6%.
+      #
+      # It remains reference coverage: it proves a function is CALLED, not that
+      # it is called correctly. The oracle-driven vectors in the `oracles` job
+      # are what check the answers.
+      - name: Reference coverage floor
+        run: cyrius coverage --min 100
+
+      # The suite checks answers, and the 1.5.9 aarch64 defect had none wrong:
+      # this checks the cost. A 50x limit sees a fall back to a bit-serial
+      # shift-subtract loop (hundreds of x). It does not see x86 sending reduced
+      # operands to the wide path: that path divides in hardware and costs ~13x,
+      # inside the limit. The limit, and why it does not flake on a busy runner,
+      # is in the header of tests/mulmod_speed.cyr. The aarch64 job runs the
+      # same program.
+      - name: mulmod costs about one division
         run: |
           set -euo pipefail
-          if ! out=$(cyrius test 2>&1); then printf '%s\n' "$out"; echo "::error::tests failed"; exit 1; fi
-          printf '%s\n' "$out"
-          # Same anchor fix as the build step above (1.5.3).
-          if printf '%s\n' "$out" | grep -q 'warning:'; then
-            echo "::error::test build emitted compiler warnings"
-            printf '%s\n' "$out" | grep -o 'warning:.*'
-            exit 1
-          fi
+          ./scripts/no-warnings.sh cyrius build tests/mulmod_speed.cyr build/mulmod-speed
+          ./build/mulmod-speed
 
-      # --- aarch64 (1.5.10) ---------------------------------------------------
-      #
-      # Until 1.5.10 no bayan gate ran aarch64. From 1.0.2 to 1.5.9 its
-      # bayan_u64_mulmod took a 128-round shift-subtract on every call, ~600x a
-      # plain `(a * b) % m` under qemu, and nothing here could see it: every
-      # answer was right, and only x86 ran.
-      # `cyrius test --aarch64` runs each test binary through
-      # /usr/bin/qemu-aarch64 (the path is fixed in the cyrius CLI), so
-      # qemu-user is the whole dependency. The suite takes a few seconds.
-      - name: aarch64 — install qemu-user
+  # --- aarch64: the same program, cross-built and run under qemu -----------
+  #
+  # Until 1.5.10 no bayan gate ran aarch64. From 1.0.2 to 1.5.9 its
+  # bayan_u64_mulmod took a 128-round shift-subtract on every call, ~600x a
+  # plain `(a * b) % m` under qemu, and nothing could see it: every answer was
+  # right, and only x86 ran. This track runs everything that executes bayan
+  # code, built by the release's x86-hosted cycc_aarch64 and run through
+  # /usr/bin/qemu-aarch64 (the path the cyrius CLI uses for --aarch64).
+  #
+  # Why not a native ubuntu-24.04-arm runner: the aarch64-linux release tarball
+  # ships `cycc` but no `cyrius` CLI, cyrfmt or cyrlint (6.6.12), so `cyrius
+  # test` / `fuzz` / `build` do not exist there. Cross-building on x86_64 is the
+  # supported path, and it is the one consumers use.
+  aarch64:
+    name: aarch64 — cross-built, run under qemu
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-cyrius
+
+      - name: Install qemu-user
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -219,64 +313,88 @@ jobs:
             echo "::error::qemu-user did not install /usr/bin/qemu-aarch64, the path cyrius runs --aarch64 binaries through"; exit 1; }
           /usr/bin/qemu-aarch64 --version | head -1
 
-      - name: aarch64 — the suite under qemu
+      - name: Build — zero compiler warnings; smoke entry exits 42
         run: |
           set -euo pipefail
           mkdir -p build
-          if ! out=$(cyrius test --aarch64 2>&1); then printf '%s\n' "$out"; echo "::error::aarch64 tests failed"; exit 1; fi
-          printf '%s\n' "$out"
-          if printf '%s\n' "$out" | grep -q 'warning:'; then
-            echo "::error::aarch64 test build emitted compiler warnings"
-            printf '%s\n' "$out" | grep -o 'warning:.*'
-            exit 1
-          fi
+          ./scripts/no-warnings.sh cyrius build --aarch64 src/main.cyr build/bayan-a64
+          set +e; qemu-aarch64 build/bayan-a64; rc=$?; set -e
+          test "$rc" -eq 42 || { echo "::error::aarch64 smoke exited $rc, expected 42"; exit 1; }
+          echo "aarch64 smoke ok (exit 42)"
 
-      # The suite checks answers, and the 1.5.9 defect had none wrong. This
-      # checks the cost, on both targets. A 50x limit sees a fall back to a
-      # bit-serial shift-subtract loop (hundreds of x) on either target. It
-      # does not see x86 sending reduced operands to the wide path: that path
-      # divides in hardware and costs ~13x, inside the limit. The limit, and
-      # why it does not flake on a busy runner, is in the header of
-      # tests/mulmod_speed.cyr.
-      # Both builds are held to the zero-warning rule like every other build step.
-      - name: mulmod costs about one division (x86_64 and aarch64)
+      - name: Test
+        run: ./scripts/no-warnings.sh cyrius test --aarch64
+
+      # `cyrius fuzz` has no --aarch64, so each tests/*.fcyr is built and run
+      # by hand; a harness exits non-zero on any wrong answer. Under qemu the
+      # dtoa harness (2x10^6 float round-trips) takes a few minutes, which is
+      # why this is its own track rather than a step in the x86 one. Floating
+      # point and the json scanners' shift-and-mask byte classes are exactly
+      # what a second backend can get wrong.
+      - name: Fuzz
         run: |
           set -euo pipefail
-          for target in x86_64 aarch64; do
-            flag=""; bin=build/mulmod-speed
-            if [ "$target" = aarch64 ]; then flag="--aarch64"; bin=build/mulmod-speed-a64; fi
-            if ! out=$(cyrius build $flag tests/mulmod_speed.cyr "$bin" 2>&1); then
-              printf '%s\n' "$out"; echo "::error::tests/mulmod_speed.cyr does not build for $target"; exit 1
-            fi
-            if printf '%s\n' "$out" | grep -q 'warning:'; then
-              echo "::error::the $target mulmod speed build emitted compiler warnings"
-              printf '%s\n' "$out" | grep -o 'warning:.*'
-              exit 1
-            fi
+          for h in tests/*.fcyr; do
+            n=$(basename "$h" .fcyr)
+            ./scripts/no-warnings.sh cyrius build --aarch64 "$h" "build/fuzz-${n}-a64"
+            echo "--- ${h} under qemu-aarch64"
+            timeout 1200 qemu-aarch64 "build/fuzz-${n}-a64" || {
+              echo "::error file=${h}::fuzz harness failed on aarch64"; exit 1; }
           done
-          ./build/mulmod-speed
+
+      - name: Bench harness compiles and runs
+        run: |
+          set -euo pipefail
+          for b in tests/*.bcyr; do
+            n=$(basename "$b" .bcyr)
+            ./scripts/no-warnings.sh cyrius build --aarch64 "$b" "build/bench-${n}-a64"
+            qemu-aarch64 "build/bench-${n}-a64"
+          done
+
+      # The aarch64 half of the x86 job's cost check (see there): this is the
+      # step that was ~600x on 1.5.9 and is ~2x now.
+      - name: mulmod costs about one division
+        run: |
+          set -euo pipefail
+          ./scripts/no-warnings.sh cyrius build --aarch64 tests/mulmod_speed.cyr build/mulmod-speed-a64
           qemu-aarch64 build/mulmod-speed-a64
+
+      # One input, two targets, one answer: the PDF writer's output must be the
+      # same BYTES on aarch64 as on x86_64 (it is, measured at 1.5.10: 3,331
+      # bytes), and the aarch64 file must pass the strict oracle on its own. A
+      # behavioural difference between targets is a defect whatever either
+      # output looks like.
+      - name: PDF — writer output is byte-identical across targets
+        run: |
+          set -euo pipefail
+          ./scripts/no-warnings.sh cyrius build tests/pdf_fixture.cyr build/pdf-fixture
+          ./scripts/no-warnings.sh cyrius build --aarch64 tests/pdf_fixture.cyr build/pdf-fixture-a64
+          ./build/pdf-fixture "${RUNNER_TEMP}/x86_64.pdf"
+          qemu-aarch64 build/pdf-fixture-a64 "${RUNNER_TEMP}/aarch64.pdf"
+          cmp "${RUNNER_TEMP}/x86_64.pdf" "${RUNNER_TEMP}/aarch64.pdf" || {
+            echo "::error::the pdf fixture differs between x86_64 and aarch64"; exit 1; }
+          python3 scripts/pdfcheck.py "${RUNNER_TEMP}/aarch64.pdf" --text
+          echo "pdf fixture byte-identical across targets ($(stat -c%s "${RUNNER_TEMP}/aarch64.pdf") bytes)"
+
+  # --- independent oracles: answers checked against something not bayan ----
+  oracles:
+    name: Oracles — PDF validator · font metrics · vectors
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-cyrius
 
       # scripts/pdfcheck.py is the acceptance oracle for bayan_pdf_*: a strict,
       # stdlib-only validator that checks every cross-reference offset against
       # the byte it claims to point at. Deliberately stricter than poppler and
       # mupdf, which reconstruct a broken xref by scanning for "N 0 obj" and so
       # hide exactly the byte-accounting bugs this gate exists to catch.
-      #
-      # The fixture build is held to the build step's zero-warning rule (1.5.10): it
-      # compiles src/ too, and a warning here is one no other step would print.
       - name: PDF — writer output validates against the strict oracle
         run: |
           set -euo pipefail
-          if ! out=$(cyrius build tests/pdf_fixture.cyr build/pdf-fixture 2>&1); then
-            printf '%s\n' "$out"; echo "::error::tests/pdf_fixture.cyr does not build"; exit 1
-          fi
-          printf '%s\n' "$out"
-          if printf '%s\n' "$out" | grep -q 'warning:'; then
-            echo "::error::the pdf fixture build emitted compiler warnings"
-            printf '%s\n' "$out" | grep -o 'warning:.*'
-            exit 1
-          fi
+          mkdir -p build
+          ./scripts/no-warnings.sh cyrius build tests/pdf_fixture.cyr build/pdf-fixture
           ./build/pdf-fixture "${RUNNER_TEMP}/out.pdf"
           python3 scripts/pdfcheck.py "${RUNNER_TEMP}/out.pdf" --text
 
@@ -309,9 +427,7 @@ jobs:
       # corrupting a width, filling an undefined code, truncating a table, or
       # breaking the WinAnsi block are each caught.
       - name: PDF — font metric tables are correct
-        run: |
-          set -euo pipefail
-          python3 scripts/check-widths.py src/pdf.cyr
+        run: python3 scripts/check-widths.py src/pdf.cyr
 
       # Strictly stronger, but only possible where groff is present: prove the
       # tables still regenerate byte-for-byte from their actual source. Skipped
@@ -329,109 +445,6 @@ jobs:
           diff <(grep -oE '^var _PDF_W[A-Z_]* = "[^"]*"' "${RUNNER_TEMP}/w.cyr") \
                <(grep -oE '^var _PDF_W[A-Z_]* = "[^"]*"' src/pdf.cyr) \
             || { echo "::error::src/pdf.cyr metric tables differ from scripts/gen-widths.py output"; exit 1; }
-
-      # Two naming hazards, both of which are silent in cyrius.
-      - name: PDF — naming hazards
-        run: |
-          set -euo pipefail
-          # A trailing _str/_int/_cstr/_ptr claims a compiler overload slot.
-          # `_by_str` is the one deliberate exception, mirroring json.cyr's
-          # bayan_json_v_obj_get_by_str / _by_cstr: their base name `..._get_by`
-          # does not exist, so no dispatch is ambiguous (the next step keeps it so).
-          if grep -nE '^fn bayan_pdf_[a-z0-9_]*_(int|cstr|ptr)\(|^fn bayan_pdf_[a-z0-9_]*[^y]_str\(' src/pdf.cyr; then
-            echo "::error::a public bayan_pdf_ name claims a reserved overload slot"; exit 1
-          fi
-          # A duplicate fn name in cyrius is only a warning, and last-definition
-          # -wins rebinds even textually-earlier call sites. mneme's
-          # src/io_export_pdf.cyr defines 14 bare _pdf_* helpers and is the named
-          # consumer for this API, so it will have both files in scope during its
-          # migration window. Forbid the whole bare shape, not just today's 14.
-          if grep -nE '^fn _pdf_[a-z0-9]+\(' src/pdf.cyr; then
-            echo "::error::bare _pdf_ helper collides with mneme/src/io_export_pdf.cyr — use a subsystem prefix"; exit 1
-          fi
-          echo "pdf naming hazards clear"
-
-      # CI compiles x86_64 and aarch64, and the cx compiler is not in the
-      # release toolchain, so no test compiles what a target with no
-      # CYRIUS_ARCH_* macro compiles. Through 1.5.9 bayan_u64_mulmod had an x86
-      # arm and an aarch64 arm and nothing else: on cx every call with a, b and
-      # m below 2^63 returned 0, and both suites stayed green. This applies the
-      # fn's conditionals as each target would and fails when one of them is
-      # left with no arm that sets `result`, or when x86_64 or aarch64 is left
-      # with no asm block (a misspelt arch macro drops the hardware arm and every
-      # suite still passes, at several times the cost). It is red on the 1.5.9
-      # source twice over: cx has no arm, and aarch64 has no hardware one.
-      - name: u64 mulmod — every target compiles an arm that sets the result
-        run: |
-          set -euo pipefail
-          python3 scripts/check-arch-arms.py src/u128.cyr bayan_u64_mulmod
-
-      # bayan_json_v_obj_get_by_str and _by_cstr (1.5.10) end in cyrius overload-slot
-      # suffixes. They are inert only because the base they would attach to,
-      # `bayan_json_v_obj_get_by`, does not exist. Define it and every
-      # `bayan_json_v_obj_get_by(<Str>, ..)` call of matching arity is silently rerouted
-      # to `_by_str` (measured on cyrius 6.6.12; the `_cstr` slot is registered but not
-      # yet dispatched on, so it would join the moment a toolchain starts reading it).
-      - name: JSON — the typed lookups keep no overload base
-        run: |
-          set -euo pipefail
-          if grep -nE '^[[:space:]]*((pub|public)[[:space:]]+)?fn[[:space:]]+bayan_json_v_obj_get_by[[:space:]]*\(' src/*.cyr; then
-            echo "::error::defining bayan_json_v_obj_get_by turns _by_str/_by_cstr into live overload slots"; exit 1
-          fi
-          echo "json typed-lookup naming clear"
-
-      # Fuzz and bench compile their own harnesses (tests/*.fcyr, tests/*.bcyr) and exit 0
-      # on a build that only warns, so the warning text is the gate here too (1.5.10) —
-      # the same rule, and the same anywhere-in-the-output anchor, as the build and test
-      # steps. Without it a deprecated call in a harness shipped green.
-      - name: Fuzz — zero compiler warnings
-        run: |
-          set -euo pipefail
-          if ! out=$(cyrius fuzz 2>&1); then printf '%s\n' "$out"; echo "::error::fuzz failed"; exit 1; fi
-          printf '%s\n' "$out"
-          if printf '%s\n' "$out" | grep -q 'warning:'; then
-            echo "::error::a fuzz harness build emitted compiler warnings"
-            printf '%s\n' "$out" | grep -o 'warning:.*'
-            exit 1
-          fi
-
-      - name: Bench harness compiles and runs — zero compiler warnings
-        run: |
-          set -euo pipefail
-          if ! out=$(cyrius bench 2>&1); then printf '%s\n' "$out"; echo "::error::bench failed"; exit 1; fi
-          printf '%s\n' "$out"
-          if printf '%s\n' "$out" | grep -q 'warning:'; then
-            echo "::error::the bench harness build emitted compiler warnings"
-            printf '%s\n' "$out" | grep -o 'warning:.*'
-            exit 1
-          fi
-
-      # A floor that ratchets, not a target. Raise it whenever real coverage
-      # lands; never lower it to make a red build green.
-      #
-      # 1.5.2 set this to 100, and the reason still holds: 1.5.1 found two heap
-      # overflows, a wrong 256-bit multiply and 18 other defects in modules that
-      # had built clean and passed every gate for five releases while untested.
-      # But that 100 was measured by the OLD counter, which matched SUBSTRINGS.
-      # Every back-compat alias in src/_compat.cyr (json_parse, u256_add, ...)
-      # is a substring of the bayan_* name it forwards to, so all 153 were
-      # credited while the suite called ten. cyrius 6.6.8+ counts REFERENCES —
-      # whole identifiers outside comments and strings — and measured 70%
-      # (355/503) here. 1.5.8 added a test row for every alias (and for the
-      # three canonicals nothing referenced), which makes it 501/503.
-      #
-      # The two left were the `main` entry points of src/main.cyr and
-      # src/test.cyr, which no test can reference, so 1.5.8 set the floor to 99
-      # (a correction of what 100 measured, not a lowering to go green). cyrius
-      # 6.6.11 excludes the entry point `main` from `cyrius coverage`, and 1.5.9
-      # moved the pin to it, so the measured figure is 501/501 and the floor is
-      # back at 100. It rides the pin: under a <=6.6.10 CLI this step reads 99.6%.
-      #
-      # It remains reference coverage: it proves a function is CALLED, not that
-      # it is called correctly. The oracle-driven vectors below are what check
-      # the answers.
-      - name: Reference coverage floor
-        run: cyrius coverage --min 100
 
       # The arithmetic vectors' expected values come from Python, not from
       # bayan. Regenerating them must be reproducible, or the "independent
@@ -466,17 +479,30 @@ jobs:
           diff "${RUNNER_TEMP}/tv/strings.vec" tests/fixtures/toml/strings.vec \
             || { echo "::error::toml vectors differ from scripts/gen-toml-vectors.py output"; exit 1; }
 
-      # --- Distribution: bayan's actual product is dist/, not build/ ----------
+  # --- distribution: bayan's actual product is dist/, not build/ -----------
+  dist:
+    name: Distribution — bundles · consumer gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-cyrius
 
-      - name: Distribution — bundles are regenerable from src/
+      - name: Bundles are regenerable from src/
         run: cyrius distlib --all --check
 
-      - name: Distribution — regenerating leaves no tree diff
+      # `git status --porcelain`, not `git diff`: a bundle or sidecar that
+      # regeneration CREATES (a new [lib.<name>] profile never committed) is
+      # untracked, and diff cannot see it.
+      - name: Regenerating leaves no tree change
         run: |
           set -euo pipefail
           cyrius distlib --all
-          if ! git diff --exit-code -- dist/; then
+          changed=$(git status --porcelain -- dist/)
+          if [ -n "$changed" ]; then
             echo "::error::dist/ differs after regeneration — run 'cyrius distlib --all' and commit"
+            printf '%s\n' "$changed"
+            git diff --stat -- dist/
             exit 1
           fi
           echo "committed dist/ is byte-identical to a fresh regeneration"
@@ -489,10 +515,10 @@ jobs:
       # It is also the gate for bayan's DEPRECATIONS (1.5.10): it compiles a direct
       # call of each deprecated fn against every bundle that ships it and requires
       # exactly the expected warnings at the caller, with the exact advice, and none
-      # from the bundle; it refuses any call of a deprecated fn in src/ or dist/; and it
-      # pins the `key: cstring` diagnostics on bayan_json_v_obj_get_by_cstr, the
+      # from the bundle; it refuses any reference to a deprecated fn in src/ or dist/;
+      # and it pins the `key: cstring` diagnostics on bayan_json_v_obj_get_by_cstr, the
       # replacement. bayan's own build and test steps are warning-free, so this is the
       # only place a lost `#deprecated(...)` — dropped by distlib, or no longer honoured
       # by a toolchain — could be seen. See the DEPRECATED and TYPED_CSTR blocks.
-      - name: Distribution — every bundle compiles as a downstream consumer
+      - name: Every bundle compiles as a downstream consumer
         run: ./scripts/consumer-check.sh "${RUNNER_TEMP}/consumer-check"

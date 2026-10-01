@@ -12,9 +12,8 @@ defaults:
     shell: bash
 
 jobs:
-  # Every gate in CI runs before anything is published — build, smoke, tests,
-  # fuzz, bench, lint, format, coverage floor, lib/-vs-pin, and the four
-  # distribution checks.
+  # Every gate in CI runs before anything is published: all six CI jobs
+  # (toolchain, static, x86_64, aarch64, oracles, dist) must pass.
   ci:
     name: CI Gate
     uses: ./.github/workflows/ci.yml
@@ -40,34 +39,16 @@ jobs:
             echo "::error::CHANGELOG.md has no '## [$TAG_VERSION]' entry"; exit 1; }
           echo "releasing $TAG_VERSION"
 
-      # The `[package].cyrius` pin is the single source of truth — no version is
-      # hardcoded in this YAML. Hand it to the UPSTREAM INSTALLER rather than
-      # untarring by hand: the installer lays out
-      # ~/.cyrius/versions/<v>/{bin,lib} and symlinks ~/.cyrius/{bin,lib} at it.
-      # `cyrius deps` requires versions/<v>/lib specifically and errors with
-      # "pins version <v> but it is not installed" if only ~/.cyrius/lib exists,
-      # which is exactly what the previous hand-rolled tar step produced.
-      - name: Install Cyrius toolchain
-        run: |
-          # pipefail matters here: without it only `sh`'s status counts, so a
-          # failed download pipes empty input to sh, sh exits 0, and the install
-          # silently no-ops until some later step fails for the wrong reason.
-          set -eo pipefail
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          test -n "$CYRIUS_VERSION" || { echo "::error::no [package].cyrius pin found in cyrius.cyml"; exit 1; }
-          echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
-            CYRIUS_VERSION="$CYRIUS_VERSION" sh
-          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> "$GITHUB_ENV"
-          echo "CYRIUS_VERSION=$CYRIUS_VERSION" >> "$GITHUB_ENV"
+      # The same setup every CI job runs: installs the cyrius.cyml pin through the
+      # upstream installer and fails on pin drift (.github/actions/setup-cyrius).
+      - uses: ./.github/actions/setup-cyrius
 
       - name: Build
         run: |
           set -euo pipefail
           cyrius deps
           mkdir -p build
-          cyrius build src/main.cyr "build/${{ github.event.repository.name }}"
+          ./scripts/no-warnings.sh cyrius build src/main.cyr "build/${{ github.event.repository.name }}"
 
       - name: Create release
         uses: softprops/action-gh-release@v3

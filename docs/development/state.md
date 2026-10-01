@@ -377,7 +377,28 @@ guards are what check answers.
 ## CI
 
 `.github/workflows/ci.yml` is the gate; `release.yml` calls it via
-`workflow_call` before publishing. Properties worth remembering when editing it:
+`workflow_call` and needs all of it before publishing. Since 1.5.10 it is **six
+parallel jobs** (it was one 32-step job), each installing the pin through
+`.github/actions/setup-cyrius` (which fails on pin drift):
+
+| job | gates |
+|---|---|
+| `toolchain` | version consistency · `cyrius.lock` verifies · `cyrius deps` changes nothing · `lib/` == the pinned snapshot |
+| `static` | format · lint · include audit · pdf naming hazards · typed-lookup overload base · mulmod arch arms |
+| `x86_64` | build · smoke 42 · suite · fuzz · bench · `coverage --min 100` · mulmod cost |
+| `aarch64` | cross-built, run under qemu: build + smoke · suite · all fuzz harnesses · bench · mulmod cost · pdf output byte-identical to x86_64's |
+| `oracles` | pdf writer through `pdfcheck.py` · fixture polarity · font metrics (+ regeneration where groff exists) · numeric and TOML vectors regenerate |
+| `dist` | `distlib --check` · regeneration changes nothing · consumer-check (incl. the deprecation gate) |
+
+Only `toolchain` runs `cyrius deps`; the other jobs build the committed `lib/`,
+which `toolchain` proves resolving would not change. Every build/test/fuzz/bench
+goes through `scripts/no-warnings.sh` (exit status AND any `warning:`). The
+aarch64 track takes the longest (~3 min of qemu fuzzing) and runs beside the
+rest. It cross-builds rather than using a native `ubuntu-24.04-arm` runner
+because the aarch64-linux release tarball ships no `cyrius` CLI, `cyrfmt` or
+`cyrlint` (6.6.12).
+
+Properties worth remembering when editing it:
 
 - **Regenerate `dist/` with the PINNED toolchain — the release tarball, not
   whatever `~/.cyrius` happens to hold.** Install the release into an isolated
@@ -409,12 +430,14 @@ guards are what check answers.
     a build whose only diagnostic was one warning passed, and the consumer gate
     had been reporting one missing symbol per bundle where there were two.
 
-- **A local mirror must run `ci.yml` itself.** 1.5.10 added steps a hand-kept
-  mirror did not (the aarch64 suite, the speed check, the arch-arm check, the
-  naming step, zero-warning fuzz/bench/pdf). Running every `run:` block of the
-  workflow in order, on the release toolchain, is what showed the integrated tree
-  green; a mirror that drifts is the same trap as a gate that proves less than
-  it says.
+- **A local mirror must run `ci.yml` itself, one fresh tree per job.** 1.5.10
+  added steps a hand-kept mirror did not, then split the jobs. Running every
+  job's `run:` blocks in order, each job in its own copy of the tree, on the
+  release toolchain, is what showed the split sound: no job relies on another's
+  `cyrius deps` or `build/`. Planted defects (1.5.9's `u128.cyr`; a deprecated
+  call in a fuzz harness; the aarch64 arm sent back to the bit-serial path) each
+  turned red exactly the jobs that own them. A mirror that drifts is the same
+  trap as a gate that proves less than it says.
 
 - **`scripts/consumer-check.sh` must build with `--no-deps`**, or a consumer
   missing a declared leaf still compiles and the check passes vacuously. It also
@@ -425,20 +448,10 @@ guards are what check answers.
   a leaf's unresolved call is precisely the under-declaration the gate exists to
   catch.
 
-Gates: pin-drift · version consistency (VERSION / manifest / CHANGELOG / all 10
-dist headers) · **`cyrius.lock` verifies, and resolving changes nothing** (1.5.10) ·
-`lib/` vs snapshot tree diff · format (src, tests and `tests/*.cyr`) · lint (0
-warnings, 0 deferrals) · vet · build with 0 warnings · smoke exits 42 · test ·
-**aarch64 suite under qemu** (1.5.10) · **mulmod cost on both targets** (1.5.10) ·
-**pdf oracle** (fixture build with 0 warnings) · **pdf fixture polarity** · **pdf
-metric-table regeneration** · **pdf naming hazards** · **every target compiles a
-mulmod arm** (`scripts/check-arch-arms.py`, 1.5.10) · **no overload base for the
-typed JSON lookups** (1.5.10) · fuzz with 0 warnings · bench with 0 warnings ·
-`coverage --min 100` · **numeric vectors regenerate identically** · **toml vectors
-regenerate identically** · `distlib --all --check` · regeneration leaves no tree
-diff · consumer-check (also the **deprecation gate** since 1.5.10: exact warnings
-and advice at a caller, none from a bundle, no reference to a deprecated name in
-`src/` or `dist/`, and `_by_cstr`'s own diagnostics).
+Every gate is in the job table above. Two are the deprecation gate inside
+consumer-check (exact warnings and advice at a caller, none from a bundle, no
+reference to a deprecated name in `src/` or `dist/`, `_by_cstr`'s own
+diagnostics) and the arch-arm check, which is the only gate that sees the cx arm.
 
 The 1.5.0 gate lessons still hold and generalise:
 
@@ -583,6 +596,9 @@ The 1.5.0 gate lessons still hold and generalise:
 - `scripts/consumer-check.sh` — compiles a throwaway consumer against every
   `dist/` bundle from exactly the leaves its `.deps` sidecar declares. Since
   1.5.10 it is also the deprecation gate (the DEPRECATED and TYPED_CSTR blocks).
+- `scripts/no-warnings.sh` — **new at 1.5.10.** Runs a command and fails on its
+  exit status or on a `warning:` anywhere in its output (the 1.5.3 anchor fix).
+  Every CI build, test, fuzz and bench goes through it, so the rule exists once.
 - `scripts/check-arch-arms.py` — **new at 1.5.10.** Applies a function's
   `#ifdef` arms as x86, aarch64 and a target with no `CYRIUS_ARCH_*` macro (cx),
   and fails when one is left with no arm that sets `result`, or x86/aarch64 with
