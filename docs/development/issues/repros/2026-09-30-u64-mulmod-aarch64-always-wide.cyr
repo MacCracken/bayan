@@ -1,0 +1,257 @@
+# bayan_u64_mulmod on aarch64 runs the 128-step bit-serial u128 division on
+# every call, even when the operands are already reduced and the quotient fits
+# in 64 bits (the case x86 handles with one `div`).
+#
+# Self-proving: the exit code is the number of wrong rows -- 0 when every row
+# is right. There are two kinds of row.
+#
+#   correctness (4 rows) -- bayan_u64_mulmod against _u64_mulmod_wide, the
+#     full-product + shift-subtract path that is right for every input (and is
+#     itself checked against Python's integers by tests/vectors.tcyr). One edge
+#     grid, then 10,000 seeded random triples per modulus class. A row is wrong
+#     on any mismatch.
+#   speed (3 rows) -- per-call time of bayan_u64_mulmod on reduced operands for
+#     a 31-bit, a 62-bit and a 64-bit odd modulus, against the per-call time of
+#     a plain-Cyrius `(a * b) % m` helper (one call, one multiply, one divide:
+#     the floor any mulmod pays) measured in the same process. A row is wrong
+#     when mulmod costs more than 50x that floor. Measured on bayan 1.5.9:
+#     x86_64 sits at 2x (31- and 62-bit) and 13-14x (64-bit, its wide path);
+#     aarch64 under qemu-aarch64 at 584-642x on all three (seven runs).
+#
+# The powmod and Miller-Rabin rows at the end are information, not counted.
+# The Miller-Rabin row is the shape of abaco's is_prime (ntheory.cyr): 12
+# fixed witnesses, x^d then repeated squaring through powmod.
+#
+# Filed with docs/development/issues/2026-09-30-u64-mulmod-aarch64-always-wide.md.
+# Found by abaco 2.4.9's project audit: is_prime(9007199254740881) x200 takes
+# ~2 ms on x86_64 and ~4.3 s on aarch64 under qemu-aarch64.
+#
+# Build and run from the bayan repo root:
+#   cyrius build --aarch64 docs/development/issues/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_a64
+#   qemu-aarch64 /tmp/mulmod_a64; echo "exit=$?"   # -> 3 on bayan 1.5.9: all three speed rows
+#   cyrius build docs/development/issues/repros/2026-09-30-u64-mulmod-aarch64-always-wide.cyr /tmp/mulmod_x86
+#   /tmp/mulmod_x86; echo "exit=$?"                 # -> 0: x86 is the control
+# With the filing's proposed fix aarch64 exits 0; with only the small-modulus
+# fast path it exits 2 (the 62- and 64-bit rows stay slow). ~10 s under qemu.
+#
+# Every input is an integer bit pattern or comes from a seeded splitmix64, so
+# the program means the same thing on every toolchain. Includes src/ directly
+# rather than lib/bayan.cyr so it exercises the working source.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/fmt.cyr"
+include "lib/chrono.cyr"
+
+include "src/u128.cyr"
+
+var _bad = 0;
+var _sink = 0;
+
+# ---- seeded splitmix64 (Steele, Lea, Flood 2014) ----
+var _rs = 0x0123456789ABCDEF;
+fn _lsr(x, n) { if (n == 0) { return x; } return (x >> n) & ((1 << (64 - n)) - 1); }
+fn rnd() {
+    _rs = _rs + 0x9E3779B97F4A7C15;
+    var z = _rs;
+    z = (z ^ _lsr(z, 30)) * 0xBF58476D1CE4E5B9;
+    z = (z ^ _lsr(z, 27)) * 0x94D049BB133111EB;
+    return z ^ _lsr(z, 31);
+}
+# Random u64 whose bit length is exactly L (1..64).
+fn rnd_bits(L) { return _lsr(rnd(), 64 - L) | (1 << (L - 1)); }
+
+fn verdict(ok) {
+    if (ok == 1) { print("  ok    ", 8); } else { _bad = _bad + 1; print("  WRONG ", 8); }
+    return 0;
+}
+
+# ---- correctness ----
+var EDGE_M[176];   # 22 moduli
+var EDGE_X[80];    # 10 operands
+
+fn edge_grid() {
+    var em = &EDGE_M;
+    store64(em + 0, 0x1);                 store64(em + 8, 0x2);
+    store64(em + 16, 0x3);                store64(em + 24, 0xB504F333);         # 3037000499 = isqrt(2^63 - 1)
+    store64(em + 32, 0xB504F334);         store64(em + 40, 0xB504F335);
+    store64(em + 48, 0xFFFFFFFB);         store64(em + 56, 0xFFFFFFFF);
+    store64(em + 64, 0x100000000);        store64(em + 72, 0x100000001);
+    store64(em + 80, 0x1FFFFFFFF);        store64(em + 88, 0x1FFFFFFFFFFF91);  # 2^53 - 111
+    store64(em + 96, 0x3FFFFFFFFFFFFFFF); store64(em + 104, 0x4000000000000001);
+    store64(em + 112, 0x7FFFFFFFFFFFFFFF); store64(em + 120, 0x8000000000000000);
+    store64(em + 128, 0x8000000000000001); store64(em + 136, 0x80000000FFFFFFFF);
+    store64(em + 144, 0xFFFFFFFF00000001); store64(em + 152, 0xFFFFFFFFFFFFFFC5);
+    store64(em + 160, 0xFFFFFFFFFFFFFFFE); store64(em + 168, 0xFFFFFFFFFFFFFFFF);
+    var ex = &EDGE_X;
+    store64(ex + 0, 0x0);                 store64(ex + 8, 0x1);
+    store64(ex + 16, 0x2);                store64(ex + 24, 0xB504F333);
+    store64(ex + 32, 0xFFFFFFFF);         store64(ex + 40, 0x100000000);
+    store64(ex + 48, 0x7FFFFFFFFFFFFFFF); store64(ex + 56, 0x8000000000000000);
+    store64(ex + 64, 0xFFFFFFFFFFFFFFFE); store64(ex + 72, 0xFFFFFFFFFFFFFFFF);
+    # Operands: the ten above plus m - 1, m and m + 1, for every modulus.
+    var n = 0;
+    var bad = 0;
+    var i = 0;
+    while (i < 22) {
+        var m = load64(em + i * 8);
+        var j = 0;
+        while (j < 13) {
+            var a = m + j - 11;
+            if (j < 10) { a = load64(ex + j * 8); }
+            var k = 0;
+            while (k < 13) {
+                var b = m + k - 11;
+                if (k < 10) { b = load64(ex + k * 8); }
+                n = n + 1;
+                if (bayan_u64_mulmod(a, b, m) != _u64_mulmod_wide(a, b, m)) { bad = bad + 1; }
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    verdict(bad == 0);
+    print("edge grid            ", 21); fmt_int(n); print(" triples, mismatches ", 21); fmt_int(bad); println("");
+    return 0;
+}
+
+# 10,000 triples with modulus bit length in [lo, hi]; even-numbered triples
+# have operands reduced below m, odd-numbered ones are raw u64.
+fn random_rows(label, lo, hi) {
+    var bad = 0;
+    var t = 0;
+    while (t < 10000) {
+        var m = rnd_bits(lo + _lsr(rnd(), 1) % (hi - lo + 1));
+        var a = rnd();
+        var b = rnd();
+        if ((t & 1) == 0) { a = _u64_mulmod_wide(a, 1, m); b = _u64_mulmod_wide(b, 1, m); }
+        if (bayan_u64_mulmod(a, b, m) != _u64_mulmod_wide(a, b, m)) { bad = bad + 1; }
+        t = t + 1;
+    }
+    verdict(bad == 0);
+    print(label, strlen(label)); print("10000 triples, mismatches ", 26); fmt_int(bad); println("");
+    return 0;
+}
+
+# ---- timing ----
+fn _floor_mulmod(a, b, m) { return (a * b) % m; }
+
+fn _run(kind, n, a, b, m) {
+    var x = a;
+    var i = 0;
+    if (kind == 0) {            # plain integer arithmetic, no calls
+        while (i < n) { x = x * 6364136223846793005 + 1442695040888963407; x = x ^ (x >> 29); i = i + 1; }
+    }
+    if (kind == 1) { while (i < n) { x = _floor_mulmod(x, b, m); i = i + 1; } }
+    if (kind == 2) { while (i < n) { x = bayan_u64_mulmod(x, b, m); i = i + 1; } }
+    if (kind == 3) { while (i < n) { x = bayan_u64_powmod(x + 2, b, m); i = i + 1; } }
+    _sink = _sink + x;
+    return 0;
+}
+
+# Picoseconds per call; doubles the count until one window is >= 200 ms.
+fn per_call_ps(kind, a, b, m) {
+    var n = 16;
+    while (1 == 1) {
+        var t0 = clock_now_ns();
+        _run(kind, n, a, b, m);
+        var dt = clock_now_ns() - t0;
+        if (dt >= 200000000) { return (dt * 1000) / n; }
+        n = n * 2;
+    }
+    return 0;
+}
+
+fn print_ns(ps) {
+    fmt_int(ps / 1000); print(".", 1);
+    var f = (ps % 1000) / 100;
+    fmt_int(f);
+    print(" ns", 3);
+    return 0;
+}
+
+fn speed_row(label, a, b, m, floor_ps) {
+    var ps = per_call_ps(2, a, b, m);
+    var ratio = ps / floor_ps;
+    verdict(ratio <= 50);
+    print(label, strlen(label)); print_ns(ps); print("/call  = ", 9); fmt_int(ratio); println("x floor");
+    return 0;
+}
+
+# ---- Miller-Rabin, the shape of abaco's is_prime ----
+fn _mr_round(n, d, r, a) {
+    if (a >= n) { return 0; }
+    var x = bayan_u64_powmod(a, d, n);
+    if (x == 1) { return 0; }
+    if (x == n - 1) { return 0; }
+    var j = 1;
+    while (j < r) {
+        x = bayan_u64_powmod(x, 2, n);
+        if (x == n - 1) { return 0; }
+        j = j + 1;
+    }
+    return 1;
+}
+var MR_W[96];
+fn mr_is_prime(n) {
+    var d = n - 1;
+    var r = 0;
+    while (d % 2 == 0) { d = d / 2; r = r + 1; }
+    var i = 0;
+    while (i < 12) {
+        if (_mr_round(n, d, r, load64(&MR_W + i * 8)) == 1) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main() {
+    println("correctness: bayan_u64_mulmod vs _u64_mulmod_wide");
+    edge_grid();
+    random_rows("m  1..32 bits        ", 1, 32);
+    random_rows("m 33..63 bits        ", 33, 63);
+    random_rows("m 64 bits            ", 64, 64);
+
+    # Fixed odd moduli and reduced operands for the timing rows.
+    var m31 = 0x6A3F92C5;                       # 31-bit
+    var m62 = 0x2E4F7A1C9B3D5E87;               # 62-bit
+    var m64 = 0xC3A5C85C97CB3127;               # 64-bit
+    var a31 = 0x1D2C3B4A;          var b31 = 0x5A4B3C2D;
+    var a62 = 0x1A2B3C4D5E6F7081;  var b62 = 0x2C3D4E5F60718293;
+    var a64 = 0x9E3779B97F4A7C15;  var b64 = 0xB7E151628AED2A6B;
+
+    println("speed: reduced-operand mulmod vs a plain-Cyrius (a*b)%m call");
+    var alu_ps = per_call_ps(0, 1, 0, 0);
+    var floor_ps = per_call_ps(1, a31, b31, m31);
+    print("        integer loop iteration       ", 37); print_ns(alu_ps); println("");
+    print("        floor: (a*b)%m helper call   ", 37); print_ns(floor_ps); println("");
+    speed_row("mulmod, 31-bit modulus       ", a31, b31, m31, floor_ps);
+    speed_row("mulmod, 62-bit modulus       ", a62, b62, m62, floor_ps);
+    speed_row("mulmod, 64-bit modulus       ", a64, b64, m64, floor_ps);
+
+    println("information (not counted)");
+    print("        powmod, 31-bit m, e = m-1    ", 37); print_ns(per_call_ps(3, a31, m31 - 1, m31)); println("/call");
+    print("        powmod, 62-bit m, e = m-1    ", 37); print_ns(per_call_ps(3, a62, m62 - 1, m62)); println("/call");
+    print("        powmod, 64-bit m, e = 2^62+1 ", 37); print_ns(per_call_ps(3, a64, 0x4000000000000001, m64)); println("/call");
+    var w = &MR_W;
+    store64(w + 0, 2);   store64(w + 8, 3);   store64(w + 16, 5);  store64(w + 24, 7);
+    store64(w + 32, 11); store64(w + 40, 13); store64(w + 48, 17); store64(w + 56, 19);
+    store64(w + 64, 23); store64(w + 72, 29); store64(w + 80, 31); store64(w + 88, 37);
+    var p = 0x1FFFFFFFFFFF91;                    # 9007199254740881 = 2^53 - 111, prime
+    var t0 = clock_now_ns();
+    var hits = 0;
+    var i = 0;
+    while (i < 200) { hits = hits + mr_is_prime(p); i = i + 1; }
+    var dt = clock_now_ns() - t0;
+    print("        Miller-Rabin(2^53-111) x200  ", 37); fmt_int(dt / 1000); print(" us total, ", 11);
+    fmt_int(hits); println(" of 200 say prime");
+
+    print("rows wrong: ", 12); fmt_int(_bad); println("");
+    if (_sink == 7) { println(""); }
+    return _bad;
+}
+
+var r = main();
+sys_exit_group(r);

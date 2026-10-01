@@ -1,0 +1,226 @@
+# bayan_json_parse (the flat key/value parser) attaches values to the wrong keys,
+# truncates values, and drops pairs.
+#
+# Self-proving: the exit code is the number of documents below whose pair list
+# comes back wrong -- 0 when every row is right. Each row prints the document,
+# the pairs bayan_json_parse returned, and the pairs it should have returned.
+# CR, TAB and LF inside documents and values are printed as \r, \t, \n.
+# The "tree" line under each row is NOT counted: it is what the tagged-tree
+# parser in the same file (bayan_json_v_parse_ctx) makes of the document --
+# the workaround available today. It gets all 16 right.
+#
+# Filed with docs/development/issues/2026-09-30-json-parse-flat-misassociates-values.md.
+# Found by abaco (2.4.9 project audit): its currency loader took the next pair's
+# rate as a key's own when the ':' was missing (for row 12's rates object this
+# parser returns GBP = 149.5, JPY's rate), dropped a rate that a CRLF body handed
+# over as "0.79\r" (row 3), and lost every rate after a nested value (row 6).
+#
+# Build and run from the bayan repo root:
+#   cyrius build docs/development/issues/repros/2026-09-30-json-parse-flat-misassociates-values.cyr /tmp/jsonflat
+#   /tmp/jsonflat; echo "exit=$?"      # -> 14 on bayan 1.5.9 (rows 3-16; rows 1-2 are controls)
+#
+# Two kinds of row:
+#   VALID JSON  -- the exact pair list, in order. A nested object/array value is
+#                  its raw source span, as every other value is ("values are the
+#                  raw source bytes", src/json.cyr's header on bayan_json_parse).
+#   MALFORMED   -- the pairs before the defect must come back; after it, the only
+#                  pairs allowed are ones the document really contains (so both
+#                  "stop" and "skip the bad pair" recoveries pass). A pair that
+#                  carries another key's value is wrong.
+#
+# Includes src/ directly rather than lib/bayan.cyr so it exercises the working
+# source. json.cyr's closure is dtoa.cyr + json.cyr ([lib.json] in cyrius.cyml).
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+
+include "src/dtoa.cyr"
+include "src/json.cyr"
+
+var _bad = 0;
+var _row = 0;
+var _rk = 0;    # expected keys, in order (cstrings)
+var _rv = 0;    # expected values, in order
+var _ak = 0;    # MALFORMED rows: further pairs that may come back
+var _av = 0;
+
+# Print len bytes at p with CR / TAB / LF made visible.
+fn _show(p, len) {
+    var i = 0;
+    while (i < len) {
+        var c = load8(p + i);
+        if (c == 13) { print("\\r", 2); }
+        elif (c == 9) { print("\\t", 2); }
+        elif (c == 10) { print("\\n", 2); }
+        else { print(p + i, 1); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _show_pair(kp, kl, vp, vl) {
+    print(" ", 1); _show(kp, kl); print("=[", 2); _show(vp, vl); print("]", 1);
+    return 0;
+}
+
+fn begin() {
+    _rk = vec_new(); _rv = vec_new(); _ak = vec_new(); _av = vec_new();
+    return 0;
+}
+fn want(k, v) { vec_push(_rk, k); vec_push(_rv, v); return 0; }
+fn may(k, v) { vec_push(_ak, k); vec_push(_av, v); return 0; }
+
+fn _allowed(k, v) {
+    var i = 0;
+    while (i < vec_len(_ak)) {
+        if (str_eq_cstr(k, vec_get(_ak, i)) == 1 && str_eq_cstr(v, vec_get(_av, i)) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Not counted: what the tagged-tree parser in the same file makes of the
+# document. Members are shown re-serialized, so a string value keeps its quotes.
+fn _tree(doc) {
+    var ps[48];
+    var v = bayan_json_v_parse_ctx(&ps, doc, strlen(doc));
+    print("      tree", 10);
+    if (v == 0) {
+        var m = bayan_json_state_error(&ps);
+        print(" refused at byte ", 17); fmt_int(bayan_json_state_error_pos(&ps));
+        print(": ", 2); print(m, strlen(m)); println("");
+        return 0;
+    }
+    var i = 0;
+    while (i < bayan_json_v_obj_len(v)) {
+        var k = bayan_json_v_obj_key(v, i);
+        var out = bayan_json_v_build(bayan_json_v_obj_val(v, i));
+        _show_pair(str_data(k), str_len(k), str_data(out), str_len(out));
+        i = i + 1;
+    }
+    println("");
+    return 0;
+}
+
+fn check(label, doc) {
+    _row = _row + 1;
+    var pairs = bayan_json_parse(str_from(doc));
+    var n = vec_len(pairs);
+    var nr = vec_len(_rk);
+    var ok = 1;
+    if (n < nr) { ok = 0; }
+    var i = 0;
+    while (i < n) {
+        var p = vec_get(pairs, i);
+        var k = bayan_json_key(p);
+        var v = bayan_json_value(p);
+        if (i < nr) {
+            if (str_eq_cstr(k, vec_get(_rk, i)) == 0 || str_eq_cstr(v, vec_get(_rv, i)) == 0) { ok = 0; }
+        } else {
+            if (_allowed(k, v) == 0) { ok = 0; }
+        }
+        i = i + 1;
+    }
+    if (ok == 0) { _bad = _bad + 1; print("WRONG ", 6); } else { print("ok    ", 6); }
+    fmt_int(_row); print(". ", 2); println(label);
+    print("      doc  ", 11); _show(doc, strlen(doc)); println("");
+    print("      got ", 10);
+    i = 0;
+    while (i < n) {
+        var gp = vec_get(pairs, i);
+        var gk = bayan_json_key(gp);
+        var gv = bayan_json_value(gp);
+        _show_pair(str_data(gk), str_len(gk), str_data(gv), str_len(gv));
+        i = i + 1;
+    }
+    if (n == 0) { print(" (none)", 7); }
+    println("");
+    print("      want", 10);
+    i = 0;
+    while (i < nr) {
+        var wk = vec_get(_rk, i);
+        var wv = vec_get(_rv, i);
+        _show_pair(wk, strlen(wk), wv, strlen(wv));
+        i = i + 1;
+    }
+    if (nr == 0) { print(" (none)", 7); }
+    if (vec_len(_ak) > 0) {
+        print("   then nothing, or only:", 25);
+        i = 0;
+        while (i < vec_len(_ak)) {
+            var ak = vec_get(_ak, i);
+            var av = vec_get(_av, i);
+            _show_pair(ak, strlen(ak), av, strlen(av));
+            i = i + 1;
+        }
+    }
+    println("");
+    _tree(doc);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    # The documents spell CR and TAB as "\r" and "\t". Refuse to report anything
+    # if this toolchain compiles those escapes to other bytes.
+    if (strlen("\r\t") != 2 || load8("\r") != 13 || load8("\t") != 9) {
+        println("this toolchain does not compile \\r / \\t to 13 / 9; the rows below would not mean what they say");
+        return 100;
+    }
+
+    println("VALID JSON -- controls (right today)");
+    begin(); want("EUR", "0.92"); want("GBP", "0.79");
+    check("one line", "{\"EUR\": 0.92, \"GBP\": 0.79}");
+    begin(); want("EUR", "0.92"); want("GBP", "0.79");
+    check("LF line endings", "{\n  \"EUR\": 0.92,\n  \"GBP\": 0.79\n}");
+
+    println("VALID JSON -- part 1: a bare value ends at ',' '}' ' ' LF, not at TAB or CR");
+    begin(); want("EUR", "0.92"); want("GBP", "0.79");
+    check("CRLF line endings", "{\r\n  \"EUR\": 0.92,\r\n  \"GBP\": 0.79\r\n}");
+    begin(); want("on", "true"); want("n", "5");
+    check("TAB as whitespace", "{\"on\":\ttrue\t,\t\"n\":\t5\t}");
+
+    println("VALID JSON -- part 2: a nested object/array value is cut at its first ',' or '}'");
+    begin(); want("x", "{\"a\":1,\"b\":2}"); want("y", "3");
+    check("nested object, two members", "{\"x\":{\"a\":1,\"b\":2},\"y\":3}");
+    begin(); want("x", "{\"a\":1}"); want("y", "3");
+    check("nested object, one member", "{\"x\":{\"a\":1},\"y\":3}");
+    begin(); want("x", "{}"); want("y", "3");
+    check("empty nested object", "{\"x\":{},\"y\":3}");
+    begin(); want("tags", "[\"a\",\"b\"]"); want("n", "1");
+    check("array of strings", "{\"tags\":[\"a\",\"b\"],\"n\":1}");
+    begin(); want("y", "3"); want("x", "{\"a\":1}");
+    check("nested object last", "{\"y\":3,\"x\":{\"a\":1}}");
+    begin(); want("x", "{\"s\":\"},{\"}"); want("y", "3");
+    check("nested string holding '}' and ','", "{\"x\":{\"s\":\"},{\"},\"y\":3}");
+    begin(); want("meta", "{\"x\":1,\"admin\":\"true\"}"); want("admin", "false");
+    check("a nested member shadows a top-level key", "{\"meta\":{\"x\":1,\"admin\":\"true\"},\"admin\":\"false\"}");
+
+    println("MALFORMED -- part 3: after a key, every byte up to the next ':' is skipped");
+    begin(); want("EUR", "0.92"); may("JPY", "149.5");
+    check("missing ':' before a number", "{\"EUR\":0.92,\"GBP\" 0.79,\"JPY\":149.5}");
+    begin(); may("b", "y");
+    check("missing ':' before a string", "{\"a\" \"x\",\"b\":\"y\"}");
+    begin(); want("role", "user"); may("audit", "true");
+    check("',' where ':' belongs", "{\"role\":\"user\",\"admin\",false,\"audit\":true}");
+    begin(); want("a", "x"); may("b", "1");
+    check("a string where ',' belongs", "{\"a\":\"x\" \"y\",\"b\":1}");
+
+    println("MALFORMED -- part 4: a key with no value; ',' is skipped wherever it appears");
+    begin(); may("b", "2");
+    check("':' then ','", "{\"a\":,\"b\":2}");
+
+    print("rows wrong: ", 12); fmt_int(_bad); println("");
+    return _bad;
+}
+
+var r = main();
+sys_exit_group(r);
