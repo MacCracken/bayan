@@ -82,11 +82,11 @@ var js = "{\"name\": \"bayan\", \"ver\": 103, \"tags\": [\"json\", \"u128\"], \"
 var doc = bayan_json_v_parse_buf(js, strlen(js));
 assert_eq(doc != 0, 1, "parse nested object");
 assert_eq(bayan_json_v_is_obj(doc), 1, "root is object");
-assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(doc, "name"))), "bayan"), 1, "name == bayan");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(doc, "name")), "bayan"), 1, "name == bayan");
 assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(doc, "ver")), 103, "ver == 103");
 var tags = bayan_json_v_obj_get_by_cstr(doc, "tags");
 assert_eq(bayan_json_v_arr_len(tags), 2, "tags has 2 elements");
-assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_arr_get(tags, 1))), "u128"), 1, "tags[1] == u128");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(tags, 1)), "u128"), 1, "tags[1] == u128");
 var meta = bayan_json_v_obj_get_by_cstr(doc, "meta");
 assert_eq(bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(meta, "ok")), 1, "meta.ok == true");
 
@@ -1326,7 +1326,7 @@ var d13_sj = str_from("{\"k\": 42, \"s\": \"v\"}");
 var d13_sdoc = bayan_json_v_parse(d13_sj);
 assert_eq(d13_sdoc != 0, 1, "bayan_json_v_parse(Str) returns a value");
 assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(d13_sdoc, "k")), 42, "bayan_json_v_parse(Str): k == 42");
-assert_eq(streq(str_data(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(d13_sdoc, "s"))), "v"), 1,
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(d13_sdoc, "s")), "v"), 1,
   "bayan_json_v_parse(Str): s == v");
 
 var d13_adoc = json_v_parse(d13_sj);
@@ -3221,6 +3221,46 @@ assert_gt(str_len(pw_bytes), 400, "pdf: to_bytes_a serialises the document");
 assert_eq(memeq(str_data(pw_bytes), "%PDF-1.4", 8), 1, "pdf: set_version selected the header");
 assert_eq(bayan_pdf_write_file(pw, "build/pdf-v152.pdf"), 0, "pdf: write_file succeeds");
 assert_neq(bayan_pdf_write_file(pw, "build/no-such-dir/x.pdf"), 0, "pdf: and reports a bad path");
+
+test_group("pdf: a font's resource key is set from its NUL-terminated name (1.5.11)");
+# bayan_pdf_obj_dict_set_a takes `key: cstring`. use_font set the key from
+# str_data(name) — the right bytes, but a Str's data pointer, which cyrius 6.6.13
+# warns on in every build that includes bayan. It now passes the buffer
+# _pdfc_resname_a built, kept on the PdfFont. These rows pin what that buffer
+# must be on BOTH paths: the first use (the font is registered) and a later
+# page's use of the same face (the font is found, and only the PdfFont has the
+# buffer). The key is the returned name's bytes, NUL-terminated at its length,
+# and the same allocation (one buffer serves both spellings).
+var pk = bayan_pdf_new_a(pa);
+var pk_w = bayan_pdf_page_size_w(PDF_PAGE_A4);
+var pk_h = bayan_pdf_page_size_h(PDF_PAGE_A4);
+var pk_p1 = bayan_pdf_add_page(pk, pk_w, pk_h);
+var pk_p2 = bayan_pdf_add_page(pk, pk_w, pk_h);
+var pk_h1 = bayan_pdf_use_font(pk, pk_p1, PDF_FONT_HELVETICA);
+var pk_c2 = bayan_pdf_use_font(pk, pk_p2, PDF_FONT_COURIER);
+var pk_h2 = bayan_pdf_use_font(pk, pk_p2, PDF_FONT_HELVETICA);
+assert_eq(str_eq_cstr(pk_h1, "F1"), 1, "pdf: the first face is F1");
+assert_eq(str_eq_cstr(pk_c2, "F2"), 1, "pdf: the second face is F2");
+assert_eq(pk_h2, pk_h1, "pdf: a face used again returns its one name");
+fn _pk_font_key(pg, i): i64 {
+    var fd = bayan_pdf_obj_dict_get(bayan_pdf_obj_dict_get(bayan_pdf_page_dict(pg), "Resources"), "Font");
+    if (fd == 0) { return 0; }
+    if (i >= bayan_pdf_obj_dict_len(fd)) { return 0; }
+    return bayan_pdf_obj_dict_key(fd, i);
+}
+fn _pk_key_is(pg, i, name): i64 {
+    var k = _pk_font_key(pg, i);
+    if (k == 0) { return 0; }
+    if (str_eq(k, name) != 1) { return 0; }
+    if (load8(str_data(k) + str_len(k)) != 0) { return 0; }
+    if (str_data(k) != str_data(name)) { return 0; }
+    return 1;
+}
+assert_eq(_pk_key_is(pk_p1, 0, pk_h1), 1, "pdf: page 1 /F1 key: the name, NUL-terminated, one buffer");
+assert_eq(_pk_key_is(pk_p2, 0, pk_c2), 1, "pdf: page 2 /F2 key (a registration)");
+assert_eq(_pk_key_is(pk_p2, 1, pk_h1), 1, "pdf: page 2 /F1 key (a found font: the buffer comes from the PdfFont)");
+var pk_fd2 = bayan_pdf_obj_dict_get(bayan_pdf_obj_dict_get(bayan_pdf_page_dict(pk_p2), "Resources"), "Font");
+assert_eq(bayan_pdf_obj_dict_len(pk_fd2), 2, "pdf: page 2 names two faces");
 
 test_group("pdf: the remaining reader entry points (v1.5.2)");
 var pr = bayan_pdf_parse_a(pa, pw_bytes);

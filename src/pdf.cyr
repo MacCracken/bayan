@@ -4260,9 +4260,11 @@ var _PDF_DOC_SIZE = 200;
 #   +40 in_text  +48 gdepth  +56 index
 var _PDF_PAGE_SIZE = 64;
 
-# PdfFont (32) — one document-scoped standard-14 font resource.
-#   +0 std_id  +8 objnum  +16 resname(Str*)  +24 reserved
-var _PDF_FONT_SIZE = 32;
+# PdfFont (40) — one document-scoped standard-14 font resource.
+#   +0 std_id  +8 objnum  +16 resname(Str*)  +24 ref cell  +32 resname(cstring)
+# +32 is the NUL-terminated buffer _pdfc_resname_a built, which the Str at +16
+# borrows; it is what a `key: cstring` parameter is given (1.5.11).
+var _PDF_FONT_SIZE = 40;
 
 # PdfObjStm (32) — one decoded /Type /ObjStm container.
 #   +0 container  +8 data(Str*)  +16 first  +24 index(vec<i64>, 2n entries)
@@ -6784,7 +6786,10 @@ fn _pdfc_mpt_obj_a(a, mpt): i64 {
 #
 # NUL-terminated because bayan_pdf_obj_dict_set_a takes `key: cstring` and
 # strlen's it — the buffer is then borrowed by the Str stored on the PdfFont,
-# so one allocation serves both spellings and they cannot disagree.
+# so one allocation serves both spellings and they cannot disagree. The PdfFont
+# keeps the buffer itself too (+32), and the dict key is set from THAT, not from
+# the Str's data pointer: a Str's bytes are not NUL-terminated in general, and
+# cyrius 6.6.13 warns on str_data(..) passed to a `: cstring` parameter (1.5.11).
 fn _pdfc_resname_a(a, k): i64 {
     var buf = alloc_via(a, 24);
     if (buf == 0) { return 0; }
@@ -6901,7 +6906,8 @@ fn bayan_pdf_add_page(doc, w_mpt, h_mpt): i64 {
 # finding every /Resources /Font entry that names the face, which is the same
 # information stored twice and therefore a place for it to disagree.
 #
-# PdfFont is 32 bytes: {std_id@0, objnum@8, resname Str*@16, ref cell@24}.
+# PdfFont is 40 bytes: {std_id@0, objnum@8, resname Str*@16, ref cell@24,
+# resname cstring@32}.
 fn bayan_pdf_use_font(doc, pg, font_id): Str {
     if (_pdfe_magic(doc, PDF_MODE_WRITE) == 0) { return _pdfo_empty_bytes(); }
     if (pg == 0)            { return _pdfo_empty_bytes(); }
@@ -6944,6 +6950,7 @@ fn bayan_pdf_use_font(doc, pg, font_id): Str {
         store64(f + 8,  0);
         store64(f + 16, nm);
         store64(f + 24, ref);
+        store64(f + 32, cs);
         if (vec_push_a(a, fonts, f) < 0) {
             _pdfe_doc_err(doc, "out of memory registering a font", 0 - 1);
             return _pdfo_empty_bytes();
@@ -6971,10 +6978,10 @@ fn bayan_pdf_use_font(doc, pg, font_id): Str {
         }
     }
     if (bayan_pdf_obj_dict_get_by_str(fdict, name) == 0) {
-        # str_data(name) IS the NUL-terminated buffer _pdfc_resname_a built, so
-        # the cstring the dict key is copied from and the Str this returns can
-        # never name different things.
-        if (bayan_pdf_obj_dict_set_a(a, fdict, str_data(name), load64(f + 24)) != 0) {
+        # +32 is the NUL-terminated buffer _pdfc_resname_a built and `name`
+        # borrows, so the cstring the dict key is copied from and the Str this
+        # returns can never name different things.
+        if (bayan_pdf_obj_dict_set_a(a, fdict, load64(f + 32), load64(f + 24)) != 0) {
             _pdfe_doc_err(doc, "out of memory registering a font", 0 - 1);
             return _pdfo_empty_bytes();
         }
@@ -8989,7 +8996,8 @@ fn _pdfw_build_tree(a, doc): i64 {
     # Fonts first. Numbering them first keeps the low object numbers stable
     # across edits to the page content, which makes diffing two outputs useful.
     #
-    # PdfFont is {std_id@0, objnum@8, resname Str*@16, ref cell@24}. Slot 24
+    # PdfFont is {std_id@0, objnum@8, resname Str*@16, ref cell@24, resname
+    # cstring@32}. Slot 24
     # holds the ONE PTAG_REF cell that every page's /Resources /Font entry for
     # this face points at, created with number 0 by bayan_pdf_use_font. Setting
     # its number here patches all of them at once. The alternative — walking
