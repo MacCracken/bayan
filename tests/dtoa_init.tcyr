@@ -1,0 +1,113 @@
+# dtoa_init.tcyr — the f64 tables' first use is race-free (1.5.11).
+#
+# src/dtoa.cyr builds its cached-power tables on first use. Until 1.5.11 that was
+# a check-then-set with the flag stored LAST and no barrier, so on aarch64 a
+# thread could see the flag set and then read significands that were still zero:
+# a wrong parse or format, with no error. The build is now a 0 -> 1 -> 2 claim
+# and publish (_d_once_*), the shape sigil 3.13.6 gave its own initialisers.
+#
+# Its own file, because it must be the FIRST use of the tables in its process:
+# bayan.tcyr has formatted and parsed floats long before any row could race.
+#
+# Two halves. The protocol rows are deterministic. The race rows start a pool of
+# threads held at a start word, release them together into their first parse and
+# format, and require every thread's answers to equal the answers computed again
+# once the tables are surely published. A race is a probability, so a green run
+# does not prove the old code wrong; what it pins is that the protocol completes
+# (a claim that never publishes hangs here) and agrees with itself. Where threads
+# run inline (THREADS_CONCURRENT == 0) the workers are not held, since holding an
+# inline body would never return.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/assert.cyr"
+include "lib/thread.cyr"
+
+include "src/dtoa.cyr"
+
+alloc_init();
+
+test_group("dtoa: the one-time table build is a claim and a publish (1.5.11)");
+assert_eq(_D_TABLES_INIT, 0, "dtoa: nothing has built the tables yet");
+var dt_flag = 0;
+assert_eq(_d_once_claim(&dt_flag), 1, "dtoa: a claim on 0 wins");
+assert_eq(dt_flag, 1, "dtoa: and marks the build in progress");
+_d_once_publish(&dt_flag);
+assert_eq(dt_flag, 2, "dtoa: publish marks it built");
+assert_eq(_d_once_claim(&dt_flag), 0, "dtoa: a claim on a published flag loses, at once");
+assert_eq(dt_flag, 2, "dtoa: and leaves it published");
+
+test_group("dtoa: threads racing the first parse and format agree (1.5.11)");
+var DT_N = 8;
+var DT_K = 5;
+var dt_res: i64[40];
+var dt_ready = 0;
+var dt_go = 0;
+if (THREADS_CONCURRENT == 0) { dt_go = 1; }
+
+# Each input needs the tables: 0.1 and 1e22 take the exact-power (Clinger) path,
+# the extremes and the long mantissa take the cached powers, and the format of
+# 0.1's bits is Grisu2 over the cached powers. The fifth answer folds the
+# formatted bytes into one word.
+fn _dt_answers(out): i64 {
+    store64(out,      bayan_f64_parse("0.1", 3));
+    store64(out + 8,  bayan_f64_parse("1e22", 4));
+    store64(out + 16, bayan_f64_parse("1.7976931348623157e308", 22));
+    store64(out + 24, bayan_f64_parse("123456789012345678901234567890e-317", 35));
+    var buf[64];
+    var n = bayan_f64_to_json(0x3FB999999999999A, &buf);
+    var h = n;
+    var i = 0;
+    while (i < n) {
+        h = h * 31 + load8(&buf + i);
+        i = i + 1;
+    }
+    store64(out + 32, h);
+    return 0;
+}
+
+fn _dt_worker(arg): i64 {
+    atomic_fetch_add(&dt_ready, 1);
+    while (atomic_load(&dt_go) == 0) { }
+    _dt_answers(&dt_res + arg * DT_K * 8);
+    return 0;
+}
+
+var dt_t: i64[8];
+var dt_i = 0;
+var dt_made = 0;
+while (dt_i < DT_N) {
+    store64(&dt_t + dt_i * 8, thread_create(&_dt_worker, dt_i));
+    if (load64(&dt_t + dt_i * 8) != 0) { dt_made = dt_made + 1; }
+    dt_i = dt_i + 1;
+}
+assert_eq(dt_made, DT_N, "dtoa: every worker started");
+while (atomic_load(&dt_ready) < DT_N) { }
+atomic_fence();
+atomic_store(&dt_go, 1);
+dt_i = 0;
+while (dt_i < DT_N) {
+    thread_join(load64(&dt_t + dt_i * 8));
+    dt_i = dt_i + 1;
+}
+assert_eq(_D_TABLES_INIT, 2, "dtoa: the tables are published once the workers are done");
+
+var dt_want: i64[5];
+_dt_answers(&dt_want);
+assert_eq(load64(&dt_want), 0x3FB999999999999A, "dtoa: 0.1 parses to its double");
+assert_eq(load64(&dt_want + 8), 0x4480F0CF064DD592, "dtoa: 1e22 parses to its double");
+assert_eq(load64(&dt_want + 16), 0x7FEFFFFFFFFFFFFF, "dtoa: the largest double parses");
+var dt_bad = 0;
+dt_i = 0;
+while (dt_i < DT_N * DT_K) {
+    if (load64(&dt_res + dt_i * 8) != load64(&dt_want + (dt_i % DT_K) * 8)) { dt_bad = dt_bad + 1; }
+    dt_i = dt_i + 1;
+}
+assert_eq(dt_bad, 0, "dtoa: every thread's first answers equal the published tables' answers");
+
+var r = assert_summary();

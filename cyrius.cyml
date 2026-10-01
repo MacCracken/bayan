@@ -19,7 +19,7 @@ output = "bayan"
 [deps]
 stdlib = [
     "string", "fmt", "alloc", "io", "vec", "str", "syscalls",
-    "assert", "bench", "result", "fnptr", "tagged",
+    "assert", "bench", "result", "fnptr", "tagged", "atomic",
 ]
 
 # `[lib]` drives `cyrius distlib` — concatenates the listed modules into
