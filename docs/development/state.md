@@ -14,8 +14,8 @@
   to a `: cstring` parameter in every build that includes bayan or TLS. Output byte-identical.
 - **A refused TOML string decode is a failure.** `_toml_unescape_span_a` (and the multi-line CRLF
   copy) returned an empty / raw default-allocator Str on a refusal, reported as a parsed value;
-  they return 0 and `bayan_toml_parse`, `bayan_toml_inline_parse_a` and `bayan_toml_unescape_a`
-  return 0 on it.
+  they return 0, and `bayan_toml_parse` / `toml_parse`, `bayan_toml_inline_parse(_a)` and
+  `bayan_toml_unescape(_a)` return 0 on it — `bayan_toml_parse_file_r` returns `Err(TomlIoErr)`.
 - **The f64 tables' first use is race-free on aarch64**: a 0 → 1 → 2 claim and publish, the
   shape sigil 3.13.6 gave its initialisers.
 
@@ -271,15 +271,16 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,462 asserts, green** @1.5.11 on x86_64 and on `--aarch64` (1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
+- `tests/bayan.tcyr` — **1,472 asserts, green** @1.5.11 on x86_64 and on `--aarch64` (1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
 
-  **1.5.11 adds** (+25): the pdf font key on both paths (+7), and the TOML refused-decode rows
-  (+18 — `unescape_a`, `inline_parse_a` with only the unescape refused for a value and a quoted
-  key, `bayan_toml_parse` under `ALLOC_MAX = 128` for four string shapes plus a control; 7 rows
-  fail on the 1.5.10 parser).
+  **1.5.11 adds** (+35): the pdf font key on both paths (+7), and the TOML refused-decode rows
+  (+28 — `unescape_a`, `inline_parse_a` with only the unescape refused for a value and a quoted
+  key, `bayan_toml_parse` under `ALLOC_MAX = 128` for four string shapes, two quoted header names
+  and a refused header-segment push plus a control, and `parse_file_r` with only the decode
+  refused → `Err`; 11 rows fail on the 1.5.10 parser).
 
   **1.5.10 adds** (+156): the flat JSON parser's groups (+120 — the 2026-09-30
   issue's 16 documents against exact pair lists, nested spans and kind matching,

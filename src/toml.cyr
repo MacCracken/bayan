@@ -445,6 +445,7 @@ fn bayan_toml_unescape_a(a, s): Str {
 # of bayan_toml_escape below, so a consumer writing a TOML file by hand has
 # both halves and does not hand-roll them (mneme's `_cfg_toml_esc` /
 # `_cfg_toml_unesc` are the case this replaces).
+# Returns 0 when the allocator refuses (1.5.11).
 fn bayan_toml_unescape(s): Str {
     return bayan_toml_unescape_a(default_alloc(), s);
 }
@@ -1090,8 +1091,8 @@ fn _toml_section_find(sections, from, name): i64 {
 #
 # Returns 0 when the allocator refuses a key or a value (1.5.11). A refused
 # escaped string used to come back as an EMPTY value and the parse reported
-# success. bayan_toml_parse_file and bayan_toml_parse_file_r pass the 0 on (as
-# 0 and as Ok(0)).
+# success. bayan_toml_parse_file passes the 0 on; bayan_toml_parse_file_r
+# reports it as Err(TomlIoErr). toml_parse is an alias of this function.
 fn bayan_toml_parse(src): i64 {
     var sections = vec_new();
     var data = str_data(src);
@@ -1249,6 +1250,8 @@ fn bayan_toml_parse_file(path): i64 {
 # v5.8.30 — Result variant of bayan_toml_parse_file. Surfaces underlying
 # I/O errors as Err(TomlIoErr) instead of silently converting to an
 # empty vec (the back-compat behavior of `bayan_toml_parse_file`).
+# A refused allocation — the read chunk, or a key or value the parse could not
+# decode (1.5.11) — is also Err(TomlIoErr): the document was not loaded.
 fn bayan_toml_parse_file_r(path) : Result {
     var fd_r_tag, fd_r = file_open_r(path, 0, 0);
     if (is_err_result(fd_r_tag) == 1) { return Err(TomlIoErr); }
@@ -1275,7 +1278,13 @@ fn bayan_toml_parse_file_r(path) : Result {
     # added to draw. A caller that wants to reject an empty config can check
     # vec_len; a caller that cannot tell "absent" from "empty" has no recourse.
     if (total == 0) { return Ok(vec_new()); }
-    return Ok(bayan_toml_parse(str_builder_build(sb)));
+    # A refused allocation is an Err, like the refused chunk above — never Ok(0),
+    # which a caller matching Ok would hand to vec_len (1.5.11).
+    var src = str_builder_build(sb);
+    if (src == 0) { return Err(TomlIoErr); }
+    var doc = bayan_toml_parse(src);
+    if (doc == 0) { return Err(TomlIoErr); }
+    return Ok(doc);
 }
 
 # Get value for a key from a pairs vec. Returns Str or 0 if not found.
@@ -1642,6 +1651,7 @@ fn bayan_toml_inline_parse_a(a, value): i64 {
 
 # 1.5.4 — Decompose an inline-table VALUE `{ ... }` into a vec of pairs.
 # See the block above. Wrapper over the allocator-threaded form.
+# Returns 0 when the allocator refuses a key or a value (1.5.11).
 fn bayan_toml_inline_parse(value): i64 {
     return bayan_toml_inline_parse_a(default_alloc(), value);
 }

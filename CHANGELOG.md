@@ -6,8 +6,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Patch release, cut for cyrius **6.6.13**. ⛔ **Tag it before cyrius 6.6.13 is tagged** — cyrius 6.6.13
 folds `dist/bayan.cyr` as `lib/bayan.cyr`. Three fixes, each with tests. The toolchain pin stays at
-**6.6.12**. Public API: no addition, no removal; three functions now return 0 where they returned a
-substituted answer (below).
+**6.6.12**. Public API: no addition, no removal; the TOML functions listed below now report a
+refused allocation (0, or `Err` from the Result variant) where they returned a substituted answer.
 
 ### Fixed
 
@@ -29,13 +29,15 @@ substituted answer (below).
   sibling on the multi-line arm, `_toml_crlf_copy_a`, fell back to a default-allocator view of the
   RAW bytes, CRs and all. Both return 0 now, and every caller stops on it, per the rule 1.5.9 and
   1.5.10 applied to base64, TOML arrays and the flat JSON parser:
-  - `bayan_toml_parse` returns 0 when a key or value is refused (`bayan_toml_parse_file` passes it
-    on as 0, `bayan_toml_parse_file_r` as `Ok(0)`).
-  - `bayan_toml_inline_parse_a` returns 0 when a key or value is refused (so does
-    `bayan_toml_get_inline` through it).
-  - `bayan_toml_unescape_a` returns 0 on a refusal.
+  - `bayan_toml_parse` and its alias `toml_parse` return 0 when a key or value is refused.
+    `bayan_toml_parse_file` (and `toml_parse_file`) pass the 0 on. `bayan_toml_parse_file_r` (and
+    `toml_parse_file_r`) report it as `Err(TomlIoErr)` — the answer they already gave a refused
+    read chunk — never `Ok(0)`, which a caller matching `Ok` would hand to `vec_len`.
+  - `bayan_toml_inline_parse_a` and its default-allocator wrapper `bayan_toml_inline_parse` return 0
+    when a key or value is refused (so does `bayan_toml_get_inline` through them).
+  - `bayan_toml_unescape_a` and its wrapper `bayan_toml_unescape` return 0 on a refusal.
   - A refused key segment, or a refused push of one, was dropped or empty; the key scan now reports
-    it and the parse stops.
+    it and the parse stops — in a key/value line and in a `[table]` or `[[array]]` header.
   - `bayan_toml_array_parse_a` already returned 0; its flush no longer needs the `str_len == 0`
     test that existed only to recognise the empty fallback.
 - **The f64 tables' first use was not thread-safe on aarch64.** `_d_init_tables` (`src/dtoa.cyr`)
@@ -55,14 +57,18 @@ substituted answer (below).
 
 ### Tests
 
-- `tests/bayan.tcyr`: **1,462** assertions (from 1,437), 0 failed.
+- `tests/bayan.tcyr`: **1,472** assertions (from 1,437), 0 failed.
   - pdf (+7): the font resource key on both paths — the returned name's bytes, NUL-terminated at
     its length, one buffer with the returned Str.
-  - toml (+18): `unescape_a` on a refusing allocator; `inline_parse_a` with ONLY the unescape's
+  - toml (+28): `unescape_a` on a refusing allocator; `inline_parse_a` with ONLY the unescape's
     request refused, for a value and for a quoted key; `bayan_toml_parse` under `ALLOC_MAX = 128`
-    for a basic string, a multi-line basic string, a CRLF multi-line string (the copy) and a quoted
-    key, each parsing whole without the limit, plus a control. 7 of these rows fail on 1.5.10's
-    `src/toml.cyr`.
+    for a basic string, a multi-line basic string, a CRLF multi-line string (the copy), a quoted
+    key, a quoted `[table]` name, a quoted `[[array]]` name and a 17-segment header whose 17th
+    push is refused, each parsing whole without the limit, plus a control; and
+    `bayan_toml_parse_file_r` with only the value's decode buffer refused (the default allocator's
+    alloc slot swapped and restored — `ALLOC_MAX` cannot reach the decode past the 64 KiB read
+    chunk), which is `Err`, beside an unrestricted read of the same file. 11 of these rows fail on
+    1.5.10's `src/toml.cyr`.
 - `tests/dtoa_init.tcyr` (new, **12** assertions): the claim/publish protocol, and 8 threads held
   at a start word and released together into their FIRST parse and format, each answer equal to
   the answer recomputed after publication. Green 20× on x86_64, 10× under qemu-aarch64 and 300× on

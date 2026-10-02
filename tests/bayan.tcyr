@@ -3776,6 +3776,53 @@ assert_eq(tu_r2, 0, "toml: parse with a multi-line basic decode refused is 0");
 assert_eq(tu_r3, 0, "toml: parse with a CRLF copy refused is 0 (was the raw CRLF bytes)");
 assert_eq(tu_r4, 0, "toml: parse with a quoted key's decode refused is 0 (was an empty key)");
 assert_neq(tu_ctl, 0, "toml: (the limit alone refuses nothing a small document needs)");
+# The two header arms report a refused key segment the same way: a quoted name whose decode is
+# refused, and a 17-segment bare name whose 17th push needs the parts vec to grow past 16 slots
+# (256 bytes). Each stopped nowhere before 1.5.11 — the parse went on with an empty or a short name.
+var TU_H1 = _tu_doc("[\"", "\\t", "\"]\n");
+var TU_H2 = _tu_doc("[[\"", "\\t", "\"]]\n");
+var TU_H3 = str_from("[a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q]\n");
+fn _tu_sec1_len(src): i64 {
+    var secs = bayan_toml_parse(src);
+    if (secs == 0) { return 0 - 1; }
+    if (vec_len(secs) != 2) { return 0 - 2; }
+    return str_len(bayan_toml_section_name(vec_get(secs, 1)));
+}
+assert_eq(_tu_sec1_len(TU_H1), 201, "toml: the quoted [table] header decodes its name");
+assert_eq(_tu_sec1_len(TU_H2), 201, "toml: the quoted [[array]] header decodes its name");
+assert_eq(_tu_sec1_len(TU_H3), 33, "toml: the 17-segment header joins all 17");
+ALLOC_MAX = 128;
+var tu_h1 = bayan_toml_parse(TU_H1);
+var tu_h2 = bayan_toml_parse(TU_H2);
+var tu_h3 = bayan_toml_parse(TU_H3);
+ALLOC_MAX = tu_max;
+assert_eq(tu_h1, 0, "toml: parse with a [table] name's decode refused is 0");
+assert_eq(tu_h2, 0, "toml: parse with an [[array]] name's decode refused is 0");
+assert_eq(tu_h3, 0, "toml: parse with a header segment's push refused is 0 (was 16 of 17 segments)");
+# bayan_toml_parse_file_r reports a refused decode as Err, as it does a refused read chunk — not
+# Ok(0), which a caller matching Ok hands to vec_len. Its chunk is 64 KiB, so ALLOC_MAX cannot reach
+# the decode without refusing the chunk first; the lever is the default allocator's alloc slot,
+# swapped for one that refuses only TU_D1's decode buffer (its 202-byte body + 4) and restored.
+var tu_rsz = 0 - 1;
+var tu_rseen = 0;
+fn _tu_refuse_sz(state, size): i64 {
+    if (size == tu_rsz) { tu_rseen = tu_rseen + 1; return 0; }
+    return alloc(size);
+}
+file_write_all("build/toml-refused-value.toml", str_data(TU_D1), str_len(TU_D1));
+var tu_dv = default_alloc();
+var tu_saved = load64(tu_dv);
+store64(tu_dv, &_tu_refuse_sz);
+var tu_fc_tag, tu_fc = bayan_toml_parse_file_r("build/toml-refused-value.toml");
+tu_rsz = 206;
+var tu_fr_tag, tu_fr = bayan_toml_parse_file_r("build/toml-refused-value.toml");
+tu_rsz = 0 - 1;
+store64(tu_dv, tu_saved);
+assert_eq(is_err_result(tu_fc_tag), 0, "toml: parse_file_r reads the document (no refusal)");
+assert_eq(str_len(bayan_toml_pair_value(vec_get(bayan_toml_section_pairs(vec_get(tu_fc, 0)), 0))), 201,
+  "toml: (and decodes its value)");
+assert_eq(is_err_result(tu_fr_tag), 1, "toml: parse_file_r with the value's decode refused is Err, not Ok");
+assert_eq(tu_rseen, 1, "toml: (the refused request was the decode's, made once)");
 assert_eq(_ba_strs_same(toml_array_parse(ba_tlist), bayan_toml_array_parse(ba_tlist)), 1, "alias toml_array_parse");
 assert_eq(toml_is_array(ba_tlist), bayan_toml_is_array(ba_tlist), "alias toml_is_array (an array)");
 assert_eq(toml_is_array(bayan_toml_get(ba_troot, "name")), bayan_toml_is_array(bayan_toml_get(ba_troot, "name")),
