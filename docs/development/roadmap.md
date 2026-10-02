@@ -15,6 +15,21 @@
       aarch64 syscall peer (`SYS_UNLINKAT` 35 → 263) is re-vendored; `lib/` is
       111 files, 0 differ against the 6.6.6 snapshot and the release tarball.
 
+## Next patch — follow-ups recorded by cyrius 6.6.13 (2026-10-02)
+
+- **TOML refusals, the rest of the 1.5.9 rule.** `bayan_toml_escape_a` still answers a refused output
+  buffer with `str_from("")` from the DEFAULT allocator (1.5.11 fixed the unescape side), and
+  `bayan_toml_parse` / `bayan_toml_inline_parse_a` leave their other refusals unchecked: `vec_new` /
+  `vec_new_a`, `section_new`, `pair_new`, `vec_push`, and the `str_builder` paths (`_toml_join_parts_a`,
+  the dotted-key builder), which end the process on a refusal and allocate from the default allocator.
+  Found by the 1.5.11 review.
+- **Delegate `bayan_f64_parse` to the stdlib.** cyrius 6.6.13 ported bayan 1.5.10's correctly-rounded
+  parser into `lib/math.cyr` (`f64_parse` / `f64_parse_ok`, over an internal length-bounded
+  `_f64_parse_n`), so the ecosystem can carry ONE correctly-rounded parser. Delegating needs the
+  length-bounded entry made public in cyrius — ask for it when this is picked up.
+- **At the cyrius 6.6.13 pin bump:** re-vendor `lib/math.cyr` with `cyrius deps` in the same commit — 6.6.13 made `f64_le` / `f64_ge` / `f64_trunc` compiler builtins (reserved names), and a pre-6.6.13 vendored copy still defines them (`reserved keyword`). The Str → `: cstring` warning is quiet on bayan since 1.5.11;
+  keep the warnings gate on the new pin.
+
 ## v1.0 criteria
 
 _Define before tagging v0.1.0:_
