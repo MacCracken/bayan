@@ -30,6 +30,36 @@
 - **At the cyrius 6.6.13 pin bump:** re-vendor `lib/math.cyr` with `cyrius deps` in the same commit — 6.6.13 made `f64_le` / `f64_ge` / `f64_trunc` compiler builtins (reserved names), and a pre-6.6.13 vendored copy still defines them (`reserved keyword`). The Str → `: cstring` warning is quiet on bayan since 1.5.11;
   keep the warnings gate on the new pin.
 
+## At the cyrius 6.6.16 pin bump — follow-ups recorded by cyrius 6.6.16 (2026-10-05)
+
+⛔ **Nothing to do until cyrius 6.6.16 is tagged and out.** This lands the day the `cyrius` pin moves to 6.6.16.
+
+- **`#deprecated` now warns through `&fn` — `no-warnings.sh cyrius test` goes red on the bump.** cyrius
+  6.6.16 (its C9) makes `#deprecated("…")` warn on every path that reaches the fn, including `&name` (it
+  was silent there, and silent for a call parsed before the definition, `o.m()`, operators, struct-valued
+  receives and generic instances). `tests/bayan.tcyr` takes `&` of both deprecated names precisely because
+  that path was silent (:3111-3112 `jk_dep_get` / `jk_dep_alias`, :3575-3576 `ba_dep_get` /
+  `ba_dep_alias`), and its own comment (~3570) anticipated this. Measured with the 6.6.16 compiler (raw
+  `cycc < tests/bayan.tcyr` from the bayan root; binary byte-identical to 6.6.15's, rc 0): **four new
+  warnings**, one per reference (`'bayan_json_v_obj_get' is deprecated: use bayan_json_v_obj_get_by_cstr
+  …` / `'json_v_obj_get' is deprecated: …`). So `./scripts/no-warnings.sh cyrius test` (ci.yml :236, and
+  the `--aarch64` step at :326) fails. Under 6.6.16 there is no warning-free way to reference a
+  deprecated fn — that is the fix — so the arrangement is bayan's call: e.g. move the two alias rows into a
+  `.tcyr` that `cyrius coverage` reads but the zero-warning test step builds with the deprecation EXPECTED
+  (an exact expectation, as `scripts/consumer-check.sh` already makes for direct calls), or drop the
+  coverage requirement for a deprecated name. Per the test's own comment: never answer it with a pattern
+  allowance on the test step's warning gate.
+- **`scripts/consumer-check.sh` (~266-267):** "A call that cyrius parses before the definition does not
+  warn at all on 6.6.12" is no longer true from 6.6.16 — such a call now warns once, on its line. The
+  check it guards (bayan never references its own deprecated names) stays right; the direct-call probes
+  are unaffected (`var a = fn(0, "k");` after the bundle still gives exactly one warning on its line).
+- **Information only — `THREADS_CONCURRENT` reads 1 on Windows from 6.6.16.** `tests/dtoa_init.tcyr:51`
+  now holds its workers at the start barrier on Windows too; measured 12/12 ×5 on cass with the 6.6.16
+  lib. No change needed.
+- **FYI — yantra still calls the deprecated `json_v_obj_get`** (its `lib/yantra.cyr` 398, 427, 553, 556);
+  6 warnings wherever bayan is included first, and from 6.6.16 also when yantra is included first. The
+  fix is yantra's (`bayan_json_v_obj_get_by_cstr`); it is filed in yantra's roadmap.
+
 ## v1.0 criteria
 
 _Define before tagging v0.1.0:_
