@@ -30,9 +30,10 @@
 - **At the cyrius 6.6.13 pin bump:** re-vendor `lib/math.cyr` with `cyrius deps` in the same commit — 6.6.13 made `f64_le` / `f64_ge` / `f64_trunc` compiler builtins (reserved names), and a pre-6.6.13 vendored copy still defines them (`reserved keyword`). The Str → `: cstring` warning is quiet on bayan since 1.5.11;
   keep the warnings gate on the new pin.
 
-## At the cyrius 6.6.16 pin bump — follow-ups recorded by cyrius 6.6.16 (2026-10-05)
+## At the cyrius 6.6.16 pin bump — follow-ups recorded by cyrius 6.6.16 (2026-10-05) — ✅ done in 1.5.12 (pin → 6.6.18)
 
-⛔ **Nothing to do until cyrius 6.6.16 is tagged and out.** This lands the day the `cyrius` pin moves to 6.6.16.
+The deprecated rows moved to `tests/deprecated_lookup.cyr`, a `[coverage] programs` entry built with exact
+expected warnings by `scripts/deprecated-lookup.sh`; the consumer-check comment is corrected.
 
 - **`#deprecated` now warns through `&fn` — `no-warnings.sh cyrius test` goes red on the bump.** cyrius
   6.6.16 (its C9) makes `#deprecated("…")` warn on every path that reaches the fn, including `&name` (it

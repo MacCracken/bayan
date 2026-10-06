@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "bayan — data-format & big-integer distfile (json / yaml / toml / cyml / csv / base64 / bigint / u128) for the AGNOS-lineage Cyrius ecosystem; foldable into stdlib per the sandhi pattern"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.6.12"
+cyrius = "6.6.18"
 
 [build]
 entry = "src/main.cyr"
@@ -21,6 +21,13 @@ stdlib = [
     "string", "fmt", "alloc", "io", "vec", "str", "syscalls",
     "assert", "bench", "result", "fnptr", "tagged", "atomic",
 ]
+
+# `cyrius coverage` reads tests/**/*.tcyr plus these programs, as text. The
+# deprecated json lookups are referenced only from tests/deprecated_lookup.cyr
+# (1.5.12): from cyrius 6.6.16 any reference warns, and the .tcyr suite is
+# warning-free, so the program carries them (scripts/deprecated-lookup.sh).
+[coverage]
+programs = ["tests/deprecated_lookup.cyr"]
 
 # `[lib]` drives `cyrius distlib` — concatenates the listed modules into
 # `dist/bayan.cyr` for downstream / stdlib fold. Single-pass compiler:

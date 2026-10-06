@@ -263,11 +263,11 @@ for bundle in dist/bayan.cyr dist/bayan-*.cyr; do
     fi
 done
 
-# bayan never calls its own deprecated names. A call that cyrius parses before
-# the definition does not warn at all on 6.6.12, so the probes below would still
-# read "nowhere in the bundle" while the bundle called the name — and every build
-# that includes the bundle would get that warning from inside bayan the day a
-# toolchain closes the gap. Code only: char literals, then string literals, then
+# bayan never calls its own deprecated names. On 6.6.12 a call that cyrius parsed
+# before the definition did not warn at all, so the probes below would have read
+# "nowhere in the bundle" while the bundle called the name; from 6.6.16 every
+# path warns, and such a call would put that warning in every build that
+# includes the bundle. Either way it is refused here. Code only: char literals, then string literals, then
 # `# ` comments are stripped (char literals FIRST: a `'"'` would otherwise pair
 # with the next string's quote and erase the code between them), and a fn's own
 # definition (`fn NAME(`) is not a reference. ANY other reference counts, not just

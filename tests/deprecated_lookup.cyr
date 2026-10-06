@@ -1,0 +1,74 @@
+# tests/deprecated_lookup.cyr — the two DEPRECATED json lookups still answer as before.
+#
+# bayan_json_v_obj_get and its alias json_v_obj_get were deprecated at 1.5.10 in favour of
+# _by_cstr / _by_str (docs/adr/0004). The deprecation is non-breaking only if they keep
+# answering exactly as before: the same node as _by_cstr, 0 wherever _by_cstr gives 0, and
+# the FIRST pair of a repeated key.
+#
+# Through 1.5.11 these rows sat in tests/bayan.tcyr, reached through `&fn`, because cyrius
+# 6.6.12 did not deprecation-check `&fn` and the suite stayed warning-free. cyrius 6.6.16
+# warns on every path to a deprecated fn, so no .tcyr can reference these two names without
+# a warning, and `cyrius test` runs under scripts/no-warnings.sh. They moved here at 1.5.12:
+# - this is a program, not a .tcyr, so `cyrius test` does not build it;
+# - cyrius.cyml `[coverage] programs` puts it in the coverage corpus, which still needs both
+#   names referenced (`cyrius coverage --min 100`);
+# - scripts/deprecated-lookup.sh builds it with EXACTLY the expected warnings (one per call
+#   below, each with its exact advice, and nothing else), then runs it. Never answer a
+#   warning here with a pattern allowance on the test step's gate.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+
+include "src/base64.cyr"
+include "src/csv.cyr"
+include "src/u128.cyr"
+include "src/bigint.cyr"
+include "src/toml.cyr"
+include "src/cyml.cyr"
+include "src/dtoa.cyr"
+include "src/json.cyr"
+include "src/yaml.cyr"
+include "src/pdf.cyr"
+include "src/_compat.cyr"
+
+alloc_init();
+
+# The calls are the ONLY lines that may warn; scripts/deprecated-lookup.sh counts them by
+# name, so every call of a deprecated fn in this file is one expected warning.
+var DOC = "{\"a\":[10,20],\"b\":{\"c\":true}}";
+var doc = bayan_json_v_parse_buf(DOC, strlen(DOC));
+var arr = bayan_json_v_obj_get_by_cstr(doc, "a");
+var want_b = bayan_json_v_obj_get_by_cstr(doc, "b");
+assert_neq(want_b, 0, "the fixture has a \"b\"");
+
+assert_eq(bayan_json_v_obj_get(doc, "b"), want_b, "deprecated bayan_json_v_obj_get: the same node as _by_cstr");
+assert_eq(bayan_json_v_obj_get(doc, "zz"), 0, "deprecated bayan_json_v_obj_get: absent key -> 0");
+assert_eq(bayan_json_v_obj_get(arr, "b"), 0, "deprecated bayan_json_v_obj_get: non-object -> 0");
+assert_eq(bayan_json_v_obj_get(0, "b"), 0, "deprecated bayan_json_v_obj_get: null -> 0");
+assert_eq(json_v_obj_get(doc, "b"), want_b, "deprecated json_v_obj_get: the same node as _by_cstr");
+assert_eq(json_v_obj_get(doc, "a"), arr, "deprecated json_v_obj_get: the first key too");
+assert_eq(json_v_obj_get(doc, "zz"), 0, "deprecated json_v_obj_get: absent key -> 0");
+
+# A repeated key is kept as a second pair; every lookup answers the FIRST.
+var DUP = "{\"a\":1,\"a\":2}";
+var dup = bayan_json_v_parse_buf(DUP, strlen(DUP));
+var first = bayan_json_v_obj_get_by_str(dup, str_from("a"));
+assert_eq(bayan_json_v_int(first), 1, "the fixture's first \"a\" is 1");
+assert_eq(bayan_json_v_obj_get(dup, "a"), first, "deprecated bayan_json_v_obj_get picks the FIRST of a repeated key");
+assert_eq(json_v_obj_get(dup, "a"), first, "deprecated json_v_obj_get picks the FIRST of a repeated key");
+
+# A null key returns 0 (through 1.5.9 every lookup died of SIGSEGV on one).
+assert_eq(bayan_json_v_obj_get(doc, 0), 0, "deprecated bayan_json_v_obj_get: null key -> 0");
+assert_eq(json_v_obj_get(doc, 0), 0, "deprecated json_v_obj_get: null key -> 0");
+
+var r = assert_summary();
+syscall(SYS_EXIT, r);

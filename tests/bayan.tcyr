@@ -3102,30 +3102,23 @@ assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, ""), bayan_json_v_obj_get_by_str(jk
   "json: _by_cstr and _by_str agree on the empty key");
 # A repeated key is kept as a second pair (the parser accepts it; obj_set appends). Every
 # lookup answers the FIRST, the rule src/yaml.cyr documents, so the typed lookups and the two
-# deprecated names (forwarding to _by_cstr; reached through `&fn`, see the alias rows below)
-# must pick the same pair. The suite above has no repeated key, so a last-match lookup in
-# either typed spelling passed it.
+# deprecated names (forwarding to _by_cstr; pinned in tests/deprecated_lookup.cyr since
+# 1.5.12) must pick the same pair. The suite above has no repeated key, so a last-match
+# lookup in either typed spelling passed it.
 var jk_d = "{\"a\":1,\"a\":2}";
 var jk_do = bayan_json_v_parse_buf(jk_d, strlen(jk_d));
 var jk_first = bayan_json_v_obj_get_by_str(jk_do, str_from("a"));
-var jk_dep_get = &bayan_json_v_obj_get;
-var jk_dep_alias = &json_v_obj_get;
 assert_eq(bayan_json_v_obj_len(jk_do), 2, "json: a repeated key is kept as a second pair");
 assert_eq(bayan_json_v_int(jk_first), 1, "json: _by_str answers the FIRST of a repeated key");
 assert_eq(bayan_json_v_obj_get_by_cstr(jk_do, "a"), jk_first, "json: _by_cstr picks the same pair as _by_str");
 assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(jk_do, "a")), 1,
   "json: _by_cstr answers the FIRST of a repeated key");
-assert_eq(fncall2(jk_dep_get, jk_do, "a"), jk_first, "json: deprecated obj_get picks the FIRST of a repeated key");
-assert_eq(fncall2(jk_dep_alias, jk_do, "a"), jk_first,
-  "json: deprecated json_v_obj_get picks the FIRST of a repeated key");
 # A null key returns 0. Through 1.5.9 every lookup died of SIGSEGV on one (strlen(0) /
 # str_data(0)), and obj_key's documented out-of-range 0 leads straight there.
 assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, 0), 0, "json: _by_cstr with a null key -> 0");
 assert_eq(bayan_json_v_obj_get_by_str(jk_o, 0), 0, "json: _by_str with a null key -> 0");
 assert_eq(bayan_json_v_obj_get_by_str(jk_o, bayan_json_v_obj_key(jk_o, 99)), 0,
   "json: _by_str on obj_key's out-of-range 0 -> 0");
-assert_eq(fncall2(jk_dep_get, jk_o, 0), 0, "json: deprecated obj_get with a null key -> 0");
-assert_eq(fncall2(jk_dep_alias, jk_o, 0), 0, "json: deprecated json_v_obj_get with a null key -> 0");
 
 test_group("json: the remaining parse and pointer entry points (v1.5.2)");
 var jp_ps[48];
@@ -3558,31 +3551,12 @@ var ba_arr = bayan_json_v_obj_get_by_cstr(ba_doc, "a");
 assert_eq(json_v_arr_get(ba_arr, 1), bayan_json_v_arr_get(ba_arr, 1), "alias json_v_arr_get");
 assert_eq(json_v_obj_key(ba_doc, 1), bayan_json_v_obj_key(ba_doc, 1), "alias json_v_obj_key");
 assert_eq(json_v_obj_val(ba_doc, 1), bayan_json_v_obj_val(ba_doc, 1), "alias json_v_obj_val");
-# The two DEPRECATED lookups (1.5.10): bayan_json_v_obj_get and this alias of it. The
-# deprecation is non-breaking only if they keep answering exactly as before, so that is
-# pinned here — the same node as _by_cstr, and 0 wherever _by_cstr gives 0.
-#
-# They are reached through `&fn`. cyrius 6.6.12 does not deprecation-check three call
-# shapes (measured): `&fn`, a method-dot call, and a call parsed before the definition. This
-# suite uses the first, so it stays warning-free with no allowance. A direct call would
-# warn, and `cyrius test` labels a .tcyr's warnings `<source>:line:col` with no file name,
-# so no exact per-file allowance is possible. The WARNING itself is pinned where it ships:
-# scripts/consumer-check.sh compiles a direct call of each name against every bundle that
-# carries it and checks each warning and its exact message. If a future cyrius starts
-# warning on `&fn` too, the test step fails naming both functions. Revisit the arrangement
-# then — `cyrius coverage` still needs these two names referenced from a .tcyr — and never
-# answer it with a pattern allowance on the test step's warning gate.
-var ba_dep_get = &bayan_json_v_obj_get;
-var ba_dep_alias = &json_v_obj_get;
-assert_eq(fncall2(ba_dep_get, ba_doc, "b"), bayan_json_v_obj_get_by_cstr(ba_doc, "b"),
-  "deprecated bayan_json_v_obj_get still answers: the same node as _by_cstr");
-assert_neq(fncall2(ba_dep_get, ba_doc, "b"), 0, "deprecated bayan_json_v_obj_get still finds the key");
-assert_eq(fncall2(ba_dep_get, ba_doc, "zz"), 0, "deprecated bayan_json_v_obj_get: absent key -> 0");
-assert_eq(fncall2(ba_dep_get, ba_arr, "b"), 0, "deprecated bayan_json_v_obj_get: non-object -> 0");
-assert_eq(fncall2(ba_dep_get, 0, "b"), 0, "deprecated bayan_json_v_obj_get: null -> 0");
-assert_eq(fncall2(ba_dep_alias, ba_doc, "b"), bayan_json_v_obj_get_by_cstr(ba_doc, "b"), "alias json_v_obj_get");
-assert_eq(fncall2(ba_dep_alias, ba_doc, "a"), ba_arr, "alias json_v_obj_get: the first key too");
-assert_eq(fncall2(ba_dep_alias, ba_doc, "zz"), 0, "alias json_v_obj_get: absent key -> 0");
+# The two DEPRECATED lookups (1.5.10), bayan_json_v_obj_get and its alias json_v_obj_get, are
+# pinned in tests/deprecated_lookup.cyr from 1.5.12. They were reached from here through `&fn`,
+# which cyrius 6.6.12 did not deprecation-check; 6.6.16 warns on every path to a deprecated fn,
+# so no row of this warning-free suite can name them. That program is in the coverage corpus
+# (cyrius.cyml [coverage] programs) and is built with exactly its expected warnings by
+# scripts/deprecated-lookup.sh — never a pattern allowance on the test step's warning gate.
 assert_eq(_ba_same(json_v_parse(str_from(BA_JS)), bayan_json_v_parse(str_from(BA_JS))), 1, "alias json_v_parse");
 assert_eq(_ba_same(json_v_parse_buf(BA_JS, strlen(BA_JS)), bayan_json_v_parse_buf(BA_JS, strlen(BA_JS))), 1,
   "alias json_v_parse_buf");

@@ -73,12 +73,11 @@ cyrius distlib --all                     # regenerate dist/ (the fold artifacts)
 
 ## Consuming
 
-A consumer supplies the stdlib prereqs (notably `result`, which is *not*
-in cyrius's stdlib auto-prepend set) and includes the bundle:
+Every bundle opens with a compile-verified `# Requires` block that includes
+the stdlib leaves its `.deps` sidecar names (cyrius ≥ 6.6.18 distlib), so
+the bundle alone is enough:
 
 ```cyrius
-include "lib/result.cyr"
-include "lib/fnptr.cyr"
 include "lib/bayan.cyr"
 ```
 

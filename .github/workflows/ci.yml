@@ -235,6 +235,12 @@ jobs:
       - name: Test
         run: ./scripts/no-warnings.sh cyrius test
 
+      # The deprecated lookups' answers (1.5.12). From cyrius 6.6.16 every reference
+      # to a deprecated fn warns, so these rows cannot sit in the warning-free suite
+      # above; the script builds them with EXACTLY their expected warnings and runs them.
+      - name: Deprecated lookups still answer — exact expected warnings
+        run: ./scripts/deprecated-lookup.sh build
+
       # `cyrius fuzz` discovers tests/*.fcyr; a harness exits non-zero on any
       # wrong answer.
       - name: Fuzz
@@ -324,6 +330,9 @@ jobs:
 
       - name: Test
         run: ./scripts/no-warnings.sh cyrius test --aarch64
+
+      - name: Deprecated lookups still answer — exact expected warnings
+        run: ./scripts/deprecated-lookup.sh --aarch64 build
 
       # `cyrius fuzz` has no --aarch64, so each tests/*.fcyr is built and run
       # by hand; a harness exits non-zero on any wrong answer. Under qemu the
@@ -522,3 +531,15 @@ jobs:
       # by a toolchain — could be seen. See the DEPRECATED and TYPED_CSTR blocks.
       - name: Every bundle compiles as a downstream consumer
         run: ./scripts/consumer-check.sh "${RUNNER_TEMP}/consumer-check"
+
+      # 1.5.12: under the cyrius 6.6.18 distlib every bundle opens with a
+      # compile-verified "# Requires" include block, so `include "dist/bayan.cyr"`
+      # with nothing before it compiles. `cyrius test` auto-prepends the
+      # manifest's stdlib and would hide a missing block; --no-deps does not.
+      # Against the 1.5.11 bundle this build fails (unknown type 'Str').
+      - name: The bundle compiles with no prior include
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          ./scripts/no-warnings.sh cyrius build --no-deps tests/bayan_raw_include.tcyr build/raw-include
+          ./build/raw-include

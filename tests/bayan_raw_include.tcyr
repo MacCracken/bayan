@@ -1,0 +1,23 @@
+# bayan_raw_include.tcyr — dist/bayan.cyr compiles on its own (1.5.12).
+#
+# Through 1.5.11 the bundle carried no include lines: `cyrius distlib` stripped
+# them, and a consumer had to supply every stdlib leaf named in dist/bayan.deps
+# before `include "dist/bayan.cyr"`, in single-pass order. The cyrius 6.6.18
+# distlib writes a compile-verified "# Requires" block at the top of every
+# bundle, so the bundle alone is enough. This file includes NOTHING before it;
+# lib/assert.cyr comes after, only for the assertions. Against the 1.5.11
+# bundle it does not compile.
+#
+# `cyrius test` auto-prepends the manifest's stdlib, which would hide a missing
+# requires block, so the `dist` CI job also builds this file with --no-deps.
+
+include "dist/bayan.cyr"
+include "lib/assert.cyr"
+
+alloc_init();
+
+var enc = bayan_base64_encode("hello", 5);
+assert_eq(enc != 0, 1, "raw include: bayan_base64_encode returned a buffer");
+assert_eq(streq(enc, "aGVsbG8="), 1, "raw include: bayan_base64_encode(\"hello\") is aGVsbG8=");
+
+var r = assert_summary();
