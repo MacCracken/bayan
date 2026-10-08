@@ -15,9 +15,39 @@
       aarch64 syscall peer (`SYS_UNLINKAT` 35 → 263) is re-vendored; `lib/` is
       111 files, 0 differ against the 6.6.6 snapshot and the release tarball.
 
-## Next patch — follow-ups recorded by cyrius 6.6.13 (2026-10-02)
+## Moving the cyrius pin to 6.7.5 — ✅ done in 1.5.13 (the W2 stdlib wave, 2026-10-08)
 
-- **TOML refusals, the rest of the 1.5.9 rule.** `bayan_toml_escape_a` still answers a refused output
+- [x] Pin 6.6.18 → 6.7.5; `lib/` re-vendored (`deps`, `lib sync --full --relock`), 113 files, 0 differ.
+      The bump surfaced no new error or warning.
+- [x] The TOML refusals below (B-1, B-2, B-3) — fixed with every-allocation-point refusal sweeps.
+- [x] `_D_DEC_CAP` / `_JP_STATE_SIZE` / `_PDF_STATE_SIZE` are `const` and size their 16 stack buffers.
+
+## Later — recorded at the 6.7.5 pin (W2, 2026-10-08)
+
+Not in 1.5.13 (a W2 release carries the pin, the high items and the simplifications 6.7.x allows
+privately; everything else is placed here):
+
+- **B-4 — delegate `bayan_f64_parse` to the stdlib** (the item below). Needs a public,
+  length-bounded `f64_parse` in cyrius (`lib/math.cyr` keeps `_f64_parse_n` internal); cyrius's
+  W2 roadmap names it as the item's prerequisite.
+- **Public constants as `const`** — `JTAG_*`, `TOML_K_*`, `JS_EV_*` and the public `PDF_*` (about 50
+  top-level `var`s). A **minor**: a `const` has no storage, so a consumer's `&NAME` or assignment
+  stops compiling, and a `const` beside a same-name `var` in another fold is a hard error — survey
+  the ecosystem's names first.
+- **`: bool` on the public predicates** (the 27 `bayan_*_is_*` / `_has_*` fns, e.g.
+  `bayan_toml_pair_is_array`) — a minor for the same reason (a `: bool` return is checked).
+- **Flag loops → `loop`** — the five `var go = 1; while (go == 1)` scans (toml ×3, json, cyml)
+  become `loop { … break; }`. Raises nothing past the 6.7.5 floor; no behaviour change.
+- **The SAX callbacks and the Flate hooks → traits** once cyrius ships checked `dyn` (they are
+  hand-rolled fn-pointer dispatch today; ADR 0001 explains why Flate is a hook).
+- **The v1.0 items stand:** `bayan_markdown_*`, mneme's migration, the security audit.
+- **`_d_dec_trim` (`src/dtoa.cyr`) — checked, no defect.** The W2 survey noted it "computes a
+  trimmed length and never stores it"; it does store it (`store64(st, nd)`), and the f64 oracle
+  passes. Nothing to do.
+
+## Follow-ups recorded by cyrius 6.6.13 (2026-10-02) — TOML refusals ✅ done in 1.5.13; f64 delegation open (B-4 above)
+
+- **✅ 1.5.13 — TOML refusals, the rest of the 1.5.9 rule.** `bayan_toml_escape_a` still answers a refused output
   buffer with `str_from("")` from the DEFAULT allocator (1.5.11 fixed the unescape side), and
   `bayan_toml_parse` / `bayan_toml_inline_parse_a` leave their other refusals unchecked: `vec_new` /
   `vec_new_a`, `section_new`, `pair_new`, `vec_push`, and the `str_builder` paths (`_toml_join_parts_a`,
@@ -27,7 +57,7 @@
   parser into `lib/math.cyr` (`f64_parse` / `f64_parse_ok`, over an internal length-bounded
   `_f64_parse_n`), so the ecosystem can carry ONE correctly-rounded parser. Delegating needs the
   length-bounded entry made public in cyrius — ask for it when this is picked up.
-- **At the cyrius 6.6.13 pin bump:** re-vendor `lib/math.cyr` with `cyrius deps` in the same commit — 6.6.13 made `f64_le` / `f64_ge` / `f64_trunc` compiler builtins (reserved names), and a pre-6.6.13 vendored copy still defines them (`reserved keyword`). The Str → `: cstring` warning is quiet on bayan since 1.5.11;
+- **✅ (1.5.12, pin → 6.6.18) — at the cyrius 6.6.13 pin bump:** re-vendor `lib/math.cyr` with `cyrius deps` in the same commit — 6.6.13 made `f64_le` / `f64_ge` / `f64_trunc` compiler builtins (reserved names), and a pre-6.6.13 vendored copy still defines them (`reserved keyword`). The Str → `: cstring` warning is quiet on bayan since 1.5.11;
   keep the warnings gate on the new pin.
 
 ## At the cyrius 6.6.16 pin bump — follow-ups recorded by cyrius 6.6.16 (2026-10-05) — ✅ done in 1.5.12 (pin → 6.6.18)
@@ -66,9 +96,9 @@ expected warnings by `scripts/deprecated-lookup.sh`; the consumer-check comment 
 _Define before tagging v0.1.0:_
 
 - [ ] Public API frozen — every exported symbol documented and tested
-- [ ] Test coverage adequate for the surface area — `coverage --min 30` holds
-      at 36%, but `bigint` (0/20), `cyml` (0/17) and `csv` (0/3) are still
-      referenced by no test in bayan's own suite
+- [x] Test coverage adequate for the surface area — `cyrius coverage --min 100`
+      holds in CI: 503/503 functions, 11/11 files (1.5.13). It is reference
+      coverage, a floor: the oracle vectors and the refusal sweeps check answers
 - [x] Benchmarks captured in [`docs/benchmarks.md`](../benchmarks.md) — 1.5.0
 - [x] A real fuzz harness over untrusted input — 1.5.0
 - [ ] At least one downstream consumer green — mneme's migration to
