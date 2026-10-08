@@ -753,14 +753,17 @@ fn _toml_multiline_end(buf, pos, end): i64 { return _toml_multiline_end_q(buf, p
 # Parses the value starting at `pos`. Returns the value Str, stores its
 # TOML_K_* kind through `out_kind` and the position just after it through
 # `out_pos`. Returns 0 when `a` refuses the value's Str or its decoded copy —
-# never an empty string in its place (1.5.11); the callers stop on it.
+# never an empty string in its place (1.5.11); the callers stop on it. The
+# empty value at end of input is allocated through `a` too (1.5.13; it came
+# from the DEFAULT allocator, on every call, and was overwritten on all but
+# that one path).
 fn _toml_parse_value_a(a, buf, pos, end, out_kind, out_pos): Str {
-    var value = str_from("");
+    var value = 0;
     var vkind = TOML_K_BARE;
     if (pos >= end) {
         store64(out_kind, vkind);
         store64(out_pos, pos);
-        return value;
+        return str_from_a(a, "");
     }
     var vc = load8(buf + pos);
     # Triple-quoted literal string '''...'''
@@ -1032,26 +1035,36 @@ fn _toml_scan_key_a(a, buf, pos, end, parts): i64 {
     return pos;
 }
 
-# Default-allocator wrapper for _toml_scan_key_a.
-fn _toml_scan_key(buf, pos, end, parts): i64 {
-    return _toml_scan_key_a(default_alloc(), buf, pos, end, parts);
-}
-
-# Join parts[from..to) with `.` — the canonical name of a table.
+# Join parts[from..to) with `.` — the canonical name of a table. Returns 0 when
+# `a` refuses the builder, a grow or the result (1.5.13: the builder came from
+# `a` but every append and the result went through the DEFAULT allocator's
+# builder fns, which end the process on a refusal, and a refused builder was
+# appended to at address 0).
 fn _toml_join_parts_a(a, parts, from, to): Str {
     var sb = str_builder_new_a(a);
+    if (sb == 0) { return 0; }
     var ji = from;
     while (ji < to) {
-        if (ji > from) { str_builder_add_cstr(sb, "."); }
-        str_builder_add(sb, vec_get(parts, ji));
+        if (ji > from) {
+            if (str_builder_add_cstr_a(a, sb, ".") < 0) { return 0; }
+        }
+        if (str_builder_add_a(a, sb, vec_get(parts, ji)) < 0) { return 0; }
         ji = ji + 1;
     }
-    return str_builder_build(sb);
+    return str_builder_build_a(a, sb);
 }
 
-# Default-allocator wrapper for _toml_join_parts_a.
-fn _toml_join_parts(parts, from, to): Str {
-    return _toml_join_parts_a(default_alloc(), parts, from, to);
+# Append a new section named `name`, with an empty pairs vec, to `sections`.
+# Returns the section, or 0 when `name` is 0 (a refused join) or `a` refuses
+# the pairs vec, the section or the push (1.5.13).
+fn _toml_section_push_a(a, sections, name): i64 {
+    if (name == 0) { return 0; }
+    var pairs = vec_new_a(a);
+    if (pairs == 0) { return 0; }
+    var s = bayan_toml_section_new_a(a, name, pairs);
+    if (s == 0) { return 0; }
+    if (vec_push_a(a, sections, s) < 0) { return 0; }
+    return s;
 }
 
 # Find a section named `name` among sections[from..). 0 if absent.
@@ -1097,14 +1110,21 @@ fn _toml_section_find(sections, from, name): i64 {
 # escaped string used to come back as an EMPTY value and the parse reported
 # success. bayan_toml_parse_file passes the 0 on; bayan_toml_parse_file_r
 # reports it as Err(TomlIoErr). toml_parse is an alias of this function.
+#
+# 1.5.13: so does EVERY other refusal — the sections and pairs vecs, a
+# section, a pair, a push, a joined table name. They went through the default
+# wrappers, which end the process on a refused push or join, and a refused vec
+# or section was used at address 0 (SIGSEGV).
 fn bayan_toml_parse(src): i64 {
-    var sections = vec_new();
+    var a = default_alloc();
+    var sections = vec_new_a(a);
+    if (sections == 0) { return 0; }
     var data = str_data(src);
     var slen = str_len(src);
     var pos = 0;
 
-    var cur = bayan_toml_section_new(str_from(""), vec_new());
-    vec_push(sections, cur);
+    var cur = _toml_section_push_a(a, sections, str_from_a(a, ""));
+    if (cur == 0) { return 0; }
     # Dotted sub-tables of the current header live at index >= scope.
     var scope = 1;
 
@@ -1123,12 +1143,13 @@ fn bayan_toml_parse(src): i64 {
         # Array of tables: [[name]]
         elif (c == 91 && pos + 1 < slen && load8(data + pos + 1) == 91) {
             pos = pos + 2;
-            var aparts = vec_new();
-            var ap = _toml_scan_key(data, pos, slen, aparts);
+            var aparts = vec_new_a(a);
+            if (aparts == 0) { return 0; }
+            var ap = _toml_scan_key_a(a, data, pos, slen, aparts);
             if (ap == 0 - 2) { return 0; }
             if (ap > 0) { pos = ap; }
-            cur = bayan_toml_section_new(_toml_join_parts(aparts, 0, vec_len(aparts)), vec_new());
-            vec_push(sections, cur);
+            cur = _toml_section_push_a(a, sections, _toml_join_parts_a(a, aparts, 0, vec_len(aparts)));
+            if (cur == 0) { return 0; }
             scope = vec_len(sections);
             # Skip to end of line (past `]]` and any trailing comment).
             while (pos < slen && load8(data + pos) != 10) { pos = pos + 1; }
@@ -1139,20 +1160,22 @@ fn bayan_toml_parse(src): i64 {
         # only as a single-bracket table header.
         elif (c == 91) {
             pos = pos + 1;
-            var hparts = vec_new();
-            var hp = _toml_scan_key(data, pos, slen, hparts);
+            var hparts = vec_new_a(a);
+            if (hparts == 0) { return 0; }
+            var hp = _toml_scan_key_a(a, data, pos, slen, hparts);
             if (hp == 0 - 2) { return 0; }
             if (hp > 0) { pos = hp; }
-            cur = bayan_toml_section_new(_toml_join_parts(hparts, 0, vec_len(hparts)), vec_new());
-            vec_push(sections, cur);
+            cur = _toml_section_push_a(a, sections, _toml_join_parts_a(a, hparts, 0, vec_len(hparts)));
+            if (cur == 0) { return 0; }
             scope = vec_len(sections);
             while (pos < slen && load8(data + pos) != 10) { pos = pos + 1; }
         }
 
         # Key = value
         else {
-            var kparts = vec_new();
-            var kend = _toml_scan_key(data, pos, slen, kparts);
+            var kparts = vec_new_a(a);
+            if (kparts == 0) { return 0; }
+            var kend = _toml_scan_key_a(a, data, pos, slen, kparts);
             if (kend == 0 - 2) { return 0; }
             if (kend < 0) {
                 # No key here at all — a line beginning with `=` or `]`. It
@@ -1170,7 +1193,7 @@ fn bayan_toml_parse(src): i64 {
                     # cannot be fooled by a string whose content starts with `[`.
                     var vk[8];
                     var vp[8];
-                    var value = _toml_parse_value_a(default_alloc(), data, pos, slen, &vk, &vp);
+                    var value = _toml_parse_value_a(a, data, pos, slen, &vk, &vp);
                     if (value == 0) { return 0; }
                     var vkind = load64(&vk);
                     pos = load64(&vp);
@@ -1180,23 +1203,27 @@ fn bayan_toml_parse(src): i64 {
                     var target = cur;
                     var nparts = vec_len(kparts);
                     if (nparts > 1) {
-                        var suffix = _toml_join_parts(kparts, 0, nparts - 1);
+                        var suffix = _toml_join_parts_a(a, kparts, 0, nparts - 1);
+                        if (suffix == 0) { return 0; }
                         var full = suffix;
                         if (str_len(bayan_toml_section_name(cur)) > 0) {
-                            var jb = str_builder_new();
-                            str_builder_add(jb, bayan_toml_section_name(cur));
-                            str_builder_add_cstr(jb, ".");
-                            str_builder_add(jb, suffix);
-                            full = str_builder_build(jb);
+                            var jb = str_builder_new_a(a);
+                            if (jb == 0) { return 0; }
+                            if (str_builder_add_a(a, jb, bayan_toml_section_name(cur)) < 0) { return 0; }
+                            if (str_builder_add_cstr_a(a, jb, ".") < 0) { return 0; }
+                            if (str_builder_add_a(a, jb, suffix) < 0) { return 0; }
+                            full = str_builder_build_a(a, jb);
+                            if (full == 0) { return 0; }
                         }
                         target = _toml_section_find(sections, scope, full);
                         if (target == 0) {
-                            target = bayan_toml_section_new(full, vec_new());
-                            vec_push(sections, target);
+                            target = _toml_section_push_a(a, sections, full);
+                            if (target == 0) { return 0; }
                         }
                     }
-                    vec_push(bayan_toml_section_pairs(target),
-                      bayan_toml_pair_new_kind(vec_get(kparts, nparts - 1), value, vkind));
+                    var pr = bayan_toml_pair_new_kind_a(a, vec_get(kparts, nparts - 1), value, vkind);
+                    if (pr == 0) { return 0; }
+                    if (vec_push_a(a, bayan_toml_section_pairs(target), pr) < 0) { return 0; }
                 }
                 # Skip to end of line
                 while (pos < slen && load8(data + pos) != 10) { pos = pos + 1; }
@@ -1605,11 +1632,14 @@ fn bayan_toml_is_array(value): i64 {
 # sections. A non-inline value yields an EMPTY vec, mirroring
 # bayan_toml_array_parse's behaviour on a non-array. Returns 0 when the
 # allocator refuses a key or a value (1.5.11: a refused escaped value came back
-# as an empty string in a vec reported as success).
+# as an empty string in a vec reported as success), and on every other refusal
+# — the result vec, a key-parts vec, a joined key, a pair, a push (1.5.13: each
+# was used unchecked, so a refused vec was loaded through at address 0).
 
 # 1.5.4 — Allocator-as-first-arg variant of bayan_toml_inline_parse.
 fn bayan_toml_inline_parse_a(a, value): i64 {
     var out = vec_new_a(a);
+    if (out == 0) { return 0; }
     if (value == 0) { return out; }
     var buf = str_data(value);
     var n = str_len(value);
@@ -1628,6 +1658,7 @@ fn bayan_toml_inline_parse_a(a, value): i64 {
         }
         else {
             var kp = vec_new_a(a);
+            if (kp == 0) { return 0; }
             var kend = _toml_scan_key_a(a, buf, pos, n, kp);
             if (kend == 0 - 2) { return 0; }
             if (kend < 0) { go = 0; }
@@ -1640,8 +1671,11 @@ fn bayan_toml_inline_parse_a(a, value): i64 {
                     var iv = _toml_parse_value_a(a, buf, pos, n, &ik, &ip);
                     if (iv == 0) { return 0; }
                     pos = load64(&ip);
-                    vec_push_a(a, out, bayan_toml_pair_new_kind_a(a,
-                        _toml_join_parts_a(a, kp, 0, vec_len(kp)), iv, load64(&ik)));
+                    var ikey = _toml_join_parts_a(a, kp, 0, vec_len(kp));
+                    if (ikey == 0) { return 0; }
+                    var ipr = bayan_toml_pair_new_kind_a(a, ikey, iv, load64(&ik));
+                    if (ipr == 0) { return 0; }
+                    if (vec_push_a(a, out, ipr) < 0) { return 0; }
                 } else {
                     # A key with no `=`. Stop rather than spin: the cursor has
                     # not moved past anything consumable.

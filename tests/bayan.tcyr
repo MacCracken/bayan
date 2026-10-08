@@ -3973,4 +3973,106 @@ ALLOC_MAX = te_max;
 assert_eq(te_def, 0, "toml: escape with its buffer refused is 0 (was an empty string)");
 assert_eq(str_len(bayan_toml_escape(te_long)), 200, "toml: (and escapes it with the limit restored)");
 
+test_group("toml: inline_parse_a checks every allocation (1.5.13)");
+# The result vec, each key's parts vec, the joined key, the pair and the push were used unchecked:
+# a refused vec was loaded through at address 0 (SIGSEGV), and the joined key went through the
+# DEFAULT allocator's builder fns. Every allocation point of one parse is refused ALONE, every other
+# request granted (a fail-after allocator would hide a missing check behind the refusal after it).
+# 17 pairs, so the 17th push grows the result vec past its 16 slots and the push arm is reached; a
+# dotted key exercises the join, an escaped value and a quoted key the decode.
+var ti_sb = str_builder_new();
+str_builder_add_cstr(ti_sb, "{ a = 1, b.c = \"x\\ty\", \"q\" = 'z'");
+var ti_i = 3;
+while (ti_i < 17) {
+    str_builder_add_cstr(ti_sb, ", k");
+    str_builder_add_int(ti_sb, ti_i);
+    str_builder_add_cstr(ti_sb, " = ");
+    str_builder_add_int(ti_sb, ti_i);
+    ti_i = ti_i + 1;
+}
+str_builder_add_cstr(ti_sb, " }");
+var TI_IN = str_builder_build(ti_sb);
+var TI_CNT = test_allocator();
+var ti_full = bayan_toml_inline_parse_a(TI_CNT, TI_IN);
+assert_eq(vec_len(ti_full), 17, "toml: the inline refusal fixture parses to 17 pairs");
+assert_eq(str_eq_cstr(bayan_toml_pair_key(vec_get(ti_full, 1)), "b.c"), 1, "toml: (its dotted key is joined)");
+assert_eq(str_eq_cstr(bayan_toml_pair_value(vec_get(ti_full, 1)), "x\ty"), 1, "toml: (and its value decoded)");
+var ti_n = test_allocator_alloc_count(TI_CNT);
+assert_gt(ti_n, 17 * 4, "toml: (the parse makes a parts vec, a key and a pair per member, and more)");
+var ti_nth = 0;
+var ti_calls = 0;
+fn _ti_refuse_nth(state, size): i64 {
+    ti_calls = ti_calls + 1;
+    if (ti_calls == ti_nth) { return 0; }
+    return alloc(size);
+}
+var TI_ONE = allocator_new(&_ti_refuse_nth, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
+var ti_k = 1;
+var ti_partial = 0;
+while (ti_k <= ti_n) {
+    ti_nth = ti_k;
+    ti_calls = 0;
+    if (bayan_toml_inline_parse_a(TI_ONE, TI_IN) != 0) { ti_partial = ti_partial + 1; }
+    ti_k = ti_k + 1;
+}
+assert_eq(ti_partial, 0, "toml: inline_parse_a, each allocation point refused alone, returns 0");
+ti_nth = 0;
+ti_calls = 0;
+assert_eq(vec_len(bayan_toml_inline_parse_a(TI_ONE, TI_IN)), 17, "toml: (the one-shot allocator refuses nothing else)");
+assert_eq(ti_calls, ti_n, "toml: (and the parse makes every request through the allocator it is handed)");
+
+test_group("toml: bayan_toml_parse returns 0 on every refusal (1.5.13)");
+# Its own contract says 0 when the allocator refuses; only the decode arms (1.5.11) honoured it. The
+# sections and pairs vecs, the sections, the pairs, the pushes and the joined table names went
+# through the default wrappers: a refused push or join ENDED THE PROCESS, and a refused vec or
+# section was used at address 0. The lever is the default allocator's alloc slot, swapped for one
+# that refuses the k-th request alone, for every k of one parse. The document has every arm: root
+# keys, a dotted key at the root and inside a table (the name builder), a quoted key, a [table], two
+# [[array]] entries, 17 pairs in one table and 24 sections, so both vecs grow past 16 slots.
+var tp_sb = str_builder_new();
+str_builder_add_cstr(tp_sb, "top = 1\na.b = \"x\\ty\"\n\"q k\" = 'v'\n[t]\nc.d = 2\nc.e = 3\n");
+str_builder_add_cstr(tp_sb, "[[arr]]\ne = [1, 2]\n[[arr]]\nf = { g = 1 }\n[big]\n");
+var tp_i = 0;
+while (tp_i < 17) {
+    str_builder_add_cstr(tp_sb, "k");
+    str_builder_add_int(tp_sb, tp_i);
+    str_builder_add_cstr(tp_sb, " = 1\n");
+    tp_i = tp_i + 1;
+}
+tp_i = 0;
+while (tp_i < 17) {
+    str_builder_add_cstr(tp_sb, "[s");
+    str_builder_add_int(tp_sb, tp_i);
+    str_builder_add_cstr(tp_sb, "]\n");
+    tp_i = tp_i + 1;
+}
+var TP_DOC = str_builder_build(tp_sb);
+var tp_nth = 0 - 1;
+var tp_calls = 0;
+fn _tp_refuse_nth(state, size): i64 {
+    tp_calls = tp_calls + 1;
+    if (tp_calls == tp_nth) { return 0; }
+    return alloc(size);
+}
+var tp_dv = default_alloc();
+var tp_saved = load64(tp_dv);
+store64(tp_dv, &_tp_refuse_nth);
+var tp_full = bayan_toml_parse(TP_DOC);
+var tp_n = tp_calls;
+var tp_k = 1;
+var tp_partial = 0;
+while (tp_k <= tp_n) {
+    tp_nth = tp_k;
+    tp_calls = 0;
+    if (bayan_toml_parse(TP_DOC) != 0) { tp_partial = tp_partial + 1; }
+    tp_k = tp_k + 1;
+}
+tp_nth = 0 - 1;
+store64(tp_dv, tp_saved);
+assert_eq(vec_len(tp_full), 24, "toml: the refusal document parses to 24 sections");
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(tp_full, 3)), "t.c"), 1, "toml: (a dotted key names t.c)");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(tp_full, 6))), 17, "toml: ([big] holds 17 pairs)");
+assert_gt(tp_n, 100, "toml: (the parse made its requests through the default allocator)");
+assert_eq(tp_partial, 0, "toml: parse, each allocation point refused alone, returns 0 (was exit 1 or SIGSEGV)");
+
 var r = assert_summary();
