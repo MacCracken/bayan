@@ -3947,4 +3947,30 @@ assert_eq(u64_mulmod(0 - 0x02139a018ded68c9, 0 - 0x6cab746fa1a38b8c, 0x7222d728)
   bayan_u64_mulmod(0 - 0x02139a018ded68c9, 0 - 0x6cab746fa1a38b8c, 0x7222d728), "alias u64_mulmod");
 assert_eq(u64_powmod(3, 200, 1000000007), bayan_u64_powmod(3, 200, 1000000007), "alias u64_powmod");
 
+test_group("toml: a refused escape is a failure, not an empty string (1.5.13)");
+# bayan_toml_escape_a answered a refused output buffer with str_from("") — an EMPTY string from the
+# DEFAULT allocator, the shape 1.5.11 removed from the unescape side — so a caller escaping a value
+# for a TOML file it writes got `key = ""` and no failure. Each refusal point returns 0 now.
+var TE_IN = str_from("say \"hi\"\n");
+assert_eq(str_eq_cstr(bayan_toml_escape_a(test_allocator(), TE_IN), "say \\\"hi\\\"\\n"), 1,
+  "toml: (escape_a escapes on an allocator that grants)");
+var te_n = 0;
+var te_partial = 0;
+while (te_n < 2) {
+    var te_fa = test_allocator();
+    test_allocator_fail_after(te_fa, te_n);
+    if (bayan_toml_escape_a(te_fa, TE_IN) != 0) { te_partial = te_partial + 1; }
+    te_n = te_n + 1;
+}
+assert_eq(te_partial, 0, "toml: escape_a with its buffer or its Str refused is 0 (the buffer was an empty string)");
+# The default-allocator form, through ALLOC_MAX: a 200-byte value needs a 1,208-byte buffer, which a
+# limit of 128 refuses while it grants the 16-byte Str.
+var te_long = _tu_doc("", "", "");
+var te_max = ALLOC_MAX;
+ALLOC_MAX = 128;
+var te_def = bayan_toml_escape(te_long);
+ALLOC_MAX = te_max;
+assert_eq(te_def, 0, "toml: escape with its buffer refused is 0 (was an empty string)");
+assert_eq(str_len(bayan_toml_escape(te_long)), 200, "toml: (and escapes it with the limit restored)");
+
 var r = assert_summary();

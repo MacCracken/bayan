@@ -450,7 +450,10 @@ fn bayan_toml_unescape(s): Str {
     return bayan_toml_unescape_a(default_alloc(), s);
 }
 
-# 1.5.3 — Allocator-as-first-arg variant of bayan_toml_escape.
+# 1.5.3 — Allocator-as-first-arg variant of bayan_toml_escape. Returns 0 when
+# `a` refuses the output buffer or the Str header (1.5.13; a refused buffer
+# came back as an EMPTY string from the default allocator — a caller writing
+# a TOML file wrote `key = ""` and reported success).
 fn bayan_toml_escape_a(a, s): Str {
     if (s == 0) { return str_from(""); }
     var n = str_len(s);
@@ -458,7 +461,7 @@ fn bayan_toml_escape_a(a, s): Str {
     # 6 bytes is the worst case per input byte (`\u00XX`), and the +8 covers
     # the NUL with room to spare.
     var out = alloc_via(a, (n * 6) + 8);
-    if (out == 0) { return str_from(""); }
+    if (out == 0) { return 0; }
     var oi = 0;
     var i = 0;
     while (i < n) {
@@ -494,6 +497,7 @@ fn bayan_toml_escape_a(a, s): Str {
 #
 # `load8` is unsigned here (verified), so a continuation byte does not fall
 # into the `c < 32` arm.
+# Returns 0 when the allocator refuses (1.5.13).
 fn bayan_toml_escape(s): Str {
     return bayan_toml_escape_a(default_alloc(), s);
 }
