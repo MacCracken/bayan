@@ -139,7 +139,7 @@ var PDF_MAGIC = 1112494662;
 
 var _PDF_OBJ_SIZE   = 32;    # PdfObj  {tag, a, b, c}
 var _PDF_PAIR_SIZE  = 16;    # PdfPair {key, val}
-var _PDF_STATE_SIZE = 64;    # PdfState — caller-owned, per call
+const _PDF_STATE_SIZE = 64;  # PdfState — caller-owned, per call; sizes every stack state (1.5.13)
 var _PDF_XREF_SIZE  = 24;    # PdfXrefEnt {kind, a, b}
 
 # Caps. Each has its own counter and its own rejection message, so a refusal
@@ -208,8 +208,9 @@ fn bayan_pdf_last_error_pos(): i64 { return _pdf_err_pos; }
 
 # === _pdfe_ — per-call state, errors, byte predicates, integer helpers =======
 
-# Byte count of a PdfState, for `var ps[bayan_pdf_parse_state_size()]`-style
-# sizing by consumers that allocate it dynamically.
+# Byte count of a PdfState, for consumers that allocate one dynamically
+# (`alloc(bayan_pdf_parse_state_size())`). A call is not a constant, so it cannot
+# size a `var ps[N]`; bayan's own stack states use `var ps[_PDF_STATE_SIZE]`.
 fn bayan_pdf_parse_state_size(): i64 { return _PDF_STATE_SIZE; }
 
 # Zero and seed a PdfState over (buf, len) allocating through `a`.
@@ -3639,10 +3640,10 @@ fn bayan_pdf_obj_parse_ctx_a(a, ps, buf, len): i64 {
 # NAMED `_buf`, NOT `_str`: Cyrius routes `X(a, ...)` to `X_str` whenever `a`
 # is Str-typed at the call site, so a cstr+len form occupying that name would
 # silently swallow every `X(someStr)` call in the ecosystem. That is the 1.3.0
-# json breakage, and `var ps[64]` here is 64 BYTES — the full _PDF_STATE_SIZE,
-# not 64 slots (G2).
+# json breakage, and `var ps[_PDF_STATE_SIZE]` here is 64 BYTES — the full
+# PdfState, not 64 slots (G2).
 fn bayan_pdf_obj_parse_buf(buf, len): i64 {
-    var ps[64];
+    var ps[_PDF_STATE_SIZE];
     var o = bayan_pdf_obj_parse_ctx_a(default_alloc(), &ps, buf, len);
     _pdf_err_msg = load64(&ps + 24);
     _pdf_err_pos = load64(&ps + 32);
@@ -5223,7 +5224,7 @@ fn _pdfx_load(doc, ps, start): i64 {
 fn _pdfx_verify(doc): i64 {
     var src = load64(doc + 80);
     if (src == 0) { return 1; }
-    var vps[64];
+    var vps[_PDF_STATE_SIZE];
     _pdfe_state_init(&vps, str_data(src), str_len(src), _pdfe_alloc_of(doc));
     var o8[8];
     var n = load64(doc + 96);
@@ -5713,7 +5714,7 @@ fn _pdfp_objstm_load(doc, container): i64 {
     # The header pairs live in data[0 .. First); bounding the state's length at
     # `first` is what stops a truncated header from reading pair numbers out of
     # the object bodies that follow.
-    var hps[64];
+    var hps[_PDF_STATE_SIZE];
     _pdfe_state_init(&hps, str_data(data), first, a);
     var o8[8];
     var i = 0;
@@ -5774,7 +5775,7 @@ fn _pdfp_objstm_get(doc, container, idx, want_num): i64 {
         _pdfe_doc_err(doc, "object-stream entry offset is outside the container", 0 - 1);
         return 0;
     }
-    var ops[64];
+    var ops[_PDF_STATE_SIZE];
     _pdfe_state_init(&ops, str_data(data), str_len(data), a);
     store64(&ops + 16, start);
     var o = _pdfp_obj_a(a, &ops);
@@ -5840,7 +5841,7 @@ fn _pdfp_get(doc, num): i64 {
     store64(slot, 1);
     var o = 0;
     if (kind == 1) {
-        var gps[64];
+        var gps[_PDF_STATE_SIZE];
         var src = load64(doc + 80);
         _pdfe_state_init(&gps, str_data(src), str_len(src), a);
         o = _pdfp_indirect_at_a(a, &gps, doc, load64(e + 8), num);
@@ -6207,10 +6208,10 @@ fn bayan_pdf_parse_ctx(ps, buf, len): i64 {
 #
 # NAMED `_buf`, NOT `_str`: a trailing `_str` is a reserved cyrius overload
 # slot, so a cstr+len form occupying it would silently swallow every
-# `bayan_pdf_parse(someStr)` call in the ecosystem. `var ps[64]` is 64 BYTES,
-# which is exactly _PDF_STATE_SIZE (G2).
+# `bayan_pdf_parse(someStr)` call in the ecosystem. `var ps[_PDF_STATE_SIZE]`
+# is 64 BYTES, a whole PdfState (G2).
 fn bayan_pdf_parse_buf(buf, len): i64 {
-    var ps[64];
+    var ps[_PDF_STATE_SIZE];
     var d = bayan_pdf_parse_ctx_a(default_alloc(), &ps, buf, len);
     _pdf_err_msg = load64(&ps + 24);
     _pdf_err_pos = load64(&ps + 32);
@@ -6220,7 +6221,7 @@ fn bayan_pdf_parse_buf(buf, len): i64 {
 # Parse a PDF held in a Str, allocating the document through `a`.
 fn bayan_pdf_parse_a(a, src: Str): i64 {
     if (src == 0) { return 0; }
-    var ps[64];
+    var ps[_PDF_STATE_SIZE];
     var d = bayan_pdf_parse_ctx_a(a, &ps, str_data(src), str_len(src));
     _pdf_err_msg = load64(&ps + 24);
     _pdf_err_pos = load64(&ps + 32);
@@ -7766,7 +7767,7 @@ fn _pdfu_cmap_a(a, doc, data: Str, dflt): i64 {
     if (data == 0) { return m; }
     var len = str_len(data);
     if (len == 0) { return m; }
-    var ps[64];
+    var ps[_PDF_STATE_SIZE];
     var kw16[16];
     _pdfe_state_init(&ps, str_data(data), len, a);
     while (1 == 1) {
@@ -8648,8 +8649,8 @@ fn _pdfc_warn_type0(doc, pg): i64 {
 # Extract one page's text as UTF-8, allocating through `a`. The empty Str on a
 # bad handle or an undecodable content stream — never 0, so str_len is safe.
 #
-# The PdfState is a 64-BYTE stack local (G2: `var ps[64]` is bytes, and 64 is
-# exactly _PDF_STATE_SIZE), so two threads extracting from the same document
+# The PdfState is a 64-BYTE stack local (G2: `var ps[_PDF_STATE_SIZE]` is
+# bytes, a whole PdfState), so two threads extracting from the same document
 # share no cursor. That is the thoth lesson applied at the outermost layer as
 # well as the innermost.
 fn bayan_pdf_page_extract_text_a(a, doc, pg): Str {
@@ -8668,7 +8669,7 @@ fn bayan_pdf_page_extract_text_a(a, doc, pg): Str {
     if (str_len(content) == 0) { return _pdfo_empty_bytes(); }
     var sb = str_builder_new_a(a);
     if (sb == 0) { return _pdfo_empty_bytes(); }
-    var ps[64];
+    var ps[_PDF_STATE_SIZE];
     _pdfe_state_init(&ps, str_data(content), str_len(content), a);
     # The page's /Resources /Font dictionary is what turns a Tf operand into a
     # decoding. The font maps themselves are cached on the DOCUMENT's

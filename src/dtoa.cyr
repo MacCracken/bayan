@@ -601,8 +601,11 @@ fn _d_decexp_index(E): i64 {
 # 800 digits are enough because an f64 midpoint has at most 767 significant
 # decimal digits; past them, only whether ANY nonzero digit follows matters.
 # The state lives in a caller-owned block so the parser stays reentrant:
-#   st+0 nd, st+8 dp, st+16 trunc. Buffers: digits 800 B, shift scratch 832 B.
-var _D_DEC_CAP = 800;
+#   st+0 nd, st+8 dp, st+16 trunc. Buffers: digits _D_DEC_CAP bytes, shift
+#   scratch _D_DEC_CAP + 32 (a left shift's product holds nd + 18 digits).
+# A `const` (1.5.13): the stack buffers in _d_exact are sized by it, so the
+# capacity every bound check tests and the bytes reserved are one fact.
+const _D_DEC_CAP = 800;
 # Largest shift per step. Every intermediate stays below 10 * 2^59 < 2^63, so the
 # signed compares and `/` on i64 are exact.
 var _D_DEC_MAXSH = 59;
@@ -789,8 +792,8 @@ fn _d_dec_set(dg, st, s, n, xe): i64 {
 # Scales the decimal into [0.5, 1) by exact binary shifts, counting them, then
 # reads off the top 53 bits with one correct rounding (Go: decimal.floatBits).
 fn _d_exact(s, n, xe, neg): i64 {
-    var dg[800];
-    var tmp[832];
+    var dg[_D_DEC_CAP];
+    var tmp[_D_DEC_CAP + 32];
     var st[24];
     var sign = 0;
     if (neg != 0) { sign = _D_BIT63; }

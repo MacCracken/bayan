@@ -302,7 +302,7 @@ fn _yp_is_json_number(ptr, len): i64 {
 # accepted numbers identically.
 fn _yp_try_number(ptr, len): i64 {
     if (_yp_is_json_number(ptr, len) == 0) { return 0; }
-    var nps[48];
+    var nps[_JP_STATE_SIZE];
     _jp_state_init(&nps, ptr, len);
     var v = _jp_parse_number(&nps);
     if (v == 0) { return 0; }
@@ -809,7 +809,7 @@ fn bayan_yaml_parse_ctx_str(ps, src): i64 {
 # Cyrius routes `X(<Str>, ...)` to `X_str` when that name exists, so a cstr+len
 # form may never occupy it. See CHANGELOG [1.3.0].
 fn bayan_yaml_parse_buf(buf, len): i64 {
-    var ps[48];
+    var ps[_JP_STATE_SIZE];
     var v = bayan_yaml_parse_ctx(&ps, buf, len);
     _yaml_err_msg = load64(&ps + 24);
     _yaml_err_pos = load64(&ps + 32);
