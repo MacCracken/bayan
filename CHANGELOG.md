@@ -2,6 +2,60 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.13] — 2026-10-08
+
+Patch release for the cyrius **6.7.5** stdlib wave (W2). The toolchain pin moves **6.6.18 → 6.7.5**,
+and the three TOML refusal defects the 1.5.11 review found are fixed. Public API: no addition, no
+removal; the TOML functions below now report a refused allocation (0) where they returned an empty
+string, ended the process, or faulted. ⚠ The sources now use `const` (6.7.2+): building bayan, or a
+`dist/` bundle, needs cyrius ≥ 6.7.2.
+
+### Fixed
+
+- **`bayan_toml_escape_a` / `bayan_toml_escape` answered a refused buffer with an empty string**
+  (B-1) — `str_from("")`, from the DEFAULT allocator. A caller escaping a value for a TOML file it
+  writes wrote `key = ""` and saw no failure. They return 0, as the unescape side has since 1.5.11.
+- **`bayan_toml_inline_parse_a` used its allocations unchecked** (B-2). A refused result vec,
+  key-parts vec, joined key, pair or push was used as if granted — a refused vec was loaded through
+  at address 0 (SIGSEGV). `_toml_join_parts_a` took its builder from `a` but appended and built
+  through the default allocator's builder fns, which end the process on a refusal; it now stays on
+  `a` and returns 0. The empty end-of-input value in `_toml_parse_value_a` also comes from `a` (it
+  was a default-allocator Str made on every call). Every refusal returns 0.
+- **`bayan_toml_parse` broke its own "0 on a refusal" contract** (B-3) everywhere but the decode
+  arms. Its sections and pairs vecs, sections, pairs, pushes and joined table names went through
+  the default wrappers: a refused push or join exited the process with status 1, and a refused
+  vec or section was used at address 0. It threads `default_alloc()` through the `_a` forms and
+  returns 0 on every refusal. `bayan_toml_parse_file` passes the 0 on and `bayan_toml_parse_file_r`
+  reports it as `Err(TomlIoErr)`, as for a refused decode.
+
+### Changed
+
+- **cyrius pin `6.6.18` → `6.7.5`.** `lib/` re-vendored by `cyrius deps`, then `cyrius lib sync
+  --full --relock`: 113 files, byte-identical to the 6.7.5 snapshot (written from the 6.7.5 tag),
+  and `cyrius.lock` covers all 113. The bump needed no source change and surfaced no warning.
+- **`_D_DEC_CAP`, `_JP_STATE_SIZE` and `_PDF_STATE_SIZE` are `const`, and size every stack buffer
+  they describe** — dtoa's exact-decimal digits and shift scratch, the three json and two yaml
+  parser states, and all nine PdfState locals in pdf.cyr (16 sites). The capacity the bound checks
+  read and the bytes reserved were hand-copied literals; they are one fact now. The names are
+  private; no behaviour change.
+- The default-allocator wrappers `_toml_scan_key` and `_toml_join_parts` had no caller left and
+  are removed (private).
+- **`dist/` regenerated** (`cyrius distlib --all`, all 10 bundles): `bayan.cyr`, `bayan-json`,
+  `-yaml`, `-toml` and `-pdf` carry the source changes, the rest change only their version header.
+  No `.deps` sidecar changes.
+
+### Tests
+
+- **Every allocation point refused alone** for the two parsers: `bayan_toml_inline_parse_a` on a
+  17-pair fixture (a push past 16 slots, a dotted key, an escaped value, a quoted key) through an
+  allocator that refuses its k-th request, and `bayan_toml_parse` on a 24-section document with a
+  17-pair table through the default allocator's swapped alloc slot. Each run returns 0; the
+  inline sweep also proves every request goes through the allocator it is handed. Without the fix
+  both groups die of SIGSEGV.
+- `bayan_toml_escape_a` with its buffer, then its Str, refused, and `bayan_toml_escape` under
+  `ALLOC_MAX = 128` — 0 each (they were an empty string).
+- `tests/bayan.tcyr`: **1,476** assertions (from 1,460), 0 failed. Coverage 503/503.
+
 ## [1.5.12] — 2026-10-06
 
 Patch release for the cyrius **6.6.18** sibling regeneration wave. The toolchain pin moves

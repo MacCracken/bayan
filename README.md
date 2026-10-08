@@ -75,7 +75,8 @@ cyrius distlib --all                     # regenerate dist/ (the fold artifacts)
 
 Every bundle opens with a compile-verified `# Requires` block that includes
 the stdlib leaves its `.deps` sidecar names (cyrius ≥ 6.6.18 distlib), so
-the bundle alone is enough:
+the bundle alone is enough. The sources use `const` since 1.5.13, so a bundle
+needs cyrius ≥ 6.7.2 to compile:
 
 ```cyrius
 include "lib/bayan.cyr"
