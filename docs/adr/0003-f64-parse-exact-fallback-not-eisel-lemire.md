@@ -3,6 +3,14 @@
 **Status**: Accepted
 **Date**: 2026-09-23
 
+> **1.5.14: the parser this records now lives in the cyrius stdlib.** cyrius 6.6.13
+> ported it into `lib/math.cyr` under a private prefix (`_d_*` / `_D_*` became
+> `_f64p_*` / `_F64P_*`, e.g. `_F64P_WINDOW`, `_f64p_exact`), and cyrius 6.7.9 made its
+> length-bounded form public as `f64_parse_n(s, n)`. `bayan_f64_parse` keeps its lenient
+> NaN / Inf front and hands every other input to `f64_parse_n`; the `_d_*` parser tiers
+> and the exact-power table were removed from `src/dtoa.cyr`. The decision below stands
+> unchanged — it is now the stdlib's — and the names in it are the 1.5.7–1.5.13 ones.
+
 ## Context
 
 `bayan_f64_parse` (and everything that decodes a JSON or YAML float through it)

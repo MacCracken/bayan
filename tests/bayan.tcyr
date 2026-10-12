@@ -11,6 +11,7 @@ include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fmt.cyr"
+include "lib/math.cyr"
 include "lib/tagged.cyr"
 include "lib/result.cyr"
 include "lib/fnptr.cyr"
@@ -2408,6 +2409,28 @@ var d_js = "[1.621274542797433e-9, 5e125]";
 var d_jv = bayan_json_v_parse_buf(d_js, strlen(d_js));
 assert_eq(bayan_json_v_float(bayan_json_v_arr_get(d_jv, 0)), 0x3E1BDA70DB50D19F, "dtoa 1.5.7: a JSON float decodes exactly");
 assert_eq(bayan_json_v_float(bayan_json_v_arr_get(d_jv, 1)), 0x5A07A2ECC414A03F, "dtoa 1.5.7: so does a one-digit one");
+
+test_group("dtoa: the parser is the stdlib's f64_parse_n behind bayan's lenient front (v1.5.14)");
+# bayan_f64_parse hands every number to lib/math.cyr's f64_parse_n and keeps only its
+# own front: ANY n/N start is NaN and ANY i/I start is +/-Inf, where f64_parse_n takes
+# only a whole `nan` / `inf` and reads every other such start as 0. These rows pin
+# that the leniency stayed on bayan's side; the bits for everything else are the
+# stdlib's (the 1.5.14 differential: the same bits as 1.5.13 on every input).
+assert_eq(bayan_f64_parse("null", 4), 0x7FF8000000000000, "dtoa 1.5.14: null reads as NaN");
+assert_eq(f64_parse_n("null", 4), 0, "dtoa 1.5.14: where the strict stdlib entry says 0");
+assert_eq(bayan_f64_parse("n", 1), 0x7FF8000000000000, "dtoa 1.5.14: a bare n is NaN");
+assert_eq(bayan_f64_parse(" \t-NaN", 7), 0x7FF8000000000000, "dtoa 1.5.14: spaces, a sign, NaN (sign ignored)");
+assert_eq(bayan_f64_parse("i", 1), 0x7FF0000000000000, "dtoa 1.5.14: a bare i is +Inf");
+assert_eq(f64_parse_n("i", 1), 0, "dtoa 1.5.14: where the strict stdlib entry says 0");
+assert_eq(bayan_f64_parse("-In", 3), 0xFFF0000000000000, "dtoa 1.5.14: -In is -Inf");
+assert_eq(bayan_f64_parse("+Infinity", 9), 0x7FF0000000000000, "dtoa 1.5.14: +Infinity is +Inf");
+# The front reads inside the span too: these spans end before the letter.
+assert_eq(bayan_f64_parse("  nan", 2), 0, "dtoa 1.5.14: a whitespace-only span is 0");
+assert_eq(bayan_f64_parse("-inf", 1), 0, "dtoa 1.5.14: a bare sign is 0");
+# A span inside a larger buffer: the bytes after n never count.
+assert_eq(bayan_f64_parse("2.57,", 3), 0x4004000000000000, "dtoa 1.5.14: the span 2.5 of 2.57,");
+assert_eq(bayan_f64_parse("9007199254740993.0001", 16), 0x4340000000000000, "dtoa 1.5.14: a tie inside the span");
+assert_eq(bayan_f64_parse("9007199254740993.0001", 21), 0x4340000000000001, "dtoa 1.5.14: above it, read whole");
 
 test_group("toml: sections, arrays and lookup (v1.5.2)");
 var t_doc = "top = 1\nname = \"demo\"\nlist = [1, 2, 3]\nstrs = [\"a\", \"b\"]\n\n[server]\nhost = \"h\"\nport = 80\n\n[[item]]\nid = 1\n\n[[item]]\nid = 2\n";

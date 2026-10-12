@@ -16,10 +16,12 @@ output = "bayan"
 # on the CONSUMER having these in scope before `include "lib/bayan.cyr"`.
 # NOTE: `result` is required (Result + `?`) but is NOT in cyrius's own
 # stdlib auto-prepend list — consumers of lib/bayan.cyr must include it.
+# `math` (1.5.14): bayan_f64_parse delegates to its f64_parse_n, so a
+# consumer's hand-written include list needs lib/math.cyr before bayan.
 [deps]
 stdlib = [
     "string", "fmt", "alloc", "io", "vec", "str", "syscalls",
-    "assert", "bench", "result", "fnptr", "tagged", "atomic",
+    "assert", "bench", "result", "fnptr", "tagged", "atomic", "math",
 ]
 
 # `cyrius coverage` reads tests/**/*.tcyr plus these programs, as text. The

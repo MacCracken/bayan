@@ -25,7 +25,7 @@ mkdir -p "$OUT"
 # Canonical single-pass include order. cyrius is a single-pass compiler, so a
 # module may only reference symbols defined earlier — the sidecar says WHICH
 # leaves are needed, this list fixes the ORDER they go in.
-ORDER="syscalls string alloc io vec str fmt tagged result fnptr assert bench"
+ORDER="syscalls string alloc io vec str fmt math tagged result fnptr assert bench"
 
 # --- Known-incomplete sidecars ------------------------------------------------
 # EMPTY as of 1.5.5, and that is the point of the list: it is not a permanent

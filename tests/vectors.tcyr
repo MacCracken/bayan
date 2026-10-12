@@ -29,6 +29,7 @@ include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fmt.cyr"
+include "lib/math.cyr"
 include "lib/assert.cyr"
 
 include "src/u128.cyr"

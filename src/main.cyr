@@ -8,7 +8,8 @@
 # NOTE: main.cyr carries its own includes (auto-prepend is skipped for files
 # with include directives), and lists the stdlib prereqs the consumer must
 # supply — `result` in particular (Result/`?`), which is NOT in cyrius's own
-# stdlib auto-prepend set.
+# stdlib auto-prepend set, and `math` (1.5.14: bayan_f64_parse delegates to its
+# f64_parse_n).
 
 include "lib/syscalls.cyr"
 include "lib/string.cyr"
@@ -17,6 +18,7 @@ include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fmt.cyr"
+include "lib/math.cyr"
 include "lib/tagged.cyr"
 include "lib/result.cyr"
 include "lib/fnptr.cyr"

@@ -17,7 +17,11 @@
 #      Tier 2 answers most inputs by itself, from an approximation plus an error
 #      bound; this checks every one of those answers against an independent
 #      algorithm that has no error bound to get wrong. Python checks both of
-#      them in tests/vectors.tcyr.
+#      them in tests/vectors.tcyr. From 1.5.14 the tiers are the stdlib's
+#      (bayan_f64_parse delegates to lib/math.cyr's f64_parse_n), so the exact
+#      tier called here is lib/math.cyr's _f64p_exact, bayan's 1.5.13 _d_exact
+#      under the stdlib's private prefix. It is internal to cyrius: if a pin
+#      renames it, this harness stops compiling, loudly.
 #
 # xorshift64, seeded as the report was (0x9E3779B97F4A7C15), so a failure
 # reproduces exactly.
@@ -31,6 +35,7 @@ include "lib/string.cyr"
 include "lib/alloc.cyr"
 include "lib/io.cyr"
 include "lib/fmt.cyr"
+include "lib/math.cyr"
 
 include "src/dtoa.cyr"
 
@@ -141,7 +146,7 @@ fn main(): i64 {
         var len = fz_decimal(out, info);
         var got = bayan_f64_parse(out, len);
         var ms = load64(info);
-        var want = _d_exact(out + ms, load64(info + 8) - ms, load64(info + 16), load64(info + 24));
+        var want = _f64p_exact(out + ms, load64(info + 8) - ms, load64(info + 16), load64(info + 24));
         if (got != want) { fz_report("tiered vs exact", out, len, want, got); }
         n3 = n3 + 1;
         i = i + 1;

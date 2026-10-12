@@ -25,6 +25,7 @@ include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fmt.cyr"
+include "lib/math.cyr"
 include "lib/assert.cyr"
 include "lib/thread.cyr"
 
@@ -50,10 +51,12 @@ var dt_ready = 0;
 var dt_go = 0;
 if (THREADS_CONCURRENT == 0) { dt_go = 1; }
 
-# Each input needs the tables: 0.1 and 1e22 take the exact-power (Clinger) path,
-# the extremes and the long mantissa take the cached powers, and the format of
-# 0.1's bits is Grisu2 over the cached powers. The fifth answer folds the
-# formatted bytes into one word.
+# The format of 0.1's bits is Grisu2 over the cached powers, the one table the
+# race is about. The four parses read no bayan table from 1.5.14 (bayan_f64_parse
+# delegates to the stdlib's f64_parse_n, whose tables are literals) and stay as
+# rows that the delegated parser answers the same on every thread: 0.1 and 1e22
+# take the exact-power (Clinger) path, the extremes and the long mantissa the
+# cached powers. The fifth answer folds the formatted bytes into one word.
 fn _dt_answers(out): i64 {
     store64(out,      bayan_f64_parse("0.1", 3));
     store64(out + 8,  bayan_f64_parse("1e22", 4));
