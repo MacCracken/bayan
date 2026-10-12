@@ -42,7 +42,7 @@ short on purpose.
 | `base64` | `bayan_base64_*` | standard + URL alphabet, encode/decode |
 | `bigint` | `bayan_u256_*`   | 256-bit unsigned int (add/sub/mul/mod, modular arithmetic, hex) |
 | `u128`   | `bayan_u128_*`   | 128-bit unsigned int (full arithmetic + bitwise + divmod) |
-| `dtoa`   | `bayan_f64_*`    | f64 ⇄ decimal: Grisu2 out, correctly rounded parse in (1.5.7), used by `json` |
+| `dtoa`   | `bayan_f64_*`    | f64 ⇄ decimal: Grisu2 out, correctly rounded parse in (1.5.7; the stdlib's `f64_parse_n` behind bayan's lenient NaN / Inf front from 1.5.14), used by `json` |
 
 ### Per-format sublibs
 
@@ -75,12 +75,18 @@ cyrius distlib --all                     # regenerate dist/ (the fold artifacts)
 
 Every bundle opens with a compile-verified `# Requires` block that includes
 the stdlib leaves its `.deps` sidecar names (cyrius ≥ 6.6.18 distlib), so
-the bundle alone is enough. The sources use `const` since 1.5.13, so a bundle
-needs cyrius ≥ 6.7.2 to compile:
+the bundle alone is enough. From 1.5.14 `bayan_f64_parse` delegates to the
+stdlib's `f64_parse_n`, so a bundle needs cyrius ≥ 6.7.9 to compile:
 
 ```cyrius
 include "lib/bayan.cyr"
 ```
+
+⚠ **From 1.5.14 bayan needs stdlib `math`.** A consumer with a hand-written
+include list must include **`lib/math.cyr`** before `lib/bayan.cyr` (the full
+bundle and the json / yaml sublibs; the others do not), and must have it
+vendored — the `.deps` sidecars of those three name `math`, so `cyrius deps`
+does that.
 
 ### PDF compression is opt-in
 

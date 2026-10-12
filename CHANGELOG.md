@@ -2,6 +2,85 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.14] — 2026-10-11
+
+Patch release. The toolchain pin moves **6.7.5 → 6.7.9**, and `bayan_f64_parse` hands its numbers
+to cyrius's new public `f64_parse_n` instead of carrying its own copy of the parser (B-4). Public
+API: no addition, no removal, and no public function returns anything different for any input —
+the differential under Tests is the proof. ⚠ **bayan now needs stdlib `math`: a consumer with a
+hand-written include list must include `lib/math.cyr` before `lib/bayan.cyr`** (and vendor it; the
+`.deps` sidecars that need it name it). Building bayan, or a `dist/` bundle, needs cyrius ≥ 6.7.9.
+
+### Changed
+
+- **`bayan_f64_parse(s, n)` delegates to the stdlib's `f64_parse_n(s, n)`** (lib/math.cyr, public
+  from cyrius 6.7.9; cyrius issue 2026-10-08-f64-parse-no-public-length-bounded-form). Its core is
+  the port of bayan's own correctly rounded parser that cyrius 6.6.13 took, so the ecosystem now
+  carries one copy of a numerically delicate routine instead of two to keep in step. The one point
+  the two fronts disagree on stays on bayan's side: `f64_parse_n` takes only a whole `nan` / `inf`
+  inside the span and reads any other n/N/i/I start as 0, while bayan's readers have always read
+  ANY n/N start (after spaces / tabs and a sign) as quiet NaN — `null` included — and any i/I start
+  as ±Inf. bayan keeps that front and passes every other input through. `bayan_f64_from_json` and
+  json's `_jp_atof` are unchanged; they call `bayan_f64_parse`.
+- **Removed (private): the parser-only code in `src/dtoa.cyr`** — `_d_diyfp_round`, `_d_approx`,
+  `_d_decexp_index`, `_d_dec_trim`, `_d_dec_step`, `_d_dec_rsh`, `_d_dec_lsh`, `_d_dec_shift`,
+  `_d_dec_round`, `_d_dec_set`, `_d_exact`, `_D_WINDOW`, `_D_UNDECIDED`, `_D_DEC_CAP`,
+  `_D_DEC_MAXSH` and the exact-power table `_D_POW10_EXACT` (with its 23 stores in
+  `_d_init_tables`). `bayan_f64_to_json` (Grisu2) keeps `_D_POW10_SIG`, the once-claimed
+  `_d_init_tables` and every helper it calls. 933 → 463 lines; `dist/bayan.cyr` 735,730 → 716,985
+  bytes (−18,745; 17,567 → 17,098 lines), and the same −18,745 in `bayan-json` and `bayan-yaml`.
+  No bayan file, test or script referenced a removed name except `tests/dtoa.fcyr` (below).
+- **bayan needs stdlib `math`.** It is in `cyrius.cyml [deps].stdlib`; the 6.7.9 distlib adds it to
+  the `.deps` sidecars of the base bundle, `bayan-json` and `bayan-yaml` (10 → 11 leaves) and to
+  their `# Requires` blocks; the hand-written include lists of `src/main.cyr` and the tests that
+  reach the json / yaml number path carry `lib/math.cyr`, and `scripts/consumer-check.sh`'s
+  canonical order places it. `lib/math.cyr` includes nothing and defines no name bayan defines
+  (its parser helpers carry a private `_f64p_` prefix for exactly that reason): every build here
+  is warning-free, including the differential's binary, which holds both parsers and math.cyr.
+- **cyrius pin `6.7.5` → `6.7.9`.** `lib/` re-vendored by `cyrius deps`, then `cyrius lib sync
+  --full --relock`: 113 files, byte-identical to the 6.7.9 snapshot; `cyrius.lock` covers all 113.
+  The 1.5.13 sources built and tested warning-free on 6.7.9 before any change, with `dist/`
+  unchanged.
+- **Parse cost rose**, measured by the bench's per-tier rows (minimum of 9 interleaved runs):
+  tier 1 132 → 172 ns (+30%), tier 2 227 → 321 ns (+41%), tier 3 +6–9%. The stdlib core keeps its
+  cached powers as hex text and decodes one per lookup (~50 ns, against a ~3 ns load from bayan's
+  table), and the input's front is scanned three times (bayan's, the strict entry's, the core's).
+  See [`docs/benchmarks.md`](docs/benchmarks.md).
+- **`dist/` regenerated** (`cyrius distlib --all`, all 10 bundles): `bayan.cyr`, `bayan-json` and
+  `bayan-yaml` carry the change; the other seven change only their version header.
+- ADR-0003 records that the parser it describes now lives in the stdlib.
+
+### Tests
+
+- **Differential, 1.5.13 against 1.5.14 — 0 mismatches.** The 1.5.13 `bayan_f64_parse` (from the
+  tag, renamed `_d_` → `_o_`) and the new one, in one binary, return the same 64-bit pattern for
+  every one of **1,145,999 strings**, each run four ways: the span followed by more digits
+  (n = length); NUL-terminated (n = 2³¹−1, and `bayan_f64_from_json`); the span ending at a
+  PROT_NONE page (a read of `s[n]` faults); and the span cut at a random point, at 0, negative, or
+  past its end — 5.7 million comparisons. The strings: **27,296** from bayan's own tests (both
+  `f64*.vec` files, every string literal and number token in `tests/`, the fixtures' numbers, the
+  explicit-length calls); **18,707** from cyrius's `tests/tcyr/math/f64_parse_rounding.tcyr`
+  (its corpus, its explicit-length rows with their n, the 10,000 two-decimal literals with a digit
+  after the span) and the other cyrius f64 tests' literals; **1,099,996** generated — 297,297
+  random decimals (spaces / tabs, signs, 0–30 integer and fraction digits, leading zeros, 1–7-digit
+  and garbage exponents, trailing bytes), 297,297 near-halfway (exact binary midpoints written in
+  full, ± a far digit, cut to 16–60 digits and nudged, across the normal, subnormal and overflow
+  seams), 198,198 shortest-repr and `%.17g` / `%.Ne`, 59,459 subnormal, 49,549 overflow, 79,279
+  garbage, 39,639 n/N/i/I starts, 39,639 long mantissas (to 830 digits), 39,639 integers around
+  2⁵³. Also on aarch64 under qemu: 0 mismatches. The 87 cached and 23 exact powers compare equal to
+  the stdlib's literals, and a comment-stripped diff of the 1.5.13 tiers against `lib/math.cyr`'s
+  core, names mapped, differs only in how `UNDECIDED` is spelled (the same bits), the exact powers'
+  table load against an if-chain, and the lazy table init. Three mutants of the new front each turn
+  the differential red (`N` not NaN; `n + 1`; a span capped at 600 bytes). The harness is not
+  committed: it carries the whole 1.5.13 parser.
+- `tests/bayan.tcyr`: **1,489** assertions (from 1,476), 0 failed. The 13 new rows pin bayan's
+  lenient front against the strict stdlib entry (`null`, a bare `n` / `i`, signed and spaced
+  `NaN` / `In` / `+Infinity`), spans that end before the letter, and the span bound (`2.57,` at
+  n = 3; a tie inside the span, and above it read whole). Coverage 503/503.
+- `tests/dtoa.fcyr`'s third property (the tiered parser against the exact tier alone, 200,000
+  decimals) calls `lib/math.cyr`'s `_f64p_exact`, the stdlib's copy of the former `_d_exact`.
+  `tests/dtoa_init.tcyr`'s comment says what its rows race now: only the format reads a bayan table.
+
 ## [1.5.13] — 2026-10-08
 
 Patch release for the cyrius **6.7.5** stdlib wave (W2). The toolchain pin moves **6.6.18 → 6.7.5**,

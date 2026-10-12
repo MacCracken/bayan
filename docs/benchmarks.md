@@ -75,6 +75,34 @@ because a batch yields a single sample.
   shifting beyond that, and the scanner saturates the exponent. So `1e99999999`
   costs no more than `1e400`.
 
+## f64 parsing — delegated to the stdlib's `f64_parse_n` (1.5.14)
+
+- **Toolchain**: cyrius 6.7.9 · **bayan**: 1.5.13 vs 1.5.14, both built on the 6.7.9 pin · same host,
+  under load from other work (the medians sit within 1% of the minimums, so the gap is not noise).
+- **Method**: as above — the **minimum of 9 interleaved runs** of the two builds of `tests/bayan.bcyr`.
+
+| Input | Tier | 1.5.13 | 1.5.14 | Δ |
+|---|---|---:|---:|---:|
+| `2.718281828459045` | 1 (Clinger) | 132 ns | 172 ns | +30% |
+| `1.7976931348623157e308` | 2 (DiyFp) | 227 ns | 321 ns | +41% |
+| `1.621274542797433e-9` (a near-tie) | 3 (exact) | 1.27 µs | 1.38 µs | +8.5% |
+| `9007199254740993` (an exact binary tie) | 3 (exact) | 1.94 µs | 2.05 µs | +5.6% |
+
+### Reading these
+
+- **The answers did not move; the cost did.** The algorithm is the same (the stdlib core is a
+  port of bayan's), so the delta is in how it is reached and how it reads its constants. Measured
+  layer by layer in one binary (minimums of 4): tier 1 — 1.5.13's parser 135 ns, the stdlib core
+  `_f64_parse_n` 137, `f64_parse_n` 151, `bayan_f64_parse` 171; tier 2 — 221, 282, 299, 345.
+- **Tier 2's largest share is the stdlib's table read.** `lib/math.cyr` keeps its 87 cached
+  powers as hex text and decodes one (16 hex digits) per lookup: ~50 ns against a ~3 ns load from
+  bayan's table, which is built once on first use. The stdlib chose literals so there is nothing
+  to initialise or race between threads.
+- **The rest is three fronts.** `bayan_f64_parse` scans spaces, sign and the n/N/i/I letter;
+  `f64_parse_n`'s strict front scans them again, and the core a third time — ~15–35 ns together.
+  bayan keeps its own front because the stdlib's public entry is strict about `nan` / `inf` and
+  bayan's readers are not.
+
 ### Not yet measured
 
 Compression (the Flate hooks), multi-page documents at scale, and the

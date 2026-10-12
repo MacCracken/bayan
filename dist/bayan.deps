@@ -8,5 +8,6 @@ str
 io
 result
 atomic
+math
 fmt
 fnptr

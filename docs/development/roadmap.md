@@ -22,14 +22,21 @@
 - [x] The TOML refusals below (B-1, B-2, B-3) — fixed with every-allocation-point refusal sweeps.
 - [x] `_D_DEC_CAP` / `_JP_STATE_SIZE` / `_PDF_STATE_SIZE` are `const` and size their 16 stack buffers.
 
+## Moving the cyrius pin to 6.7.9 — ✅ done in 1.5.14 (B-4, 2026-10-11)
+
+- [x] Pin 6.7.5 → 6.7.9; `lib/` re-vendored (`deps`, `lib sync --full --relock`), 113 files, 0 differ.
+- [x] **B-4 — `bayan_f64_parse` delegates to the stdlib's `f64_parse_n`** (public from cyrius 6.7.9,
+      cyrius issue 2026-10-08-f64-parse-no-public-length-bounded-form). bayan keeps its lenient
+      n/N → NaN, i/I → ±Inf front; the `_d_*` parser tiers and the exact-power table are removed
+      (`src/dtoa.cyr` 933 → 463). Bit-identical to 1.5.13 on a 1,145,999-string differential in
+      four modes (x86_64, and aarch64 under qemu). bayan now needs stdlib `math`.
+
 ## Later — recorded at the 6.7.5 pin (W2, 2026-10-08)
 
 Not in 1.5.13 (a W2 release carries the pin, the high items and the simplifications 6.7.x allows
 privately; everything else is placed here):
 
-- **B-4 — delegate `bayan_f64_parse` to the stdlib** (the item below). Needs a public,
-  length-bounded `f64_parse` in cyrius (`lib/math.cyr` keeps `_f64_parse_n` internal); cyrius's
-  W2 roadmap names it as the item's prerequisite.
+- ~~**B-4 — delegate `bayan_f64_parse` to the stdlib**~~ — ✅ done in 1.5.14 (above).
 - **Public constants as `const`** — `JTAG_*`, `TOML_K_*`, `JS_EV_*` and the public `PDF_*` (about 50
   top-level `var`s). A **minor**: a `const` has no storage, so a consumer's `&NAME` or assignment
   stops compiling, and a `const` beside a same-name `var` in another fold is a hard error — survey
@@ -43,9 +50,9 @@ privately; everything else is placed here):
 - **The v1.0 items stand:** `bayan_markdown_*`, mneme's migration, the security audit.
 - **`_d_dec_trim` (`src/dtoa.cyr`) — checked, no defect.** The W2 survey noted it "computes a
   trimmed length and never stores it"; it does store it (`store64(st, nd)`), and the f64 oracle
-  passes. Nothing to do.
+  passes. Nothing to do. (Removed at 1.5.14 with the rest of the parser tiers.)
 
-## Follow-ups recorded by cyrius 6.6.13 (2026-10-02) — TOML refusals ✅ done in 1.5.13; f64 delegation open (B-4 above)
+## Follow-ups recorded by cyrius 6.6.13 (2026-10-02) — TOML refusals ✅ done in 1.5.13; f64 delegation ✅ done in 1.5.14
 
 - **✅ 1.5.13 — TOML refusals, the rest of the 1.5.9 rule.** `bayan_toml_escape_a` still answers a refused output
   buffer with `str_from("")` from the DEFAULT allocator (1.5.11 fixed the unescape side), and
@@ -53,7 +60,7 @@ privately; everything else is placed here):
   `vec_new_a`, `section_new`, `pair_new`, `vec_push`, and the `str_builder` paths (`_toml_join_parts_a`,
   the dotted-key builder), which end the process on a refusal and allocate from the default allocator.
   Found by the 1.5.11 review.
-- **Delegate `bayan_f64_parse` to the stdlib.** cyrius 6.6.13 ported bayan 1.5.10's correctly-rounded
+- **✅ 1.5.14 — Delegate `bayan_f64_parse` to the stdlib.** cyrius 6.6.13 ported bayan 1.5.10's correctly-rounded
   parser into `lib/math.cyr` (`f64_parse` / `f64_parse_ok`, over an internal length-bounded
   `_f64_parse_n`), so the ecosystem can carry ONE correctly-rounded parser. Delegating needs the
   length-bounded entry made public in cyrius — ask for it when this is picked up.

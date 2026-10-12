@@ -2,11 +2,23 @@
 
 > Refreshed every release. CLAUDE.md is preferences/process/procedures
 > (durable); this file is **state** (volatile).
-> Last refreshed: 2026-10-08.
+> Last refreshed: 2026-10-11.
 
 ## Version
 
-**1.5.13** — a patch for the cyrius 6.7.5 stdlib wave (W2); pin **6.6.18 → 6.7.5**. Three TOML
+**1.5.14** — a patch; pin **6.7.5 → 6.7.9**. `bayan_f64_parse` delegates to the stdlib's
+`f64_parse_n(s, n)` (public from cyrius 6.7.9; its core is the port of bayan's own parser that
+cyrius 6.6.13 took) and keeps only its lenient front — any n/N start is NaN, any i/I start ±Inf —
+on its side (B-4). The parser-only `_d_*` tiers and the exact-power table are gone: `src/dtoa.cyr`
+933 → 463 lines, `dist/bayan.cyr` −18,745 bytes. Proved bit-identical to 1.5.13 by a differential
+over 1,145,999 strings in four modes (span + digits after, NUL-terminated, span at a PROT_NONE
+page, span cut mid-number) — 0 mismatches. ⚠ **bayan now needs stdlib `math`**: the bundles'
+`# Requires` blocks and the json / yaml / base `.deps` sidecars carry it; a consumer with a
+hand-written include list adds `lib/math.cyr` before `lib/bayan.cyr`. The sources and `dist/`
+need cyrius ≥ 6.7.9. Parse cost rose (the stdlib core decodes its cached powers from hex text on
+every call): tier 1 +30%, tier 2 +41%, tier 3 +6–9% (see [`benchmarks.md`](../benchmarks.md)).
+
+Before it, **1.5.13** — a patch for the cyrius 6.7.5 stdlib wave (W2); pin **6.6.18 → 6.7.5**. Three TOML
 refusal fixes, each with an every-allocation-point sweep: `bayan_toml_escape(_a)` returns 0 on a
 refused buffer (was an empty default-allocator string, B-1); `bayan_toml_inline_parse_a` checks its
 vecs, joined keys, pairs and pushes, and `_toml_join_parts_a` stays on its allocator (B-2);
@@ -176,10 +188,11 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.7.5`, bumped at 1.5.13 from `6.6.18` (`cyrius.cyml [package].cyrius`);
+- **Cyrius pin**: `6.7.9`, bumped at 1.5.14 from `6.7.5` (`cyrius.cyml [package].cyrius`);
   `lib/` re-vendored by `cyrius deps` then `cyrius lib sync --full --relock`: 113 files, 0 differ
-  against the 6.7.5 snapshot (its `SOURCE_COMMIT` says written from the tag), `cyrius.lock` 113
-  entries. **Minimum toolchain for the sources and `dist/`: 6.7.2** (`const`). At 1.5.12 it moved
+  against the 6.7.9 snapshot, `cyrius.lock` 113 entries (`cyrius deps --verify`: 113 verified).
+  **Minimum toolchain for the sources and `dist/`: 6.7.9** (`f64_parse_n`; 6.7.2 for `const`
+  before it). At 1.5.13 it moved `6.6.18` → `6.7.5` the same way. At 1.5.12 it moved
   `6.6.12` → `6.6.18` the same way. At 1.5.10 it moved `6.6.11` → `6.6.12`: `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
   --full` (22 files changed); `diff -rq` against the **6.6.12 release tarball**'s
   `lib/` (sha256 checked against the release's `.sha256`): 111 files, 0 differ.
@@ -205,7 +218,7 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 - **Pin history**: 6.4.68 → 6.5.4 (1.4.0) → 6.5.16 (commit `97a3476`,
   2026-08-10, **undocumented**) → 6.5.28 (1.4.2) → 6.5.33 (1.5.0) → 6.5.36
   (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8) → 6.6.11 (1.5.9)
-  → 6.6.12 (1.5.10) → 6.6.18 (1.5.12) → 6.7.5 (1.5.13).
+  → 6.6.12 (1.5.10) → 6.6.18 (1.5.12) → 6.7.5 (1.5.13) → 6.7.9 (1.5.14).
 - **Caveat on the local snapshot — still live.** `~/.cyrius/versions/<pin>/lib`
   on a machine that also develops cyrius can carry unreleased in-flight edits at
   the same version number: at 6.5.28 its `freelist.cyr` had been edited in place
@@ -217,7 +230,7 @@ Eight data/big-integer modules carved byte-identical from cyrius stdlib
 (public functions prefixed `bayan_`), plus two greenfield modules written
 in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
 `json.cyr` in bundle order) and `pdf` (1.5.0 — cross-dep-free, so its position
-is convention rather than necessity). Re-measured from the tree 2026-10-08 (1.5.13):
+is convention rather than necessity). Re-measured from the tree 2026-10-11 (1.5.14):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
@@ -225,9 +238,9 @@ is convention rather than necessity). Re-measured from the tree 2026-10-08 (1.5.
 | `src/json.cyr`   | 2164 | 71 | `bayan_json_*` |
 | `src/toml.cyr`   | 1731 | 33 | `bayan_toml_*` |
 | `src/yaml.cyr`   | 899  | 12 | `bayan_yaml_*` |
-| `src/dtoa.cyr`   | 933  | 3  | `bayan_f64_*` |
 | `src/u128.cyr`   | 688  | 35 | `bayan_u128_*` / `bayan_u64_*` |
 | `src/cyml.cyr`   | 576  | 17 | `bayan_cyml_*` |
+| `src/dtoa.cyr`   | 463  | 3  | `bayan_f64_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
 | `src/base64.cyr` | 217  | 4  | `bayan_base64_*` |
 | `src/csv.cyr`    | 149  | 3  | `bayan_csv_*` |
@@ -241,7 +254,10 @@ the defects both releases fixed were invisible to every test that existed.
 
 `dtoa` grew 573 -> **889** lines at 1.5.7 with no new public function: the
 exact decimal tier (`_d_dec_*`, `_d_exact`), the error-window rounding, and
-the derivation of the window in the comment that sets it.
+the derivation of the window in the comment that sets it. It shrank 933 ->
+**463** at 1.5.14, when that parser — by then the stdlib's own copy in
+`lib/math.cyr` — became what `bayan_f64_parse` calls; what remains is Grisu2
+(`bayan_f64_to_json`), its table, and the lenient parse front.
 
 `json` grew 1922 -> **2153** lines and 69 -> **71** public functions at 1.5.10:
 the flat parser's four scanners and its header contract, `bayan_json_parse_a`,
@@ -259,8 +275,8 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **17,408**-line bundle, regenerated via `cyrius distlib`
-  at 1.5.10 with the **release** 6.6.12 toolchain (a second run is byte-identical). This is the artifact folded into
+- `dist/bayan.cyr` — **17,098**-line bundle (17,567 at 1.5.13), regenerated via `cyrius distlib
+  --all` at 1.5.14 on the 6.7.9 pin (a second run is byte-identical). This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
@@ -269,19 +285,20 @@ this is mutation-verified.
   sidecar. Canonical `bayan_*` names only. Every sidecar is complete:
   `scripts/consumer-check.sh` builds all 10 bundles from their declared leaves
   alone, and goes red when a needed one is deleted (checked at 1.5.7). Leaf
-  counts below are what consumer-check reports at 1.5.10 (6.6.12's distlib).
+  counts below are what consumer-check reports at 1.5.14 (6.7.9's distlib); the
+  base bundle declares 11 (1.5.14 added `math` to it and to json / yaml).
 
   | Sublib | Lines | Stdlib leaves |
   |---|---|---|
-  | `bayan-pdf`    | 9538 | 7 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
-  | `bayan-yaml`   | 3955 | 9 (carries `json.cyr` — shared value tree / parser state) |
-  | `bayan-json`   | 3053 | 9 |
-  | `bayan-toml`   | 1656 | 6 |
-  | `bayan-cyml`   | 584  | 6 |
-  | `bayan-u128`   | 696  | 1 |
-  | `bayan-bigint` | 458  | 3 |
-  | `bayan-base64` | 225  | 3 |
-  | `bayan-csv`    | 157  | 4 |
+  | `bayan-pdf`    | 9556 | 7 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
+  | `bayan-yaml`   | 3553 | 11 (carries `json.cyr` — shared value tree / parser state) |
+  | `bayan-json`   | 2651 | 11 |
+  | `bayan-toml`   | 1747 | 6 |
+  | `bayan-cyml`   | 592  | 6 |
+  | `bayan-u128`   | 699  | 1 |
+  | `bayan-bigint` | 462  | 2 |
+  | `bayan-base64` | 229  | 2 |
+  | `bayan-csv`    | 162  | 3 |
 
   `bayan-toml` and `bayan-cyml` stopped listing `fmt` at 1.5.7, and that is
   correct: cyrius 6.6.6's `lib/io.cyr` includes `fmt.cyr` itself, so the `io`
@@ -290,11 +307,16 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,476 asserts, green** @1.5.13 on x86_64 (1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **1,489 asserts, green** @1.5.14 on x86_64 (1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
+
+  **1.5.14 adds** (+13): the f64 parse front — `null`, a bare `n` / `i`, signed and spaced
+  `NaN` / `In` / `Infinity` against the strict stdlib entry (`f64_parse_n` says 0 where bayan says
+  NaN / ±Inf), spans that end before the letter, and three span rows (`2.57,` at n = 3, a tie inside
+  the span and above it read whole). Every value is also what 1.5.13 returned (the differential).
 
   **1.5.13 adds** (+16): the TOML refusal rows — `escape_a` with its buffer or its Str refused
   and `escape` under `ALLOC_MAX = 128` (+4); `inline_parse_a` on a 17-pair fixture with each
@@ -374,7 +396,9 @@ this is mutation-verified.
 - `tests/dtoa_init.tcyr` — **new at 1.5.11**, **12 asserts**: the f64 tables' one-time build. The
   claim/publish protocol rows, then 8 threads held at a start word and released together into
   their FIRST parse and format, each answer equal to the answer after publication. Its own file
-  because it must be the process's first use of the tables. A race is a probability: it pins that
+  because it must be the process's first use of the tables. From 1.5.14 only the format reads a
+  bayan table (the parses go to the stdlib's `f64_parse_n`, whose tables are literals); the parse
+  rows stay as cross-thread agreement rows. A race is a probability: it pins that
   the protocol completes and agrees with itself (300× green on a Pi; the 1.5.10 code did not show
   the race in 300 Pi runs either).
 - `tests/pdf_flate.tcyr` — the compression path, isolated because it is the
@@ -400,7 +424,10 @@ this is mutation-verified.
   (uniform finite doubles; |x| ≈ 1e-16..1e16), plus 200,000 random decimals
   where the tiered parser must agree with the exact tier alone. That checks
   every tier-2 answer against an independent algorithm without Python. The
-  old parser fails 31 of the round-trips. ~8 s, most of it the emitter.
+  old parser fails 31 of the round-trips. ~8 s, most of it the emitter. From
+  1.5.14 the exact tier it calls is `lib/math.cyr`'s `_f64p_exact` (the stdlib's
+  copy of the former `_d_exact`; internal to cyrius, so a rename there stops this
+  harness compiling, loudly).
 - `tests/json.fcyr` — **new at 1.5.10**, the flat JSON parser: 40,000 valid,
   120,000 damaged and 40,000 random documents. Every key is followed by its own
   `:`, every value lies in the source, and the pair list equals an independent
@@ -416,7 +443,8 @@ this is mutation-verified.
 ### Coverage
 
 `cyrius coverage` — **503/503 fns (100%)**, 11/11 files, gated at `--min 100`
-(re-measured at 1.5.13 on 6.7.5; at 1.5.10 on 6.6.12, whose counter matches whole references and
+(re-measured at 1.5.14 on 6.7.9 — removing the private `_d_*` parser fns changes nothing here, the
+counter counts public fns; at 1.5.10 on 6.6.12, whose counter matches whole references and
 excludes `main`; 1.5.10 adds `bayan_json_parse_a` and
 `bayan_json_v_obj_get_by_cstr`).
 
@@ -672,7 +700,8 @@ The 1.5.0 gate lessons still hold and generalise:
 
 Direct (declared in `cyrius.cyml [deps].stdlib`): string, fmt, alloc, io,
 vec, str, syscalls, assert, bench, result, fnptr, tagged, atomic (1.5.11, for
-`dtoa.cyr`'s one-time table build; `alloc.cyr` already includes it). From 1.5.12 (cyrius
+`dtoa.cyr`'s one-time table build; `alloc.cyr` already includes it), math (1.5.14:
+`bayan_f64_parse` delegates to its `f64_parse_n`; `lib/math.cyr` includes nothing). From 1.5.12 (cyrius
 6.6.18's distlib) every dist bundle opens with a compile-verified `# Requires` include block
 naming exactly its sidecar's leaves, so a consumer includes the bundle alone; `assert`,
 `bench` and `tagged` are bayan's own, not a consumer's (the base sidecar no longer lists them).
