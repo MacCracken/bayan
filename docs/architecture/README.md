@@ -6,4 +6,6 @@ Not decisions (those live in [`../adr/`](../adr/)) and not guides (those live in
 
 ## Items
 
-_Empty. Add a numbered entry (`001-kebab-case-title.md`) the first time the code has a non-obvious invariant a reader can't derive. Do not write entries for decisions — those are ADRs._
+- [001 — A `: Str` parameter is a handle, and three PDF constructors keep it](001-str-parameters-are-handles.md) (1.6.0; the analysis was made at the 6.6.6 pin, 1.5.7)
+
+Add the next as `002-kebab-case-title.md`. Do not write entries for decisions — those are ADRs.

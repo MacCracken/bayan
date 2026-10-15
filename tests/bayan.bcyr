@@ -6,6 +6,8 @@
 # font metric measurement, metric word wrap, whole-document serialisation, and
 # whole-document parse + text extraction. 1.5.7 adds the f64 parser, once per
 # tier, because making it correctly rounded moved cost onto the hard inputs.
+# 1.6.0 adds the cyml parse, after a consumer found it twice as slow as it
+# had been since 1.5.1, a change no row here could have shown.
 #
 # Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop ->
 # bench_report. For sub-microsecond operations use a batch of >= 1000 to
@@ -30,6 +32,7 @@ include "lib/bench.cyr"
 
 include "src/pdf.cyr"
 include "src/dtoa.cyr"
+include "src/cyml.cyr"
 
 var B_DICT = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Contents 5 0 R/Resources<</Font<</F1 3 0 R>>>>>>";
 var B_PROSE = "The quick brown fox jumps over the lazy dog and keeps on running well past the right edge of any column you care to name";
@@ -147,6 +150,28 @@ fn main(): i64 {
     while (i < 10000) { bayan_f64_parse("9007199254740993", 16); i = i + 1; }
     bench_batch_stop(b11, 10000);
     bench_report(b11);
+
+    # --- cyml parse (1.6.0) --------------------------------------------------
+    # A font-shaped document, the shape bannermanor parses on every render: a
+    # [font] header, then 95 entries of an 8-row glyph each (8,816 bytes, the
+    # size of its fonts/clean.cyml). 1.5.1 - 1.5.14 tested every byte for a
+    # marker, twice; a row here would have shown that at 1.5.1.
+    var cyb = str_builder_new();
+    str_builder_add_cstr(cyb, "# a comment line\n\n[font]\nschema = 1\nname = \"t\"\nwidth = 7\nheight = 8\ngap = 1\n");
+    i = 0;
+    while (i < 95) {
+        str_builder_add_cstr(cyb, "\n[[entries]]\nchar = \"A\"\n---\n");
+        var row = 0;
+        while (row < 8) { str_builder_add_cstr(cyb, ".#.#.#.\n"); row = row + 1; }
+        i = i + 1;
+    }
+    var cys = str_builder_build(cyb);
+    var b12 = bench_new("cyml_parse (95-entry font, 8.8KB)");
+    bench_batch_start(b12);
+    i = 0;
+    while (i < 1000) { bayan_cyml_parse(str_data(cys), str_len(cys)); i = i + 1; }
+    bench_batch_stop(b12, 1000);
+    bench_report(b12);
 
     return 0;
 }

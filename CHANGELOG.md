@@ -2,6 +2,103 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] — 2026-10-15
+
+Opens the 1.6 line. **`bayan_cyml_parse` takes 0.39× 1.5.14's time.** Since 1.5.1 it had tested
+every byte for an `[[entries]]` marker, twice. bannermanor found it (`font_load_file` ~45% slower
+since bayan 1.5.2). The toolchain pin moves **6.7.9 → 6.7.11**, and the roadmap now lists only open
+work, sequenced as 1.x.x release slots. Public API: nothing added or removed, and no public function
+returns anything different for any input. The differential under Tests is the proof. The sources
+and `dist/` still build on cyrius ≥ 6.7.9 (checked on 6.7.9; see the pin entry).
+
+### Changed
+
+- **`bayan_cyml_parse` hops from marker to marker instead of testing every byte**
+  ([issue 2026-10-15](docs/development/issues/archived/2026-10-15-cyml-parse-scans-every-byte-twice.md),
+  found by bannermanor). 1.5.1 replaced the 256-slot array, which silently truncated larger
+  documents, with two passes: count the markers, allocate exactly, fill. Each pass called
+  `_cyml_is_entries(data, len, i)` at every byte offset. Nearly every call answered "not a
+  newline", so the parse was a function call per input byte, twice, about double 1.4.0's one pass.
+  A marker can only begin a line. The new private `_cyml_next_entries(data, len, i)` returns the
+  first marker position at or after `i`: it walks to each newline in a tight loop and runs the
+  12-byte compare only there, checking a marker flush at byte 0 first (1.5.1's leading-newline fix).
+  Both passes use it. The skip after a match (12 at offset 0, 13 elsewhere) and everything after the
+  scan are unchanged. Measured with both parsers in one binary, fastest of 9 interleaved rounds:
+  75.1 → 29.7 µs (a 69-entry font, 6.4 KB), 103.6 → 41.2 µs (95 entries, 8.8 KB), 328.7 →
+  129.9 µs (300 entries, 27.7 KB). That is 0.39× at every size, faster than 1.0.1's one pass (0.48–0.56×
+  of 1.5.14 in the issue's measurements; see [`docs/benchmarks.md`](docs/benchmarks.md)). The two passes stay. The issue measured one
+  pass into a doubling array as faster again, but `alloc` is a bump allocator, so every outgrown
+  array would stay behind, which 1.5.1's exact count avoids.
+- **Removed (private): `_cyml_is_entries`**, the per-byte test. `_cyml_next_entries` answers what
+  it answered at every offset (pinned below) and carries its 1.5.1 offset-0 note. Nothing else in
+  bayan called it.
+- **cyrius pin `6.7.9` → `6.7.11`.** `lib/` re-vendored by `cyrius deps`, then `cyrius lib sync
+  --full --relock`: 113 files, byte-identical to the 6.7.11 snapshot (installed from the tag,
+  `99c681d2`), and `cyrius.lock` covers all 113 (`deps --verify`). 18 files changed. One is
+  `lib/bayan.cyr`, cyrius's fold of bayan 1.5.14, byte-identical to 1.5.14's `dist/bayan.cyr`. The
+  1.5.14 sources built and tested warning-free on 6.7.11 before any change, and
+  `distlib --all --check` passed with `dist/` unchanged. **The floor stays 6.7.9**, because 1.6.0
+  uses nothing newer. Checked in a scratch copy pinned to 6.7.9 with 6.7.9's `lib/`: the build and
+  all 6 test files are warning-free, and 6.7.9's `distlib --all --check` accepts the bundles 6.7.11
+  generated.
+- **`dist/` regenerated** (`cyrius distlib --all`, all 10 bundles). `bayan.cyr` and `bayan-cyml`
+  carry the scan (+1,400 bytes each; the base bundle goes 17,098 → 17,117 lines). `bayan-pdf` and the
+  base bundle carry one re-worded comment (below). The other seven bundles change only their version
+  header. The `.deps` sidecars are unchanged, and a second regeneration changes nothing.
+- **`src/pdf.cyr`: the encryption refusal's comment** points at the roadmap's "Out of scope"
+  section, which lost its "(for v1.0)". cyrlint wants the cross-reference on the same line as the
+  phrase it tracks, so the two lines are re-wrapped. Lint: 0 warnings, 0 untracked deferrals.
+
+### Tests
+
+- **`tests/bayan.tcyr` +25 (1,489 → 1,514): "cyml: the marker scan hops line to line and finds
+  what the per-byte test found (1.6.0)".** It carries a copy of 1.5.14's `_cyml_is_entries`. From
+  every offset of every document, `_cyml_next_entries` must return the first offset where the copy
+  says yes, or `len`. The documents are the issue repro's 12 plus a 13th, checked at every prefix
+  length; the 95- and 300-entry fonts are checked at full length only. That is 54,803 offsets. The
+  documents' parse results are pinned too. These are 1.5.14's values: the group passes unchanged
+  against the 1.5.14 parser with only the new helper appended. Four mutants each fail the group:
+  dropping the byte-0 marker test, comparing the marker at the newline instead of after it,
+  starting the walk one byte late, and a count pass that skips 12 where the fill pass skips 13. The
+  last survived the repro's 12 documents, whose adjacent markers sit at byte 0, where the skip is 12
+  anyway. The 13th document (adjacent markers after the first line) is what catches it.
+- **Differential, 1.5.14 against 1.6.0: 0 differences.** The 1.5.14 `bayan_cyml_parse` and
+  `_cyml_is_entries`, extracted and renamed, against the new parser in one binary. The input was
+  40,000 random documents of 0–39 tokens (`[[entries]]` with and without its newline or with CRLF,
+  a near-miss `[[entrie]]`, `---` delimiters, lone `[` `]` `\r` `\n`, spaces, text), each parsed at
+  every prefix length: 4,601,648 parses, 1,799,047 of them multi-entry. Compared field by field
+  (header and entry pointers and lengths). 0 differences on x86_64 and on aarch64 under qemu. The
+  four mutants above give 38,635–292,213 differences each.
+- **`tests/bayan.bcyr` gains `cyml_parse (95-entry font, 8.8KB)`**, as the issue asked. A CYML row
+  at 1.5.1 would have shown the slowdown.
+- Gates, all green on the 6.7.11 pin. x86_64: build, smoke, `cyrius test` (6/6), the deprecated
+  lookups, fuzz, bench, coverage 503/503, mulmod speed. aarch64 under qemu: build, smoke, test,
+  deprecated lookups, fuzz, bench. Also: format, lint (0/0 across `src/`), `vet`,
+  `distlib --all --check`, regeneration with no change, and `scripts/consumer-check.sh`.
+
+### Docs
+
+- **[`docs/development/roadmap.md`](docs/development/roadmap.md) lists only open work, in release
+  slots.** The finished sections are gone (the pin moves to 6.6.6, 6.7.5 and 6.7.9, the 6.6.13 and
+  6.6.16 follow-ups, YAML, PDF, M0, and the scaffold's empty M1 / M2), and the CHANGELOG remains
+  their record. What is open, gathered from the roadmap, `state.md`'s Known gaps and Next, and this
+  release's issue: **1.6.1** the rest of the cyml scans, its allocation refusals, flag loops →
+  `loop`, a wrong `u128` comment, a guard against including the vendored `lib/bayan.cyr`, and the
+  unwritten ADRs. **1.6.2** aarch64 128/64 division. **1.7.0** silently wrong output (csv RFC 4180,
+  `bayan_json_build`'s quoting, cyml's adjacent markers). **1.8.0** yaml escapes. **1.9.0**
+  `bayan_markdown_*`. **1.10.0** `const` / `: bool` public names. **1.11.0** TOML into the tagged
+  tree and one lookup key type. **1.12.0** the security audit and the frozen surface. Then the
+  traits work, gated on cyrius shipping checked `dyn`, and the out-of-scope list.
+- **[`docs/architecture/001`](docs/architecture/001-str-parameters-are-handles.md), the first
+  architecture note.** Three PDF constructors keep their `: Str` parameter, which is safe only
+  because cyrius passes a `Str` as a handle. This is the 6.6.6-pin analysis from 1.5.7, and the one
+  part of the deleted roadmap sections that had no other home.
+- [`docs/benchmarks.md`](docs/benchmarks.md) gains the CYML section. The issue is archived with a
+  RESOLVED banner, and its repro moves to `issues/archived/repros/`. After the fix the repro compares
+  the parser with itself, so it stays as the record of the documents and the measurement, and the
+  `.tcyr` group is the guard. `CLAUDE.md` and the README describe the roadmap as open work by
+  release slot. `state.md` refreshed.
+
 ## [1.5.14] — 2026-10-11
 
 Patch release. The toolchain pin moves **6.7.5 → 6.7.9**, and `bayan_f64_parse` hands its numbers

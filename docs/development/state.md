@@ -2,11 +2,21 @@
 
 > Refreshed every release. CLAUDE.md is preferences/process/procedures
 > (durable); this file is **state** (volatile).
-> Last refreshed: 2026-10-11.
+> Last refreshed: 2026-10-15.
 
 ## Version
 
-**1.5.14** — a patch; pin **6.7.5 → 6.7.9**. `bayan_f64_parse` delegates to the stdlib's
+**1.6.0** opens the 1.6 line; pin **6.7.9 → 6.7.11**. `bayan_cyml_parse` takes **0.39×** 1.5.14's
+time. From 1.5.1 its two passes (count the markers, then fill exactly) each tested every byte for an
+`[[entries]]` marker, a call per byte, twice. bannermanor measured `font_load_file` ~45% slower from
+bayan 1.5.2. The new private `_cyml_next_entries` walks to each newline and compares the marker only
+there. A differential of 4,601,648 parses against the 1.5.14 parser found 0 differences (x86_64, and
+aarch64 under qemu), and a `tests/bayan.tcyr` group pins the scan from every offset of 13 documents.
+`tests/bayan.bcyr` gains a CYML row. Public API: unchanged. The floor stays **6.7.9** (checked
+there). The roadmap now lists only open work, in release slots 1.6.1 to 1.12.0. The 6.6.6 by-value
+`Str` analysis moved from the roadmap to `docs/architecture/001`, the first architecture note.
+
+Before it, **1.5.14** — a patch; pin **6.7.5 → 6.7.9**. `bayan_f64_parse` delegates to the stdlib's
 `f64_parse_n(s, n)` (public from cyrius 6.7.9; its core is the port of bayan's own parser that
 cyrius 6.6.13 took) and keeps only its lenient front — any n/N start is NaN, any i/I start ±Inf —
 on its side (B-4). The parser-only `_d_*` tiers and the exact-power table are gone: `src/dtoa.cyr`
@@ -188,11 +198,14 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.7.9`, bumped at 1.5.14 from `6.7.5` (`cyrius.cyml [package].cyrius`);
+- **Cyrius pin**: `6.7.11`, bumped at 1.6.0 from `6.7.9` (`cyrius.cyml [package].cyrius`);
   `lib/` re-vendored by `cyrius deps` then `cyrius lib sync --full --relock`: 113 files, 0 differ
-  against the 6.7.9 snapshot, `cyrius.lock` 113 entries (`cyrius deps --verify`: 113 verified).
+  against the 6.7.11 snapshot (installed from the tag, `99c681d2`; its `SOURCE_COMMIT` records that
+  the tree matches the tag), `cyrius.lock` 113 entries (`cyrius deps --verify`: 113 verified).
   **Minimum toolchain for the sources and `dist/`: 6.7.9** (`f64_parse_n`; 6.7.2 for `const`
-  before it). At 1.5.13 it moved `6.6.18` → `6.7.5` the same way. At 1.5.12 it moved
+  before it). Re-checked at 1.6.0 in a scratch copy pinned to 6.7.9 with its `lib/`: build and all
+  6 test files warning-free, and 6.7.9's `distlib --all --check` accepts the 6.7.11-generated
+  bundles. At 1.5.14 it moved `6.7.5` → `6.7.9` the same way. At 1.5.13 it moved `6.6.18` → `6.7.5` the same way. At 1.5.12 it moved
   `6.6.12` → `6.6.18` the same way. At 1.5.10 it moved `6.6.11` → `6.6.12`: `lib/` re-vendored by `cyrius deps` then `cyrius lib sync
   --full` (22 files changed); `diff -rq` against the **6.6.12 release tarball**'s
   `lib/` (sha256 checked against the release's `.sha256`): 111 files, 0 differ.
@@ -218,7 +231,7 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 - **Pin history**: 6.4.68 → 6.5.4 (1.4.0) → 6.5.16 (commit `97a3476`,
   2026-08-10, **undocumented**) → 6.5.28 (1.4.2) → 6.5.33 (1.5.0) → 6.5.36
   (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8) → 6.6.11 (1.5.9)
-  → 6.6.12 (1.5.10) → 6.6.18 (1.5.12) → 6.7.5 (1.5.13) → 6.7.9 (1.5.14).
+  → 6.6.12 (1.5.10) → 6.6.18 (1.5.12) → 6.7.5 (1.5.13) → 6.7.9 (1.5.14) → 6.7.11 (1.6.0).
 - **Caveat on the local snapshot — still live.** `~/.cyrius/versions/<pin>/lib`
   on a machine that also develops cyrius can carry unreleased in-flight edits at
   the same version number: at 6.5.28 its `freelist.cyr` had been edited in place
@@ -230,7 +243,7 @@ Eight data/big-integer modules carved byte-identical from cyrius stdlib
 (public functions prefixed `bayan_`), plus two greenfield modules written
 in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
 `json.cyr` in bundle order) and `pdf` (1.5.0 — cross-dep-free, so its position
-is convention rather than necessity). Re-measured from the tree 2026-10-11 (1.5.14):
+is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.6.0):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
@@ -239,7 +252,7 @@ is convention rather than necessity). Re-measured from the tree 2026-10-11 (1.5.
 | `src/toml.cyr`   | 1731 | 33 | `bayan_toml_*` |
 | `src/yaml.cyr`   | 899  | 12 | `bayan_yaml_*` |
 | `src/u128.cyr`   | 688  | 35 | `bayan_u128_*` / `bayan_u64_*` |
-| `src/cyml.cyr`   | 576  | 17 | `bayan_cyml_*` |
+| `src/cyml.cyr`   | 595  | 17 | `bayan_cyml_*` |
 | `src/dtoa.cyr`   | 463  | 3  | `bayan_f64_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
 | `src/base64.cyr` | 217  | 4  | `bayan_base64_*` |
@@ -275,8 +288,8 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **17,098**-line bundle (17,567 at 1.5.13), regenerated via `cyrius distlib
-  --all` at 1.5.14 on the 6.7.9 pin (a second run is byte-identical). This is the artifact folded into
+- `dist/bayan.cyr` — **17,117**-line bundle (17,098 at 1.5.14, 17,567 at 1.5.13), regenerated via `cyrius distlib
+  --all` at 1.6.0 on the 6.7.11 pin (a second run is byte-identical). This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
@@ -294,7 +307,7 @@ this is mutation-verified.
   | `bayan-yaml`   | 3553 | 11 (carries `json.cyr` — shared value tree / parser state) |
   | `bayan-json`   | 2651 | 11 |
   | `bayan-toml`   | 1747 | 6 |
-  | `bayan-cyml`   | 592  | 6 |
+  | `bayan-cyml`   | 611  | 6 |
   | `bayan-u128`   | 699  | 1 |
   | `bayan-bigint` | 462  | 2 |
   | `bayan-base64` | 229  | 2 |
@@ -307,11 +320,18 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,489 asserts, green** @1.5.14 on x86_64 (1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **1,514 asserts, green** @1.6.0 on x86_64 and aarch64 under qemu (1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
+
+  **1.6.0 adds** (+25): the cyml marker scan. A copy of 1.5.14's per-byte `_cyml_is_entries` is the
+  reference: from every offset of every document, `_cyml_next_entries` must return the copy's first
+  yes, or `len`. That is 54,803 offsets: the issue repro's 12 documents plus adjacent markers after
+  the first line, each at every prefix length, and two font-shaped documents of 95 and 300 entries.
+  Their parse results are pinned with 1.5.14's values (the group passes on the 1.5.14 parser). Four
+  mutants of the scan each fail it.
 
   **1.5.14 adds** (+13): the f64 parse front — `null`, a bare `n` / `i`, signed and spaced
   `NaN` / `In` / `Infinity` against the strict stdlib entry (`f64_parse_n` says 0 where bayan says
@@ -443,7 +463,7 @@ this is mutation-verified.
 ### Coverage
 
 `cyrius coverage` — **503/503 fns (100%)**, 11/11 files, gated at `--min 100`
-(re-measured at 1.5.14 on 6.7.9 — removing the private `_d_*` parser fns changes nothing here, the
+(re-measured at 1.6.0 on 6.7.11, and at 1.5.14 on 6.7.9 — removing the private `_d_*` parser fns changes nothing here, the
 counter counts public fns; at 1.5.10 on 6.6.12, whose counter matches whole references and
 excludes `main`; 1.5.10 adds `bayan_json_parse_a` and
 `bayan_json_v_obj_get_by_cstr`).
@@ -549,6 +569,9 @@ The 1.5.0 gate lessons still hold and generalise:
 
 ## Known gaps
 
+Each open gap below that is bayan's to close has a slot in [`roadmap.md`](roadmap.md), cited there
+by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
+
 1. ~~**The TOML parser is a documented SUBSET, and seven structural gaps
    degrade silently.**~~ **Fixed in 1.5.4** — all seven.
    [2026-08-28](issues/archived/2026-08-28-toml-structural-subset-gaps.md) is resolved.
@@ -592,6 +615,9 @@ The 1.5.0 gate lessons still hold and generalise:
    every bump, so deleting it is not durable; the durable fix is upstream (a
    `lib sync` self-exclusion) or a build-time guard.
 
+   At 1.6.0 the 6.7.11 snapshot carries bayan **1.5.14**, byte-identical to its `dist/bayan.cyr`,
+   so an accidental include brings back the per-byte cyml scan. Roadmap 1.6.1 adds the guard.
+
    At 1.5.10 the 6.6.12 snapshot carries bayan **1.5.9**: the flat JSON parser
    that misassociates values, the aarch64 bit-serial mulmod, mulmod returning 0
    on cx and powmod returning 1 for exponents ≥ 2^63. An accidental include would
@@ -602,7 +628,8 @@ The 1.5.0 gate lessons still hold and generalise:
    aliases, the sublib split, yaml-into-json's-tree, and the 1.5.3 decision to decode in the parser rather than
    in an accessor — which is the best ADR candidate on the list, because the
    reasoning generalises to yaml and cyml.
-6. **`docs/development/roadmap.md` M1/M2 are still unfilled template stubs.**
+6. ~~**`docs/development/roadmap.md` M1/M2 are still unfilled template stubs.**~~ **Resolved in
+   1.6.0**: the roadmap was cleaned to open work only, in release slots, and the stubs are gone.
 7. **The two flat lookup APIs disagree about their key type.**
    `bayan_json_get(pairs, key)` compares with `str_eq` and needs a **`Str`**;
    `bayan_toml_get(pairs, key)` compares with `str_eq_cstr` and needs a
@@ -712,9 +739,8 @@ entries). CI verifies it before resolving.
 
 ## Consumers
 
-- **cyrius** — folds `dist/bayan.cyr` → `lib/bayan.cyr`. The 6.6.6 snapshot
-  carries **1.5.6**, so the next refold carries the correctly rounded f64
-  parser. Every cyrius-internal JSON/YAML float decode goes through it.
+- **cyrius** — folds `dist/bayan.cyr` → `lib/bayan.cyr`. The 6.7.11 snapshot
+  carries **1.5.14**, so the next refold carries 1.6.0's cyml scan.
 - **prakash** (optics; filed the 1.5.7 issue). ⚠ **Action on re-pin:**
   `tests/hardening.tcyr` pins `1.621274542797433e-9` → `0x3E1BDA70DB50D1A0`,
   the WRONG +1 ULP value, so that the first `cyrius deps` vendoring 1.5.7
@@ -741,26 +767,9 @@ entries). CI verifies it before resolving.
 
 ## Next
 
-See [`roadmap.md`](roadmap.md) — `bayan_markdown_*` is the next feature
-milestone (driver: the **mneme** port), and it pairs naturally with the PDF
-work: a markdown AST plus `bayan_pdf_wrap` is the whole "notes to a laid-out
-PDF" story.
-
-Two things the TOML work argues should come first, or at least alongside:
-
-- **Escape handling in `yaml.cyr` and `cyml.cyr`.** The mneme issue noted both
-  also have no unescape. That was true and is still true: 1.5.3 and 1.5.4 fixed
-  only the module that was reported. The reasoning that forced the fix into the
-  parser rather than into an accessor — only the parser knows which quote
-  produced the string — applies unchanged to both, and neither has been
-  measured against an oracle the way toml now has.
-- **A tagged-tree TOML parser** (`bayan_toml_v_parse` into json's existing
-  value tree, the way yaml already does). Less urgent than it was: 1.5.4 gave
-  dotted keys and inline tables real answers inside the flat model. It is still
-  the right shape for the surface, and it is the answer to Known gap 6 (the two
-  flat lookup APIs disagreeing about their key type).
-
-Known follow-ons for pdf: encrypted documents are detected and rejected rather
-than handled; `LZWDecode` is rejected by name; there is no layout/flow API.
-ganita (math-domain) is the sibling carve; the 6.6.6 snapshot ships it at
-**1.2.6**.
+[`roadmap.md`](roadmap.md) holds the sequence. **1.6.1** comes next: the cyml `---` searches get
+1.6.0's treatment, `bayan_cyml_parse` gets its allocation refusals, and the small cleanups land (flag
+loops → `loop`, the `u128` shift comment, a guard against including the vendored `lib/bayan.cyr`,
+the unwritten ADRs). Then aarch64 division (1.6.2), the silently-wrong-output minor (1.7.0: csv,
+`bayan_json_build`, cyml adjacent markers), yaml escapes (1.8.0), `bayan_markdown_*` (1.9.0), typed
+public names (1.10.0), TOML into the tagged tree (1.11.0), and the audit and frozen surface (1.12.0).

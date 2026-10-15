@@ -1,306 +1,144 @@
 # bayan — Roadmap
 
-> Milestone plan through v1.0. State lives in [`state.md`](state.md);
-> this file is the sequencing — what ships, in what order, against
-> what dependency gates.
+> The open work, in release order. State lives in [`state.md`](state.md); what shipped, and why,
+> lives in [`CHANGELOG.md`](../../CHANGELOG.md). An item is deleted from this file in the release
+> that ships it, and its CHANGELOG entry is the record.
+>
+> The slots are a sequence, not a promise: one can move, split or merge when a filing or a cyrius
+> pin changes what comes first. A 1.6.x patch changes no public signature and no answer to valid
+> input. A minor names, up front, the change a consumer has to make.
+>
+> Cleaned 2026-10-15 (1.6.0): every finished section was removed (the pin moves to 6.6.6, 6.7.5,
+> 6.7.9 and 6.7.11, the 6.6.13 / 6.6.16 follow-ups, YAML, PDF, M0 and the scaffold's empty M1 / M2).
+> The 6.6.6 by-value `Str` analysis, the one part with no other home, is now
+> [architecture note 001](../architecture/001-str-parameters-are-handles.md).
 
-## Moving the cyrius pin to 6.6.5 — ✅ done in 1.5.7 (straight to 6.6.6)
+## 1.6.1 — patch: the rest of the cyml scans, refusals, cleanups
 
-- [x] `src/pdf.cyr:6126`: "Out of scope for 1.5.0, loudly." turned the lint
-      gate red exactly as predicted (6.6.5's cyrlint folds case). The comment
-      now points at *PDF encryption* under *Out of scope (for v1.0)* below, on
-      the line itself. `cyrius lint src/pdf.cyr`: 0 warnings, 0 untracked
-      deferrals.
-- [x] `cyrius deps` re-run at the bump, then `cyrius lib sync --full`. The
-      aarch64 syscall peer (`SYS_UNLINKAT` 35 → 263) is re-vendored; `lib/` is
-      111 files, 0 differ against the 6.6.6 snapshot and the release tarball.
+- **cyml: the `---` searches hop line to line.** Three delimiter searches still call `_cyml_is_delim`
+  at every byte: the single-entry search and each entry's search in `bayan_cyml_parse`, and
+  `bayan_cyml_split`. That is the shape 1.6.0 removed from the marker scan. It was left out of 1.6.0
+  because an entry's header is short, so this is a small share of a parse. Use 1.6.0's method: the
+  previous parser as a scratch oracle, every prefix of random token documents, mutants checked.
+- **cyml: `bayan_cyml_parse` returns 0 when an allocation is refused.** The doc, the single-entry
+  array, each entry and the multi-entry array are all used unchecked, so the parse faults when memory
+  runs out (the module header has said so since 1.5.3; Known gap 9). Prove it with an
+  every-allocation-point refusal sweep, as 1.5.13 did for TOML.
+- **Flag loops → `loop`.** The five `var go = 1; while (go == 1)` scans (`src/toml.cyr` ×3,
+  `src/json.cyr`, `src/cyml.cyr`) become `loop { … break; }`. No behaviour change.
+- **`src/u128.cyr`: the comment above `_u128_lshr64` says `>>` sign-extends.** It is a logical shift
+  on every backend (measured at 1.5.10: `-16 >> 2` is `0x3ffffffffffffffc`). Known gap 13.
+- **A guard against including the vendored `lib/bayan.cyr`.** It is bayan's own fold, and every
+  `lib sync --full` puts it back. It defines every symbol `src/` does, from an older release (Known
+  gap 4). Add a CI step that fails when anything in `src/`, `tests/` or `scripts/` includes it.
+- **The ADRs never written** (Known gap 5): the carve, the `_compat` aliases, the sublib split,
+  yaml parsing into json's tree, and 1.5.3's choice to decode in the parser. The last is the
+  strongest: its reasoning carries over to yaml (1.8.0).
 
-## Moving the cyrius pin to 6.7.5 — ✅ done in 1.5.13 (the W2 stdlib wave, 2026-10-08)
+## 1.6.2 — patch: aarch64 128-by-64 division
 
-- [x] Pin 6.6.18 → 6.7.5; `lib/` re-vendored (`deps`, `lib sync --full --relock`), 113 files, 0 differ.
-      The bump surfaced no new error or warning.
-- [x] The TOML refusals below (B-1, B-2, B-3) — fixed with every-allocation-point refusal sweeps.
-- [x] `_D_DEC_CAP` / `_JP_STATE_SIZE` / `_PDF_STATE_SIZE` are `const` and size their 16 stack buffers.
+- **`bayan_u128_div` / `_mod` / `_divmod` on aarch64 are bit-serial** for a 64-bit divisor (Known
+  gap 11). 1.5.10 gave mulmod its own asm and left these: no mulmod path reaches them now.
+  aarch64 has no 128/64 divide instruction. Use two-digit Algorithm D over `udiv`, the shape of
+  1.5.10's mulmod block, with the same checks (re-assembled from mnemonics, branches read on their
+  labels, a correction-bound proof in the comment). `tests/mulmod_speed.cyr`'s method gates the cost.
 
-## Moving the cyrius pin to 6.7.9 — ✅ done in 1.5.14 (B-4, 2026-10-11)
+## 1.7.0 — minor: output that is silently wrong
 
-- [x] Pin 6.7.5 → 6.7.9; `lib/` re-vendored (`deps`, `lib sync --full --relock`), 113 files, 0 differ.
-- [x] **B-4 — `bayan_f64_parse` delegates to the stdlib's `f64_parse_n`** (public from cyrius 6.7.9,
-      cyrius issue 2026-10-08-f64-parse-no-public-length-bounded-form). bayan keeps its lenient
-      n/N → NaN, i/I → ±Inf front; the `_d_*` parser tiers and the exact-power table are removed
-      (`src/dtoa.cyr` 933 → 463). Bit-identical to 1.5.13 on a 1,145,999-string differential in
-      four modes (x86_64, and aarch64 under qemu). bayan now needs stdlib `math`.
+Each item changes what a public function returns, so each gets its own CHANGELOG entry naming the
+defect, and the release's header says what a consumer should re-check.
 
-## Later — recorded at the 6.7.5 pin (W2, 2026-10-08)
+- **csv: RFC 4180** (Known gap 10). A trailing empty field is dropped (`a,` parses to one field, so
+  a round trip loses a column). Records end in LF where the RFC says CRLF. A CR in a field does not
+  trigger quoting. Oracle: Python's `csv` module.
+- **`bayan_json_build` quotes every value and escapes nothing** (Known gap 14). A number comes back
+  as a string, a nested value as a quoted span, and a `"` or `\` inside a value makes invalid JSON.
+  `bayan_json_build(bayan_json_parse(doc))` should be valid JSON with the same values.
+- **cyml: adjacent `[[entries]]` markers.** `[[entries]]\n[[entries]]\nid=2\n---\nB\n` parses as
+  one entry whose header begins with the second marker (since 1.5.1, and pinned at 1.6.0 so that
+  changing it is a decision). Decide whether the first marker is an empty entry. If it is, the skip
+  after a match has to stop on the marker's own newline. The empty entry's header bounds also need
+  checking, because its header would start past its end.
 
-Not in 1.5.13 (a W2 release carries the pin, the high items and the simplifications 6.7.x allows
-privately; everything else is placed here):
+## 1.8.0 — minor: yaml decodes escapes
 
-- ~~**B-4 — delegate `bayan_f64_parse` to the stdlib**~~ — ✅ done in 1.5.14 (above).
-- **Public constants as `const`** — `JTAG_*`, `TOML_K_*`, `JS_EV_*` and the public `PDF_*` (about 50
-  top-level `var`s). A **minor**: a `const` has no storage, so a consumer's `&NAME` or assignment
-  stops compiling, and a `const` beside a same-name `var` in another fold is a hard error — survey
-  the ecosystem's names first.
-- **`: bool` on the public predicates** (the 27 `bayan_*_is_*` / `_has_*` fns, e.g.
-  `bayan_toml_pair_is_array`) — a minor for the same reason (a `: bool` return is checked).
-- **Flag loops → `loop`** — the five `var go = 1; while (go == 1)` scans (toml ×3, json, cyml)
-  become `loop { … break; }`. Raises nothing past the 6.7.5 floor; no behaviour change.
-- **The SAX callbacks and the Flate hooks → traits** once cyrius ships checked `dyn` (they are
-  hand-rolled fn-pointer dispatch today; ADR 0001 explains why Flate is a hook).
-- **The v1.0 items stand:** `bayan_markdown_*`, mneme's migration, the security audit.
-- **`_d_dec_trim` (`src/dtoa.cyr`) — checked, no defect.** The W2 survey noted it "computes a
-  trimmed length and never stores it"; it does store it (`store64(st, nd)`), and the f64 oracle
-  passes. Nothing to do. (Removed at 1.5.14 with the rest of the parser tiers.)
+- **Double-quoted yaml scalars keep their `\` escapes verbatim** (`src/yaml.cyr:20`, `:371`: "no
+  \-escape decoding — the toml convention"). That convention ended in 1.5.3, when toml started
+  decoding in the parser, the only place that knows which quote produced a string (mneme's filing,
+  [archived](issues/archived/2026-08-22-mneme-toml-basic-strings-not-unescaped.md), named yaml too).
+  Pick the oracle before writing the code, as toml has `tomllib`. cyml needs nothing here: it returns
+  its headers as raw TOML spans and decodes no values itself.
 
-## Follow-ups recorded by cyrius 6.6.13 (2026-10-02) — TOML refusals ✅ done in 1.5.13; f64 delegation ✅ done in 1.5.14
+## 1.9.0 — minor: `bayan_markdown_*`
 
-- **✅ 1.5.13 — TOML refusals, the rest of the 1.5.9 rule.** `bayan_toml_escape_a` still answers a refused output
-  buffer with `str_from("")` from the DEFAULT allocator (1.5.11 fixed the unescape side), and
-  `bayan_toml_parse` / `bayan_toml_inline_parse_a` leave their other refusals unchecked: `vec_new` /
-  `vec_new_a`, `section_new`, `pair_new`, `vec_push`, and the `str_builder` paths (`_toml_join_parts_a`,
-  the dotted-key builder), which end the process on a refusal and allocate from the default allocator.
-  Found by the 1.5.11 review.
-- **✅ 1.5.14 — Delegate `bayan_f64_parse` to the stdlib.** cyrius 6.6.13 ported bayan 1.5.10's correctly-rounded
-  parser into `lib/math.cyr` (`f64_parse` / `f64_parse_ok`, over an internal length-bounded
-  `_f64_parse_n`), so the ecosystem can carry ONE correctly-rounded parser. Delegating needs the
-  length-bounded entry made public in cyrius — ask for it when this is picked up.
-- **✅ (1.5.12, pin → 6.6.18) — at the cyrius 6.6.13 pin bump:** re-vendor `lib/math.cyr` with `cyrius deps` in the same commit — 6.6.13 made `f64_le` / `f64_ge` / `f64_trunc` compiler builtins (reserved names), and a pre-6.6.13 vendored copy still defines them (`reserved keyword`). The Str → `: cstring` warning is quiet on bayan since 1.5.11;
-  keep the warnings gate on the new pin.
+The data-format parser that remains on bayan's list. mneme hand-rolls a markdown subset until it
+exists. Together with `bayan_pdf_wrap` it gives the whole "notes to a laid-out PDF" path, and the
+layout API that PDF lacks needs this AST.
 
-## At the cyrius 6.6.16 pin bump — follow-ups recorded by cyrius 6.6.16 (2026-10-05) — ✅ done in 1.5.12 (pin → 6.6.18)
+- **Scope:** `bayan_markdown_parse(src)` → AST (headings, paragraphs, lists, code blocks and spans,
+  links, images, emphasis, blockquotes, thematic breaks), the GFM extensions (tables, task lists,
+  strikethrough, autolinks) behind a flag, and `bayan_markdown_to_html`. Consider opt-in
+  `[[wiki-links]]` for note-taking consumers. Use per-call parser state and a depth cap from day one,
+  as yaml did.
+- **Acceptance:** round-trips a CommonMark spec fixture subset, with the cut-off between what is
+  rejected and what is accepted documented. Folds into `cyrius/lib/bayan.cyr` through the bundle, as
+  every module does.
 
-The deprecated rows moved to `tests/deprecated_lookup.cyr`, a `[coverage] programs` entry built with exact
-expected warnings by `scripts/deprecated-lookup.sh`; the consumer-check comment is corrected.
+## 1.10.0 — minor: public names typed
 
-- **`#deprecated` now warns through `&fn` — `no-warnings.sh cyrius test` goes red on the bump.** cyrius
-  6.6.16 (its C9) makes `#deprecated("…")` warn on every path that reaches the fn, including `&name` (it
-  was silent there, and silent for a call parsed before the definition, `o.m()`, operators, struct-valued
-  receives and generic instances). `tests/bayan.tcyr` takes `&` of both deprecated names precisely because
-  that path was silent (:3111-3112 `jk_dep_get` / `jk_dep_alias`, :3575-3576 `ba_dep_get` /
-  `ba_dep_alias`), and its own comment (~3570) anticipated this. Measured with the 6.6.16 compiler (raw
-  `cycc < tests/bayan.tcyr` from the bayan root; binary byte-identical to 6.6.15's, rc 0): **four new
-  warnings**, one per reference (`'bayan_json_v_obj_get' is deprecated: use bayan_json_v_obj_get_by_cstr
-  …` / `'json_v_obj_get' is deprecated: …`). So `./scripts/no-warnings.sh cyrius test` (ci.yml :236, and
-  the `--aarch64` step at :326) fails. Under 6.6.16 there is no warning-free way to reference a
-  deprecated fn — that is the fix — so the arrangement is bayan's call: e.g. move the two alias rows into a
-  `.tcyr` that `cyrius coverage` reads but the zero-warning test step builds with the deprecation EXPECTED
-  (an exact expectation, as `scripts/consumer-check.sh` already makes for direct calls), or drop the
-  coverage requirement for a deprecated name. Per the test's own comment: never answer it with a pattern
-  allowance on the test step's warning gate.
-- **`scripts/consumer-check.sh` (~266-267):** "A call that cyrius parses before the definition does not
-  warn at all on 6.6.12" is no longer true from 6.6.16 — such a call now warns once, on its line. The
-  check it guards (bayan never references its own deprecated names) stays right; the direct-call probes
-  are unaffected (`var a = fn(0, "k");` after the bundle still gives exactly one warning on its line).
-- **Information only — `THREADS_CONCURRENT` reads 1 on Windows from 6.6.16.** `tests/dtoa_init.tcyr:51`
-  now holds its workers at the start barrier on Windows too; measured 12/12 ×5 on cass with the 6.6.16
-  lib. No change needed.
-- **FYI — yantra still calls the deprecated `json_v_obj_get`** (its `lib/yantra.cyr` 398, 427, 553, 556);
-  6 warnings wherever bayan is included first, and from 6.6.16 also when yantra is included first. The
-  fix is yantra's (`bayan_json_v_obj_get_by_cstr`); it is filed in yantra's roadmap.
+Both items break source: a consumer's code can stop compiling. Before this release, check the
+names against the other folds in cyrius `lib/`. A `const` beside a same-named `var` in another
+fold is a hard error.
 
-## v1.0 criteria
+- **Public constants as `const`:** `JTAG_*`, `TOML_K_*`, `JS_EV_*` and the public `PDF_*`, about
+  50 top-level `var`s. A `const` has no storage, so `&NAME` or an assignment stops compiling.
+- **`: bool` on the 27 public predicates** (`bayan_*_is_*` / `_has_*`, e.g.
+  `bayan_toml_pair_is_array`). A `: bool` return is type-checked, so integer use at a call site
+  can stop compiling.
 
-_Define before tagging v0.1.0:_
+## 1.11.0 — minor: TOML into the tagged tree; one lookup key type
 
-- [ ] Public API frozen — every exported symbol documented and tested
-- [x] Test coverage adequate for the surface area — `cyrius coverage --min 100`
-      holds in CI: 503/503 functions, 11/11 files (1.5.13). It is reference
-      coverage, a floor: the oracle vectors and the refusal sweeps check answers
-- [x] Benchmarks captured in [`docs/benchmarks.md`](../benchmarks.md) — 1.5.0
-- [x] A real fuzz harness over untrusted input — 1.5.0
-- [ ] At least one downstream consumer green — mneme's migration to
-      `bayan_pdf_*` is the live one
-- [x] CHANGELOG complete from v1.0.0 onward
-- [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`)
+- **`bayan_toml_v_parse`** into json's value tree, the way yaml already parses. 1.5.4 gave dotted
+  keys and inline tables real answers inside the flat model, so this is less urgent than it was. It
+  is still the right shape for the surface, and it is the answer to the next item.
+- **The two flat lookups disagree on their key type** (Known gap 7). `bayan_json_get` needs a
+  `Str`, `bayan_toml_get` a cstring, and the wrong one is a silent "not found". The fix is
+  ADR 0004's: name the key type in the function and deprecate the bare name. `bayan_toml_get`'s key
+  should also carry `: cstring`, so the named-`Str` diagnostic can fire.
+- **The two subset edges the flat model cannot express** (Known gap 1). A dotted key whose quoted
+  segment contains a dot (`a."b.c".d`) joins into a name indistinguishable from `a.b.c.d`, and a
+  `[[array-of-tables]]` under a dotted parent is not merged with a same-named sibling. A tree keeps
+  the segments apart, so both get an answer there. In the flat API they stay documented.
 
-## Milestones
+## 1.12.0 — the frozen surface
 
-### M0 — Scaffold (v0.1.0) — ✅ shipped 2026-06-09
+These are the open half of the criteria the scaffold set for a stable surface. The met half: a
+reference-coverage floor of 100 in CI, the benchmarks, the fuzz harnesses, and a complete CHANGELOG.
 
-- `cyrius init` scaffold landed
-- Doc-tree per [first-party-documentation.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-documentation.md)
-- ADRs / architecture notes / guides / examples folders ready
+- **A security audit pass** written to `docs/audit/YYYY-MM-DD-audit.md`, covering every parser that
+  reads untrusted input. Its fixes ship as patches.
+- **Every exported symbol documented and tested.** Then the public API is called frozen, and later
+  changes follow the deprecate-then-remove path.
+- (Not bayan's work, but part of the criterion: one downstream consumer green on the frozen
+  surface.)
 
-### M1 — _Title_ (v0.2.0)
+## Gated on cyrius — no slot until the gate opens
 
-_Replace this with the first real milestone. Specify the user-visible change, the dep gates, and the acceptance criteria._
+- **The SAX callbacks and the Flate hooks → traits**, once cyrius ships checked `dyn`. Today both
+  are hand-rolled fn-pointer dispatch, and [ADR 0001](../adr/0001-flate-via-hooks-not-a-sankoch-dependency.md)
+  explains why Flate is a hook.
 
-### M2 — _Title_ (v0.3.0)
+## Out of scope
 
-_…_
+This list keeps work from being added by accident.
 
-### Markdown parsing — `bayan_markdown_*` (planned)
-
-Add CommonMark (+ GFM) markdown as another data-format parser alongside
-`json` / `toml` / `cyml` / `csv`. bayan already parses structured text (the
-`toml` / `cyml` block + key/value machinery), so a markdown block/inline
-parser reuses the same tokenize → AST approach — modest effort, high reuse.
-
-- **Driver:** the **mneme** note-taking / knowledge-base Rust→Cyrius port needs
-  a note model + markdown→HTML export. mneme hand-rolls a markdown subset in the
-  interim and migrates to `bayan_markdown_*` once this lands, so no consumer
-  hand-rolls a second one.
-- **Scope:** `bayan_markdown_parse(src) -> AST` (headings, paragraphs, lists,
-  code blocks/spans, links, images, emphasis, blockquotes, thematic breaks) +
-  GFM extensions (tables, task lists, strikethrough, autolinks) +
-  `bayan_markdown_to_html`. Consider opt-in wiki-links (`[[...]]`) for note/PKM
-  consumers.
-- **Acceptance:** round-trips a CommonMark spec fixture subset; GFM extensions
-  behind a flag; downstream consumer (mneme) green; folds byte-identical into
-  `cyrius/lib/bayan.cyr` per the sandhi pattern.
-
-### YAML parsing — `bayan_yaml_*` — ✅ shipped in 1.2.0 (2026-07-16)
-
-Shipped as scoped below: `bayan_yaml_parse*` → the shared `bayan_json_v_*`
-tagged value tree, plus `bayan_yaml_frontmatter_split`; per-call state and
-the 128 depth cap from day one; every out-of-subset form rejects loudly
-(hardened by a pre-release adversarial review — 6 parser bugs fixed and
-pinned). Remaining: the two consumers (agnosai definitions, mneme
-frontmatter) migrate on their next bayan re-pin / cyrius refold.
-
-Add YAML as another data-format parser alongside `json` / `toml` / `cyml` /
-`csv`. Same tokenize → key/value approach as the existing block parsers —
-the `toml` / `cyml` machinery (quote stripping, comment skipping, flow-list
-`[a, b]` splitting) covers most of the subset that real consumers need.
-
-- **Drivers (two consumers, convergent):**
-  - **agnosai** (agent-orchestration port) — definition-file loading behind
-    its `definitions` feature. Filed:
-    [2026-07-16 issue](issues/archived/2026-07-16-agnosai-yaml-parse-into-tagged-value-tree.md)
-    (originally noted only in agnosai's port-plan "Upstream filings" table).
-    Its ask fixes the output shape: parse into **the existing `JTAG_*`-tagged
-    `bayan_json_v_*` value tree**, not a new YAML AST, so one loader traverses
-    one node type across JSON and YAML — the serde-data-model property the
-    Rust original has.
-  - **mneme** (note-taking port) — notes are Markdown with optional YAML
-    frontmatter. mneme hand-rolls a YAML-ish subset in
-    `src/core_frontmatter.cyr` (~200 lines: `key: value` lines, one-layer
-    quote stripping, flow-list tags, an extras map) — the same interim play as
-    its markdown subset. Pairs with the markdown item (`bayan_markdown_*` +
-    frontmatter split is the full note-parsing story).
-
-  Both migrate to `bayan_yaml_*` once this lands, so no consumer hand-rolls a
-  second one.
-- **Scope:** pragmatic YAML subset, not full YAML 1.2 —
-  `bayan_yaml_parse(src)` (+ `_a` allocator variant) → `bayan_json_v_*` node
-  tree, covering block mappings (`key: value`), nested mappings by
-  indentation, block sequences (`- item`), flow sequences (`[a, b, c]`),
-  scalars with single/double-quote stripping, and `#` comments. Explicitly
-  out: anchors/aliases, tags (`!!`), multi-document streams, block scalars
-  (`|` / `>`) unless a consumer needs them. Per-call parser state (thoth
-  cursor lesson) and a recursion-depth cap (agnosai JSON filing) from day one.
-  Include a `bayan_yaml_frontmatter_split(md)` helper (split `---` fences →
-  yaml + body) since frontmatter is a known consumer shape.
-- **Acceptance:** parses agnosai definition fixtures and mneme frontmatter
-  fixtures into trees the existing `bayan_json_v_*` accessors traverse;
-  documented subset boundary (what's rejected vs. silently mis-parsed —
-  reject loudly); both downstream consumers green; folds byte-identical into
-  `cyrius/lib/bayan.cyr` per the sandhi pattern.
-
-## Post-v1.0 / P2 backlog
-
-_Wanted, but not gating v1.0 — heavier lifts scheduled after the text-format
-surface freezes._
-
-### PDF read/write — `bayan_pdf_*` — ✅ shipped in 1.5.0 (2026-08-21)
-
-Shipped as `src/pdf.cyr` — 9,348 lines, 152 public functions. **Writer**:
-pages, the standard-14 fonts with AFM metrics derived from Adobe's own data,
-text and graphics operators, `/Info`, optional Flate, byte-accurate xref with a
-self-check. **Reader**: xref tables and 1.5 xref streams, `/Prev` chains,
-object streams, four filters, PNG and TIFF predictors, inherited page
-attributes, and text extraction that follows the font — `/ToUnicode` CMaps,
-`/Type0` two-byte codes, `/Encoding /Differences`, and the WinAnsi / MacRoman /
-Standard base encodings.
-
-Against the acceptance criteria as originally written:
-
-- *"writer output opens in mupdf/poppler and round-trips text"* — met, and
-  gated by something stricter. `scripts/pdfcheck.py` validates every xref
-  offset against the byte it claims to point at; mupdf and poppler would
-  reconstruct a broken table by scanning for `N 0 obj` and hide exactly that
-  class of bug.
-- *"reader extracts text from its own + a reference PDF"* — met on its own
-  output and on `nasmdoc.pdf` (357 pages, 5,706 objects), `glm/manual.pdf`
-  (Type0 / Identity-H) and `speex/manual.pdf`.
-- *"downstream consumer (mneme) green"* — **outstanding.** mneme still ships
-  its hand-roll; the migration is the next step and is what closes the v1.0
-  consumer criterion.
-- *"folds into `cyrius/lib/bayan.cyr`"* — the bundle is regenerated and
-  consumer-checked, but the cyrius refold has not happened yet.
-
-Deliberately **not** in 1.5.0, and each for a stated reason: encryption
-(detected and rejected — the standard security handler is `sigil` territory and
-would recreate the fold-ordering hazard the Flate hooks exist to avoid);
-`LZWDecode` (rejected by name); and a layout/flow API, which wants a markdown
-AST that does not exist yet — see the markdown item above.
-
-## Out of scope (for v1.0)
-
-_Capture what's deliberately NOT in scope for v1.0. The list keeps future contributors from adding to v1.0 by accident._
-
-- **PDF encryption.** Detected and rejected with a specific message. Even
-  "empty user password" documents need the full standard security handler
-  (MD5/RC4/SHA-256/AES-CBC), which is `sigil`'s domain; pulling it in would
-  recreate the module-ordering hazard in the cyrius fold that the Flate hooks
-  were designed to avoid.
-- **PDF rendering.** bayan writes and reads PDF structure and text. Rasterising
-  a page is a different problem and belongs with the image/graphics stack.
-- **`LZWDecode` and the image codecs** (`DCTDecode`, `JPXDecode`,
-  `CCITTFaxDecode`, `JBIG2Decode`). Rejected by name rather than silently
-  passed through, because returning still-encoded bytes as "text" is the
-  silent-wrong-answer shape this library refuses.
-- **Full YAML 1.2.** The subset is documented and everything outside it is
-  rejected loudly.
-
-## Moving the cyrius pin to 6.6.6 — ✅ done in 1.5.7
-
-Pin is `cyrius = "6.6.6"`. The analysis below held: the only source change the
-bump needed was the 6.6.5 lint pointer above.
-
-bayan has the second-largest typed-parameter surface in the ecosystem — **43 functions taking
-a `: Str` parameter** and **52 `: cstring` parameters**, nearly all in `src/pdf.cyr` — so two
-of the 6.6.6 items look like they land here. Neither does, and both are worth recording:
-
-- **Item 5 (by-value struct parameter now DEEP-COPIED instead of aliasing a pointer) does not
-  apply to `: Str`.** `struct Str { data; len; }` is 16 bytes, so it looks like the affected
-  class, and three sites store such a parameter into an object that outlives the call —
-  `bayan_pdf_obj_string_new_a` (`src/pdf.cyr:1468`), `bayan_pdf_obj_hex_new_a` (`:1483`) and
-  `bayan_pdf_obj_stream_new_a` (`:1533`), each `store64(o + N, s)`. If `: Str` became a
-  frame-local copy those pointers would dangle. The 6.6.6 change (`_local_is_sptr_param`)
-  explicitly excludes it: `Str`, `Result`, `Option` and `Tagged` are 16-byte structs *by name*
-  whose slot holds a heap handle, they stay value-passed, and assignment between two of them
-  stays the pointer rebind the stdlib is built on. The deep copy applies only to
-  user-declared structs passed by value, and bayan declares none as parameters.
-- **Item 3's `: cstring` gate does not fire.** 6.6.6 refuses an integer literal passed to a
-  `: cstring` parameter, but a literal `0` is still allowed by design (the null-pointer
-  idiom). All 52 `: cstring` parameters were scanned at their call sites for a non-zero
-  integer literal: none. The arity half of the same gate was scanned too: no mismatches in
-  bayan's own sources.
-
-Everything else checked and empty:
-
-- **No Windows exposure** — no `CYRIUS_TARGET_*` in `src/` at all, CI is `ubuntu-latest`,
-  `release.yml` declares no `windows-*` job. And no `O_APPEND` / `O_TRUNC` outside the
-  vendored `lib/`: the writes go through `file_write_all` (`src/pdf.cyr:9517`) and the reads
-  open mode 0 (`src/toml.cyr:1189`, `src/cyml.cyr:347`, `:386`, `src/json.cyr:212`). So item 1
-  is a non-event here.
-- No `async fn`, no `operator` fn, no `ret2`/`rethi`, no SIMD intrinsics, no struct
-  declarations in `src/`, no `var p: S = f(..)` receive form — so the rest of item 3 has no
-  sites either.
-- No top-level bare `{` blocks (item 4), no duplicated global declarations (item 6), no
-  `regression_*` call sites of its own (item 8), and no own `vec_*` function colliding with
-  the 14 names `lib/vec.cyr` exports, so the new transitive `lib/assert.cyr` → `lib/vec.cyr`
-  include is inert (item 9).
-
-After bumping, verify: the full `.tcyr` suite per-file, and one PDF write/parse round trip
-(`bayan_pdf_obj_string_new_a` and `bayan_pdf_obj_stream_new_a` are the sites whose stored
-`: Str` handles the note above turns on) to confirm object strings and streams survive
-serialisation intact.
-
-- [x] Done at 1.5.7. Per file: `bayan.tcyr` 962/962, `pdf_flate.tcyr` 19/19,
-      `vectors.tcyr` 13/13. String and hex objects built by the `_a`
-      constructors survive `to_bytes → obj_parse_buf` intact. A stream is
-      verified at document level (strict-oracle gate + the compressed
-      round-trip test), because `obj_parse_buf` stops at the `stream` keyword
-      by documented design, since a stream's `/Length` may be indirect.
+- **PDF encryption.** Detected and rejected with a specific message. Even "empty user password"
+  documents need the full standard security handler (MD5/RC4/SHA-256/AES-CBC), which is `sigil`'s
+  domain. Pulling it in would recreate the module-ordering hazard in the cyrius fold that the Flate
+  hooks were designed to avoid.
+- **PDF rendering.** bayan writes and reads PDF structure and text. Rasterising a page is a
+  different problem and belongs with the image/graphics stack.
+- **`LZWDecode` and the image codecs** (`DCTDecode`, `JPXDecode`, `CCITTFaxDecode`,
+  `JBIG2Decode`). Rejected by name rather than silently passed through, because returning
+  still-encoded bytes as "text" is the silent-wrong-answer shape this library refuses.
+- **Full YAML 1.2.** The subset is documented, and everything outside it is rejected loudly.

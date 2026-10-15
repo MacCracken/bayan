@@ -1,6 +1,17 @@
 # `bayan_cyml_parse` scans the document for `[[entries]]` twice, one function call per byte each time, and takes about twice as long as it did before 1.5.1
 
-**Status:** open.
+> **RESOLVED — bayan 1.6.0 (2026-10-15).** The proposed fix landed as arm D: the two passes stay,
+> and each finds the next marker with `_cyml_next_entries`, which walks to a newline and compares
+> the marker only there (`_cyml_is_entries` is removed). 0.39× 1.5.14's time on 69-, 95- and
+> 300-entry fonts (fastest of 9 interleaved rounds, both parsers in one binary). A differential of
+> 4,601,648 parses (40,000 random token documents at every prefix length) against the 1.5.14 parser
+> found 0 differences on x86_64 and on aarch64 under qemu. Both follow-ups are done:
+> `tests/bayan.tcyr` carries this repro's 12 documents plus adjacent markers past byte 0, checked
+> from every offset against a copy of the old test, and `tests/bayan.bcyr` has a
+> `cyml_parse (95-entry font, 8.8KB)` row. The adjacent-markers note is pinned unchanged and placed
+> in roadmap 1.7.0. The `---` search note is placed in 1.6.1.
+
+**Status:** resolved in 1.6.0.
 **Placement:** unpinned.
 **Discovered:** 2026-10-15, bannermanor 1.8.1 (its issue 0006, open since 2026-08-25: `font_load_file` became ~45% slower when cyrius 6.5.35 brought in bayan 1.5.2).
 **Severity:** Low. Performance only: every result is correct. It is the whole of a regression a consumer has carried for two months, and the fix is a local change to one function.
@@ -102,7 +113,7 @@ This is arm D above, 0.33–0.43× today's time. Arm E, one pass with a doubling
 
 ## Reproduction
 
-`repros/2026-10-15-cyml-parse-scans-every-byte-twice.cyr` includes `src/cyml.cyr` and carries `_repro_cyml_parse`: `bayan_cyml_parse` copied from 1.5.14 with only the two scans changed, as above. It runs 12 documents through both parsers:
+`archived/repros/2026-10-15-cyml-parse-scans-every-byte-twice.cyr` includes `src/cyml.cyr` and carries `_repro_cyml_parse`: `bayan_cyml_parse` copied from 1.5.14 with only the two scans changed, as above. It runs 12 documents through both parsers:
 - font-shaped documents of 1, 95 and 300 entries;
 - 1.5.1's leading-newline case;
 - a marker at byte 0, and adjacent markers;
@@ -114,7 +125,7 @@ This is arm D above, 0.33–0.43× today's time. Arm E, one pass with a doubling
 For each, it compares the docs field by field. **The exit code is the number of documents on which they differ**:
 
 ```
-cyrius build docs/development/issues/repros/2026-10-15-cyml-parse-scans-every-byte-twice.cyr /tmp/cymlscan
+cyrius build docs/development/issues/archived/repros/2026-10-15-cyml-parse-scans-every-byte-twice.cyr /tmp/cymlscan
 /tmp/cymlscan; echo "exit=$?"
 ```
 

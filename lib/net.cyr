@@ -577,9 +577,10 @@ fn sock_set_send_timeout(fd, secs, usecs): i64 {
     # AGNOS has no SO_SNDTIMEO (NSYS_SETSOCKOPT=54 mis-dispatches). The syscall
     # peer's sys_write socket route bounds a STALL with it: sock_send#48 returns 0
     # after ~8 s with no ACK progress, and _agnos_sock_send_all retries until this
-    # deadline, then returns the partial count (or -1). secs = usecs = 0 restores the
-    # 30 s default. (This comment used to claim a "poll path" that did not exist and
-    # the call ignored `secs`, until v6.6.7.) CHANGELOG [6.6.7]
+    # deadline, then returns the partial count (or -1); on a kernel with sock_send_dl#109
+    # (agnos 1.57.13) each call is also handed the window left as its ceiling (6.7.11).
+    # secs = usecs = 0 restores the 30 s default. (This comment used to claim a "poll path"
+    # that did not exist and the call ignored `secs`, until v6.6.7.) CHANGELOG [6.6.7]
     return _agnos_sock_set_tmo(&_agnos_sock_sndto_us, fd, secs * 1000000 + usecs);
     #endif
     #ifndef CYRIUS_TARGET_AGNOS

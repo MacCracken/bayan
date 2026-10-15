@@ -14,12 +14,17 @@
 # They are evidence, not a gate -- a loaded host moves them -- so they do not
 # count toward the exit code.
 #
-# Filed with docs/development/issues/2026-10-15-cyml-parse-scans-every-byte-twice.md.
+# Filed with docs/development/issues/archived/2026-10-15-cyml-parse-scans-every-byte-twice.md.
+#
+# RESOLVED in bayan 1.6.0, which ships this patch: from 1.6.0 on, bayan_cyml_parse IS
+# the patched parser, so this compares it with itself and its exit code proves nothing
+# new. The guard is tests/bayan.tcyr's 1.6.0 cyml group. Kept as the record of the
+# documents and of the measurement. Run it on a 1.5.1-1.5.14 checkout to reproduce.
 # Found by bannermanor (its issue 0006: `font_load_file` ~45% slower since
 # bayan 1.5.2, with bayan_cyml_parse 62-65% of the load).
 #
 # Build and run from the bayan repo root:
-#   cyrius build docs/development/issues/repros/2026-10-15-cyml-parse-scans-every-byte-twice.cyr /tmp/cymlscan
+#   cyrius build docs/development/issues/archived/repros/2026-10-15-cyml-parse-scans-every-byte-twice.cyr /tmp/cymlscan
 #   /tmp/cymlscan; echo "exit=$?"     # -> exit=0, and patch/current ~0.3-0.5 on bayan 1.5.14
 
 include "lib/syscalls.cyr"

@@ -114,7 +114,7 @@ total budget.
 ## Documentation
 
 - [`docs/development/state.md`](docs/development/state.md) — live state snapshot
-- [`docs/development/roadmap.md`](docs/development/roadmap.md) — milestones through v1.0
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — open work, by release slot (1.x.x)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — captured by `cyrius bench`
 - [`docs/adr/`](docs/adr/) — architecture decision records
 - [`CHANGELOG.md`](CHANGELOG.md) — complete from 1.0.0

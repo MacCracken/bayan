@@ -6,7 +6,7 @@
 # str.cyr, result.cyr, net.cyr (v5.10.11 — `regression_network_probe` composes on
 # `net_connect_nb`).
 #
-# What this module provides — ~22 reusable primitives that
+# What this module provides — reusable primitives (the full list: docs/api-surface.snapshot) that
 # accumulated through cyrius's v5.9.6 → v5.9.41 dispatcher
 # work, generalized so downstream test runners (yantra,
 # agnosys/mabda smoke suites, future runners) can reach for

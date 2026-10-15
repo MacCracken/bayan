@@ -103,6 +103,41 @@ because a batch yields a single sample.
   bayan keeps its own front because the stdlib's public entry is strict about `nan` / `inf` and
   bayan's readers are not.
 
+## CYML parse — `bayan_cyml_parse` (1.6.0)
+
+- **Toolchain**: cyrius 6.7.11 · **bayan**: 1.5.14 vs 1.6.0, both parsers in one binary · same host,
+  load average ~1.7.
+- **Method**: the fastest of 9 interleaved rounds × 21 runs of 200 parses per parser, the two
+  alternating run by run. The documents are font-shaped (bannermanor's `fonts/*.cyml`): a `[font]`
+  header, then *n* entries of an 8-row glyph each.
+
+| Document | Bytes | 1.5.14 | 1.6.0 | 1.6.0 / 1.5.14 |
+|---|---:|---:|---:|---:|
+| 69 entries (the shape of `block.cyml`) | 6,424 | 75.1 µs | 29.7 µs | 0.39 |
+| 95 entries (the size of `clean.cyml`) | 8,816 | 103.6 µs | 41.2 µs | 0.39 |
+| 300 entries | 27,676 | 328.7 µs | 129.9 µs | 0.39 |
+
+`tests/bayan.bcyr` gains the 95-entry row: `cyml_parse (95-entry font, 8.8KB)`, 43.6 µs in one
+`cyrius bench` run on the same host (418.5 µs under qemu-aarch64).
+
+### Reading these
+
+- **1.5.1 to 1.5.14 tested every byte for a marker, in each of two passes.** 1.5.1 replaced a
+  256-slot array, which silently truncated larger documents, with two passes: count the markers,
+  allocate exactly, fill. Each pass called `_cyml_is_entries` at every byte offset, and nearly every
+  call answered "not a newline". That made the parse about twice 1.4.0's one pass. bannermanor
+  measured it as `font_load_file` ~45% slower from bayan 1.5.2 (the first bundle cyrius folded after
+  1.5.1).
+- **1.6.0 keeps the two passes and the exact allocation.** `_cyml_next_entries` walks to the next
+  newline in a tight loop and compares the 12-byte marker only there. The issue measured a one-pass
+  variant with a doubling array as faster again (0.22–0.33×). `alloc` is a bump allocator, though,
+  so every outgrown array would stay behind, which 1.5.1's exact count was written to avoid.
+- **The ratio is flat in document size** because both scans are linear. What changed is the cost
+  per byte: a call and a return before, one load and one compare now.
+- **Left for 1.6.1:** the `---` searches (each entry's, the single-entry file's, and
+  `bayan_cyml_split`) still call `_cyml_is_delim` at every byte. An entry's header is short, so they
+  are a small share of these numbers.
+
 ### Not yet measured
 
 Compression (the Flate hooks), multi-page documents at scale, and the

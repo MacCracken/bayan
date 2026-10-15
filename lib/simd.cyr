@@ -18,12 +18,10 @@
 # counter convention; consumers are all cyrius-compiled.
 #
 # Pointer-form retained for callsites that have raw f64v2 pointers
-# (e.g. dynamically-allocated f64v2 arrays) AND as the sole shape
-# on Win64 PE — value-form fns are gated on
-# CYRIUS_HAS_VAL_SIMD_PARAMS (defined by EVERY emit path since v6.4.31/.32;
-# main.cyr's PE/Mach-O cross arms were fixed at v6.4.81).
-# On PE the overload dispatch still works: `f64v2_add(&x, &y)`
-# routes to `f64v2_add_ptr` transparently.
+# (e.g. dynamically-allocated f64v2 arrays). The value-form fns are gated on
+# CYRIUS_HAS_VAL_SIMD_PARAMS, which every emit path predefines, Win64 PE
+# included (since v6.4.31/.32; main.cyr's PE/Mach-O cross arms at v6.4.81).
+# The overload dispatch routes `f64v2_add(&x, &y)` to `f64v2_add_ptr`.
 #
 # Historical: v5.10.33 shipped pointer-form ONLY. v5.10.35
 # unblocked abs/sqrt. v5.10.38 shipped the param-side ABI.

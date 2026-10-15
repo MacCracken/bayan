@@ -2057,9 +2057,10 @@ var tu_ok = bayan_toml_parse(str_from("name = \"demo\"\nport = 8080\n"));
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(tu_ok, 0))), 2, "toml: well-formed input is unaffected");
 
 test_group("cyml: a leading blank line does not hide the first entry");
-# _cyml_is_entries only tested for a marker at byte 0 when pos == 0 and then
-# returned, so a document beginning with a newline never matched the marker at
-# byte 1 — one entry silently folded into the file header.
+# _cyml_is_entries (the per-byte test _cyml_next_entries replaced at 1.6.0)
+# only tested for a marker at byte 0 when pos == 0 and then returned, so a
+# document beginning with a newline never matched the marker at byte 1 — one
+# entry silently folded into the file header.
 var cz_a = bayan_cyml_parse("[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n", 46);
 var cz_src = "\n[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n";
 var cz_b = bayan_cyml_parse(cz_src, strlen(cz_src));
@@ -4097,5 +4098,134 @@ assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(tp_full, 3)), "t.c"), 1, "
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(tp_full, 6))), 17, "toml: ([big] holds 17 pairs)");
 assert_gt(tp_n, 100, "toml: (the parse made its requests through the default allocator)");
 assert_eq(tp_partial, 0, "toml: parse, each allocation point refused alone, returns 0 (was exit 1 or SIGSEGV)");
+
+test_group("cyml: the marker scan hops line to line and finds what the per-byte test found (1.6.0)");
+# bayan_cyml_parse called _cyml_is_entries at every byte, in each of its two passes, and took about
+# twice 1.4.0's time (issue 2026-10-15, found by bannermanor). _cyml_next_entries walks to the next
+# newline and compares the marker only there. _tm_is_entries_ref is the 1.5.14 per-byte test,
+# copied here: for each document below, the answer from every offset i must be the first p >= i at
+# which the reference says yes, or len. The parse results are pinned as well, with their 1.5.14
+# values (the 12 documents of the issue's repro and a 13th, adjacent markers past byte 0; a scratch
+# differential of 4.6M parses against the 1.5.14 parser agreed).
+fn _tm_is_entries_ref(data, len, pos): i64 {
+    if (pos == 0) {
+        if (_cyml_marker_at(data, len, 0) == 1) { return 1; }
+    }
+    if (pos + 13 > len) { return 0; }
+    if (load8(data + pos) != 10) { return 0; }
+    return _cyml_marker_at(data, len, pos + 1);
+}
+var tm_bad = 0;
+var tm_offsets = 0;
+# Every offset of the document at `len`; walking down from the end, `want` is the first yes at or
+# after i. Returns the number of offsets on which _cyml_next_entries disagreed.
+fn _tm_scan_agrees(data, len): i64 {
+    var bad = 0;
+    var want = len;
+    var i = len;
+    while (i >= 0) {
+        if (i < len) {
+            if (_tm_is_entries_ref(data, len, i) == 1) { want = i; }
+        }
+        if (_cyml_next_entries(data, len, i) != want) { bad = bad + 1; }
+        tm_offsets = tm_offsets + 1;
+        i = i - 1;
+    }
+    return bad;
+}
+# And at every prefix of it, so a marker cut off by the end of input is met at each byte.
+fn _tm_check(data, len): i64 {
+    var n = 0;
+    while (n <= len) {
+        tm_bad = tm_bad + _tm_scan_agrees(data, n);
+        n = n + 1;
+    }
+    return 0;
+}
+# A font-shaped document (bannermanor's fonts/*.cyml): a [font] header, then `n` entries of an
+# 8-row, 7-column glyph each.
+fn _tm_font(n): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "# a comment line\n\n[font]\nschema = 1\nname = \"t\"\nwidth = 7\nheight = 8\ngap = 1\n");
+    var k = 0;
+    while (k < n) {
+        str_builder_add_cstr(sb, "\n[[entries]]\nchar = \"A\"\n---\n");
+        var row = 0;
+        while (row < 8) { str_builder_add_cstr(sb, ".#.#.#.\n"); row = row + 1; }
+        k = k + 1;
+    }
+    return str_builder_build(sb);
+}
+var TM_F95 = _tm_font(95);
+var TM_F300 = _tm_font(300);
+var TM_F1 = _tm_font(1);
+var TM_LEAD = "\n[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n";
+var TM_AT0 = "[[entries]]\nid=1\n---\nA\n";
+var TM_ADJ = "[[entries]]\n[[entries]]\nid=2\n---\nB\n";
+var TM_ADJ_MID = "x\n[[entries]]\n[[entries]]\nid=2\n---\nB\n";
+var TM_DELIM = "a = 1\n---\nbody\n";
+var TM_NODELIM = "a = 1\nno delimiter\n";
+var TM_CUT = "x\n[[entries]]";
+var TM_CRLF = "x\n[[entries]]\r\nid=1\n---\nA\n";
+var TM_INDENT = "x\n [[entries]]\nid=1\n";
+_tm_check(str_data(TM_F1), str_len(TM_F1));
+_tm_check(TM_LEAD, strlen(TM_LEAD));
+_tm_check(TM_AT0, strlen(TM_AT0));
+_tm_check(TM_ADJ, strlen(TM_ADJ));
+_tm_check(TM_ADJ_MID, strlen(TM_ADJ_MID));
+_tm_check(TM_DELIM, strlen(TM_DELIM));
+_tm_check(TM_NODELIM, strlen(TM_NODELIM));
+_tm_check(TM_CUT, strlen(TM_CUT));
+_tm_check(TM_CRLF, strlen(TM_CRLF));
+_tm_check(TM_INDENT, strlen(TM_INDENT));
+_tm_check(TM_AT0, 0);
+# The two large documents at their full length only: every prefix of them is 8.8 KB of prefixes.
+tm_bad = tm_bad + _tm_scan_agrees(str_data(TM_F95), str_len(TM_F95));
+tm_bad = tm_bad + _tm_scan_agrees(str_data(TM_F300), str_len(TM_F300));
+assert_eq(tm_offsets, 54803, "cyml: (the scan was asked from every offset of every document)");
+assert_eq(tm_bad, 0, "cyml: _cyml_next_entries answers the per-byte test's first yes, from every offset");
+var tm_d = bayan_cyml_parse(str_data(TM_F95), str_len(TM_F95));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 95, "cyml: a 95-entry font parses to 95 entries");
+assert_eq(bayan_cyml_doc_header_len(tm_d), 75, "cyml: its file header runs to the first marker, trimmed");
+var tm_e = bayan_cyml_doc_entry(tm_d, 94);
+assert_eq(bayan_cyml_entry_header_len(tm_e), 10, "cyml: the last entry's header is `char = \"A\"`");
+assert_eq(bayan_cyml_entry_body_len(tm_e), 63, "cyml: and its body the 8 glyph rows, trimmed");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(str_data(TM_F300), str_len(TM_F300))), 300,
+  "cyml: a 300-entry font parses to 300 entries");
+tm_d = bayan_cyml_parse(TM_LEAD, strlen(TM_LEAD));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 2, "cyml: a leading newline: both entries");
+assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 0)), TM_LEAD + 13,
+  "cyml: and the first entry's header starts after the marker at byte 1");
+assert_eq(bayan_cyml_doc_header(tm_d), 0, "cyml: with nothing left over for a file header");
+tm_d = bayan_cyml_parse(TM_AT0, strlen(TM_AT0));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: a marker at byte 0 is an entry");
+assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 0)), TM_AT0 + 12, "cyml: whose header follows it");
+# Two markers back to back are one entry whose header begins with the second marker: the skip past
+# the first lands on the second's `[`, past the newline a marker needs before it. Unchanged since
+# 1.5.1, and pinned so that a change to it is a decision (the issue's note), not a side effect.
+tm_d = bayan_cyml_parse(TM_ADJ, strlen(TM_ADJ));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: adjacent markers are one entry (as in 1.5.1 - 1.5.14)");
+assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 0)), TM_ADJ + 12,
+  "cyml: whose header begins with the second marker");
+# Past byte 0 the skip is 13, not 12, and both passes must take the same one: a count pass that
+# skipped 12 would find two markers here and the fill pass one.
+tm_d = bayan_cyml_parse(TM_ADJ_MID, strlen(TM_ADJ_MID));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: adjacent markers after the first line are one entry too");
+assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 0)), TM_ADJ_MID + 14,
+  "cyml: whose header begins with the second marker");
+tm_d = bayan_cyml_parse(TM_DELIM, strlen(TM_DELIM));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: no marker and a --- is one entry");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(tm_d, 0)), 4, "cyml: with the body below the ---");
+tm_d = bayan_cyml_parse(TM_NODELIM, strlen(TM_NODELIM));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 0, "cyml: no marker and no --- is no entries");
+assert_eq(bayan_cyml_doc_header_len(tm_d), strlen(TM_NODELIM), "cyml: the whole text is the header");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_CUT, strlen(TM_CUT))), 0,
+  "cyml: a marker cut off by the end of input is not one");
+tm_d = bayan_cyml_parse(TM_CRLF, strlen(TM_CRLF));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: a CRLF marker is not a marker: one entry, from the ---");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 19, "cyml: whose header holds it as text");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_INDENT, strlen(TM_INDENT))), 0,
+  "cyml: nor is an indented one");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_AT0, 0)), 0, "cyml: empty input has no entries");
 
 var r = assert_summary();

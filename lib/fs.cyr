@@ -192,7 +192,10 @@ fn _dir_list_into_vec(path: Str, entries): i64 {
 fn _dir_list_into_vec(path: Str, entries): i64 {
     var cpath[4096];
     if (_fs_cpath(path, &cpath, 4096) < 0) { return 0 - 1; }   # 6.6.11: exactly the Str's bytes
-    var fd = sys_open(&cpath, O_RDONLY, 0);
+    # O_DIRECTORY: the kernel refuses a non-directory at path resolution (-ENOTDIR). With
+    # O_RDONLY alone a FIFO at `path` blocked in open(2) until a writer came, so the listing
+    # never returned. CHANGELOG [6.7.11]
+    var fd = sys_open(&cpath, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
     if (fd < 0) { return fd; }
     # ⛔ v6.5.11: STACK scratch, not alloc(). Both buffers are dead the moment this fn
     # returns, but the default allocator is a BUMP allocator — it has no free — so each
@@ -360,7 +363,7 @@ fn dir_list_into(path: Str, scratch, scratch_len, names, names_cap, offs, max_en
     #ifndef CYRIUS_TARGET_AGNOS
     var cpath[4096];
     if (_fs_cpath(path, &cpath, 4096) < 0) { return 0 - 1; }   # 6.6.11: exactly the Str's bytes
-    var fd2 = sys_open(&cpath, O_RDONLY, 0);
+    var fd2 = sys_open(&cpath, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);   # a FIFO must not block: see _dir_list_into_vec
     if (fd2 < 0) { return 0 - 1; }
     var basep[8];
     store64(&basep, 0);
