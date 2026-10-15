@@ -1,0 +1,296 @@
+# bayan_cyml_parse scans the whole document for `[[entries]]` markers twice,
+# with one _cyml_is_entries call per byte each time (1.5.1's two-pass scan),
+# and so takes about twice as long as the 1.4.0 parser did for the same result.
+#
+# What is proven here, by the exit code, is the PROPOSED FIX: the exit code is
+# the number of documents below on which `_repro_cyml_parse` (bayan_cyml_parse
+# with only its two scans changed, copied from src/cyml.cyr at 1.5.14) returns
+# a different doc from `bayan_cyml_parse` -- header, entry count, and every
+# entry's header and body pointer and length. 0 = the patch parses exactly as
+# bayan does today, including 1.5.1's leading-newline and 256-entry fixes.
+#
+# The timings printed beside the first two documents are the slowdown and the
+# patch's effect: the fastest of 21 runs of 200 parses each, in ns per parse.
+# They are evidence, not a gate -- a loaded host moves them -- so they do not
+# count toward the exit code.
+#
+# Filed with docs/development/issues/2026-10-15-cyml-parse-scans-every-byte-twice.md.
+# Found by bannermanor (its issue 0006: `font_load_file` ~45% slower since
+# bayan 1.5.2, with bayan_cyml_parse 62-65% of the load).
+#
+# Build and run from the bayan repo root:
+#   cyrius build docs/development/issues/repros/2026-10-15-cyml-parse-scans-every-byte-twice.cyr /tmp/cymlscan
+#   /tmp/cymlscan; echo "exit=$?"     # -> exit=0, and patch/current ~0.3-0.5 on bayan 1.5.14
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/result.cyr"
+include "lib/chrono.cyr"
+include "src/cyml.cyr"
+
+# The smallest p >= i at which _cyml_is_entries(data, len, p) would answer 1,
+# or len if there is none. Same answer as asking _cyml_is_entries at every
+# byte; the per-byte work is one load and one compare, and _cyml_marker_at
+# runs only after a newline (and at byte 0).
+fn _repro_next_entries(data, len, i): i64 {
+    if (i == 0) {
+        if (_cyml_marker_at(data, len, 0) == 1) { return 0; }
+    }
+    var p = i;
+    while (p < len) {
+        if (load8(data + p) == 10) {
+            if (_cyml_marker_at(data, len, p + 1) == 1) { return p; }
+        }
+        p = p + 1;
+    }
+    return len;
+}
+
+fn _repro_cyml_parse(data, len): i64 {
+    var doc = bayan_cyml_doc_new();
+
+    # PATCH: the same two passes (count, then fill), but each finds the next
+    # marker with _repro_next_entries, which looks for `[[entries]]` only at
+    # the start of a line instead of calling _cyml_is_entries at every byte.
+    var entry_count = 0;
+    var i = _repro_next_entries(data, len, 0);
+    while (i < len) {
+        entry_count = entry_count + 1;
+        if (i == 0) { i = 12; } else { i = i + 13; }
+        i = _repro_next_entries(data, len, i);
+    }
+
+    var entry_starts = 0;
+    if (entry_count > 0) {
+        entry_starts = alloc(entry_count * 8);
+        if (entry_starts == 0) { return doc; }
+        var w = 0;
+        i = _repro_next_entries(data, len, 0);
+        while (i < len && w < entry_count) {
+            store64(entry_starts + w * 8, i);
+            w = w + 1;
+            if (i == 0) { i = 12; } else { i = i + 13; }
+            i = _repro_next_entries(data, len, i);
+        }
+    }
+
+    if (entry_count == 0) {
+        var delim_pos = 0 - 1;
+        var di = 0;
+        while (di < len) {
+            if (_cyml_is_delim(data, len, di) == 1) {
+                delim_pos = di;
+                di = len;
+            } else {
+                di = di + 1;
+            }
+        }
+        if (delim_pos < 0) {
+            store64(doc, data);
+            store64(doc + 8, len);
+            store64(doc + 24, 0);
+            return doc;
+        }
+        var hp = 0; var hl = 0; var bp = 0; var bl = 0;
+        _cyml_trim(data, delim_pos, &hp, &hl);
+        var body_start = delim_pos + 4;
+        if (delim_pos > 0) { body_start = delim_pos + 5; }
+        _cyml_trim(data + body_start, len - body_start, &bp, &bl);
+
+        store64(doc, hp);
+        store64(doc + 8, hl);
+        var entries = alloc(8);
+        store64(entries, bayan_cyml_entry_new(hp, hl, bp, bl));
+        store64(doc + 16, entries);
+        store64(doc + 24, 1);
+        return doc;
+    }
+
+    var first_entry = load64(entry_starts);
+    if (first_entry > 0) {
+        var fhp = 0; var fhl = 0;
+        _cyml_trim(data, first_entry, &fhp, &fhl);
+        store64(doc, fhp);
+        store64(doc + 8, fhl);
+    }
+
+    var entries = alloc(entry_count * 8);
+    var ei = 0;
+    while (ei < entry_count) {
+        var estart = load64(entry_starts + ei * 8);
+        var eend = len;
+        if (ei + 1 < entry_count) { eend = load64(entry_starts + (ei + 1) * 8); }
+
+        var hdr_start = estart + 12;
+        if (estart > 0) { hdr_start = estart + 13; }
+
+        var edelim = 0 - 1;
+        var edi = hdr_start;
+        while (edi < eend) {
+            if (_cyml_is_delim(data, eend, edi) == 1) {
+                edelim = edi;
+                edi = eend;
+            } else {
+                edi = edi + 1;
+            }
+        }
+
+        if (edelim < 0) {
+            var ehp = 0; var ehl = 0;
+            _cyml_trim(data + hdr_start, eend - hdr_start, &ehp, &ehl);
+            store64(entries + ei * 8, bayan_cyml_entry_new(ehp, ehl, 0, 0));
+        } else {
+            var ehp = 0; var ehl = 0; var ebp = 0; var ebl = 0;
+            _cyml_trim(data + hdr_start, edelim - hdr_start, &ehp, &ehl);
+            var ebody_start = edelim + 5;
+            _cyml_trim(data + ebody_start, eend - ebody_start, &ebp, &ebl);
+            store64(entries + ei * 8, bayan_cyml_entry_new(ehp, ehl, ebp, ebl));
+        }
+        ei = ei + 1;
+    }
+
+    store64(doc + 16, entries);
+    store64(doc + 24, entry_count);
+    return doc;
+}
+
+# ---- documents ---------------------------------------------------------------
+
+var _doc = 0;       # build buffer
+var _dl = 0;
+
+fn _put(s): i64 {
+    var n = strlen(s);
+    memcpy(_doc + _dl, s, n);
+    _dl = _dl + n;
+    return 0;
+}
+
+fn _start(): i64 {
+    _doc = alloc(65536);
+    _dl = 0;
+    return _doc;
+}
+
+# A font-shaped document: a [font] header, then `n` entries of an 8-row,
+# 7-column glyph each (the shape of bannermanor's fonts/clean.cyml).
+fn _font_doc(n): i64 {
+    _start();
+    _put("# a comment line\n\n[font]\nschema = 1\nname = \"t\"\nwidth = 7\nheight = 8\ngap = 1\n");
+    var k = 0;
+    while (k < n) {
+        _put("\n[[entries]]\nchar = \"A\"\n---\n");
+        var r = 0;
+        while (r < 8) { _put(".#.#.#.\n"); r = r + 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ---- comparison ----------------------------------------------------------------
+
+var _bad = 0;
+
+fn _same(a, b): i64 {
+    if (bayan_cyml_doc_header(a) != bayan_cyml_doc_header(b)) { return 0; }
+    if (bayan_cyml_doc_header_len(a) != bayan_cyml_doc_header_len(b)) { return 0; }
+    var n = bayan_cyml_doc_entry_count(a);
+    if (n != bayan_cyml_doc_entry_count(b)) { return 0; }
+    var k = 0;
+    while (k < n) {
+        var x = bayan_cyml_doc_entry(a, k);
+        var y = bayan_cyml_doc_entry(b, k);
+        if (bayan_cyml_entry_header(x) != bayan_cyml_entry_header(y)) { return 0; }
+        if (bayan_cyml_entry_header_len(x) != bayan_cyml_entry_header_len(y)) { return 0; }
+        if (bayan_cyml_entry_body(x) != bayan_cyml_entry_body(y)) { return 0; }
+        if (bayan_cyml_entry_body_len(x) != bayan_cyml_entry_body_len(y)) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# Fastest of 21 runs of 200 parses, in ns per parse. which: 0 = bayan, 1 = patch.
+fn _time(which, data, len): i64 {
+    var best = 0 - 1;
+    var run = 0;
+    while (run < 21) {
+        var t0 = clock_now_ns();
+        var i = 0;
+        while (i < 200) {
+            if (which == 0) { bayan_cyml_parse(data, len); }
+            else { _repro_cyml_parse(data, len); }
+            i = i + 1;
+        }
+        var dt = clock_now_ns() - t0;
+        if (best < 0 || dt < best) { best = dt; }
+        run = run + 1;
+    }
+    return best / 200;
+}
+
+fn _check(label, data, len, timed): i64 {
+    var a = bayan_cyml_parse(data, len);
+    var b = _repro_cyml_parse(data, len);
+    var ok = _same(a, b);
+    if (ok == 0) { _bad = _bad + 1; print("DIFFER  ", 8); }
+    else { print("same    ", 8); }
+    print(label, strlen(label));
+    print("  (", 3);
+    fmt_int(bayan_cyml_doc_entry_count(a));
+    print(" entries, ", 10);
+    fmt_int(len);
+    print(" bytes)", 7);
+    if (timed == 1) {
+        var tc = _time(0, data, len);
+        var tp = _time(1, data, len);
+        print("  bayan ", 8);
+        fmt_int(tc);
+        print(" ns, patch ", 11);
+        fmt_int(tp);
+        print(" ns, patch/bayan 0.", 19);
+        var pct = (tp * 100) / tc;
+        if (pct < 10) { print("0", 1); }
+        fmt_int(pct);
+    }
+    println("");
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    _font_doc(95);
+    _check("font-shaped, 95 entries", _doc, _dl, 1);
+    _font_doc(300);
+    _check("font-shaped, 300 entries", _doc, _dl, 1);
+    _font_doc(1);
+    _check("font-shaped, 1 entry", _doc, _dl, 0);
+    var s = "\n[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n";
+    _check("leading newline (1.5.1 fix)", s, strlen(s), 0);
+    s = "[[entries]]\nid=1\n---\nA\n";
+    _check("marker at byte 0", s, strlen(s), 0);
+    s = "[[entries]]\n[[entries]]\nid=2\n---\nB\n";
+    _check("adjacent markers", s, strlen(s), 0);
+    s = "a = 1\n---\nbody\n";
+    _check("no entries, one delimiter", s, strlen(s), 0);
+    s = "a = 1\nno delimiter\n";
+    _check("no entries, no delimiter", s, strlen(s), 0);
+    s = "x\n[[entries]]";
+    _check("marker cut at end of input", s, strlen(s), 0);
+    s = "x\n[[entries]]\r\nid=1\n---\nA\n";
+    _check("CRLF marker (not a marker)", s, strlen(s), 0);
+    s = "x\n [[entries]]\nid=1\n";
+    _check("indented marker (not a marker)", s, strlen(s), 0);
+    _check("empty input", s, 0, 0);
+    print("documents that differ: ", 23);
+    fmt_int(_bad);
+    println("");
+    return _bad;
+}
+
+var r = main();
+syscall(SYS_EXIT, r);
