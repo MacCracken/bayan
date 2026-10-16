@@ -157,7 +157,13 @@ fn sys_write(fd, buf, count): i64 {
 # x86_64 has a bare SYS_FSTAT (5); aarch64's bare SYS_FSTAT (80)
 # also exists — only sys_stat needs the at-family detour on aarch64
 # (kept in the per-arch peer).
+# cx (the x86_64 peer is the .cyx guest's table): -ENOSYS. cxvm passes the stat buffer to the
+# host untranslated (a guest offset: -EFAULT), and a host's struct stat is not the x86_64-Linux
+# layout the guest reads STAT_* from. CHANGELOG [6.7.12]
 fn sys_fstat(fd, buf): i64 {
+    #ifdef CYRIUS_TARGET_CX
+    return 0 - 38;
+    #endif
     return syscall(SYS_FSTAT, fd, buf);
 }
 
@@ -175,10 +181,13 @@ fn sys_fchmod(fd, mode): i64 {
 # those repos audit against, and invited the shadowing bug darshana filed separately.
 #
 # ⚠ THE NUMBER IS PER-ARCH AND MUST STAY THE PEER'S NATIVE ONE: x86_64 16, aarch64 29,
-# Darwin 29 (routed 29→54 by ESYSXLAT's Mach-O arm). Do NOT "normalise" these to the x86
-# value — on ELF-aarch64 a literal 16 is not translated at all (there is no 16→29 row), so a
-# consumer that hardcodes the x86 number silently issues a different, valid syscall. That is
-# the exact defect `2026-08-23-darshana-aarch64-syscall-shadow-no-diagnostic` reports.
+# Darwin 29 (routed 29→54 by ESYSXLAT's Mach-O arm) — right because it depends on no x86-compat
+# ESYSXLAT row. Do NOT "normalise" these to the x86 value: on ELF-aarch64 a literal 16 reaches
+# ioctl only through the 16→29 compat row (v6.5.38), and a hardcoded x86 number that has NO row
+# still silently issues a different, valid syscall — the defect
+# `2026-08-23-darshana-aarch64-syscall-shadow-no-diagnostic` reported (archived, resolved).
+# Inside a native-aarch64 region a raw 16 is renumbered to ioctl as well, with a warning since
+# 6.7.12; native fremovexattr is spelled 1016 there. CHANGELOG [6.7.12]
 #
 # The third argument is untyped by design: it is a pointer for TCGETS/TCSETS and an integer
 # for many drivers, and the kernel's interpretation is request-specific.
@@ -779,9 +788,16 @@ fn sys_reboot(cmd): i64 {
 
 # Change the calling thread's signal mask. `how` is SIG_BLOCK,
 # SIG_UNBLOCK, or SIG_SETMASK. `set` and `oldset` point at sigset_t.
+# On macOS it is Darwin's __pthread_sigmask (329) through the private alias 1329, a shim rather
+# than a renumber: Darwin reads a 32-bit set (the low half of our 8-byte one on little-endian) and
+# writes 4 bytes to `oldset`, so the upper word is zeroed here. 329, not Darwin's sigprocmask (48),
+# which is process-wide in XNU. It returned -78 before 6.7.12, so the exec family could not empty
+# a mask inherited from a launcher there. CHANGELOG [6.7.12]
 fn sys_sigprocmask(how, set, oldset): i64 {
     #ifdef CYRIUS_TARGET_MACOS
-    return 0 - 78;
+    var r = syscall(1329, how, set, oldset);
+    if (r == 0) { if (oldset != 0) { store32(oldset + 4, 0); } }
+    return r;
     #endif
     #ifndef CYRIUS_TARGET_MACOS
     return syscall(SYS_RT_SIGPROCMASK, how, set, oldset, 8);

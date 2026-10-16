@@ -640,10 +640,10 @@ fn sys_truncate(path, length): i64 {
 # sequence, an encoded surrogate, anything past U+10FFFF) or no room. REFUSE, NEVER TRUNCATE: the
 # byte-per-unit loops this replaced zero-extended UTF-8 as Latin-1 and cut at their cap, so a
 # non-ASCII name was answered as some other name and a long one as its own prefix. It is the ONE
-# stdlib decoder, behind `_win_widen` below — which `sys_symlink` uses for CreateSymbolicLinkW
-# (0xF03E), the one reroute that still takes wide paths. Since 6.6.12 the stat/list reroutes
-# (0xF016 FindFirstFileW, 0xF019 GetFileAttributesW) take narrow paths and are decoded by the
-# emitter, like open. CHANGELOG [6.6.11], [6.6.12]
+# stdlib decoder, behind `_win_widen` below. No path reroute takes a wide path any more: the
+# stat/list reroutes (0xF016 FindFirstFileW, 0xF019 GetFileAttributesW) since 6.6.12 and
+# CreateSymbolicLinkW (0xF03E) since 6.7.12 take narrow paths and are decoded by the emitter,
+# like open. CHANGELOG [6.6.11], [6.6.12], [6.7.12]
 fn _win_widen_n(dst, src, n, cap): i64 {
     var i = 0;
     var o = 0;
@@ -717,18 +717,21 @@ fn _win_widen(dst, src, cap): i64 {
 # is asked first (Developer Mode lets a normal user create links with it); a Windows too old
 # to know the flag refuses it, so the call is retried without. ⚠ Without Developer Mode a
 # NON-elevated process cannot create a link at all and this returns -1 — a Windows policy,
-# not a missing route. 0 on success, -1 on failure. CHANGELOG [6.6.9]
+# not a missing route. 0 on success, -1 on failure.
+# ⛔ 6.7.12 — both paths go to the reroute NARROW (UTF-8), and the emitter widens them: the link
+# path is made absolute and `\\?\`-prefixed at 248+ units, as open() / mkdir() / rename() do;
+# the target is stored verbatim, so a relative one is decoded only ('/' → '\'), never made
+# absolute, and an absolute one (`X:\…`, `\\server\…`) takes the same `\\?\` at 248+ units.
+# Until 6.7.12 this fn widened both itself, capped at 519 units and never prefixed, so a link
+# path over MAX_PATH (260 units) failed -1 on a Windows without process-wide long paths while
+# open() of the same path worked. CHANGELOG [6.6.9], [6.7.12]
 fn sys_symlink(target, linkpath): i64 {
-    var wl[1040];
-    var wt[1040];
-    var rr[3120];
-    if (_win_widen(&wl, linkpath, 519) < 0) { return 0 - 1; }   # 6.6.11: refused, never cut
-    var tn = _win_widen(&wt, target, 519);
-    if (tn < 0) { return 0 - 1; }
+    # The resolved target, NARROW, for the kind probe (the GetFileAttributesW reroute takes UTF-8
+    # and widens it into 32768 units, so 98304 bytes hold anything it can accept: a longer join is
+    # past what Windows can resolve through the link at all, and is refused).
+    var rr[98304];
     # Resolve the target as the link will: absolute ('\...', '/...', 'X:...') as-is, else against
-    # the link's directory (the part of linkpath up to its last separator). Built NARROW (UTF-8):
-    # the GetFileAttributesW reroute takes a narrow path since 6.6.12. Both inputs passed
-    # `_win_widen` at 519 units, so each is under 1557 bytes and `rr` holds the two plus a NUL.
+    # the link's directory (the part of linkpath up to its last separator).
     var abs = 0;
     var t0 = load8(target);
     if (t0 == 92) { abs = 1; }
@@ -736,9 +739,10 @@ fn sys_symlink(target, linkpath): i64 {
     if (t0 != 0) {
         if (load8(target + 1) == 58) { abs = 1; }
     }
-    var ri = 0;
+    var tn = 0;
+    while (load8(target + tn) != 0) { tn = tn + 1; }
+    var ls = 0 - 1;
     if (abs == 0) {
-        var ls = 0 - 1;
         var li = 0;
         while (load8(linkpath + li) != 0) {
             var lc = load8(linkpath + li);
@@ -746,13 +750,15 @@ fn sys_symlink(target, linkpath): i64 {
             if (lc == 47) { ls = li; }
             li = li + 1;
         }
-        while (ri <= ls) {
-            store8(&rr + ri, load8(linkpath + ri));
-            ri = ri + 1;
-        }
+    }
+    if (ls + 1 + tn + 1 > 98304) { return 0 - 1; }   # refused, never cut
+    var ri = 0;
+    while (ri <= ls) {
+        store8(&rr + ri, load8(linkpath + ri));
+        ri = ri + 1;
     }
     var ti = 0;
-    while (load8(target + ti) != 0) {
+    while (ti < tn) {
         store8(&rr + ri + ti, load8(target + ti));
         ti = ti + 1;
     }
@@ -762,8 +768,8 @@ fn sys_symlink(target, linkpath): i64 {
     if (at != 4294967295) {
         if ((at & 16) != 0) { kind = 1; }         # SYMBOLIC_LINK_FLAG_DIRECTORY
     }
-    if (syscall(61502, &wl, &wt, kind | 2) != 0) { return 0; }
-    if (syscall(61502, &wl, &wt, kind) != 0) { return 0; }
+    if (syscall(61502, linkpath, target, kind | 2) != 0) { return 0; }   # narrow (6.7.12)
+    if (syscall(61502, linkpath, target, kind) != 0) { return 0; }
     return 0 - 1;
 }
 # Filesystem statistics by path. Declines on Windows: the nearest peer is GetDiskFreeSpaceExW,

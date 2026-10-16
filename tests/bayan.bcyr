@@ -7,7 +7,8 @@
 # whole-document parse + text extraction. 1.5.7 adds the f64 parser, once per
 # tier, because making it correctly rounded moved cost onto the hard inputs.
 # 1.6.0 adds the cyml parse, after a consumer found it twice as slow as it
-# had been since 1.5.1, a change no row here could have shown.
+# had been since 1.5.1, a change no row here could have shown. 1.6.1 adds a
+# single-entry cyml document with a long header, for the --- search.
 #
 # Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop ->
 # bench_report. For sub-microsecond operations use a batch of >= 1000 to
@@ -172,6 +173,28 @@ fn main(): i64 {
     while (i < 1000) { bayan_cyml_parse(str_data(cys), str_len(cys)); i = i + 1; }
     bench_batch_stop(b12, 1000);
     bench_report(b12);
+
+    # --- cyml parse, one long header (1.6.1) -----------------------------------
+    # One entry: a 200-line TOML header, a ---, a short body (6,922 bytes). A
+    # font entry's header is one line, so the row above barely reaches the ---
+    # search; this one is nearly all of it. 1.0.0 - 1.6.0 tested every byte
+    # for the delimiter: 0.40x of that here.
+    var cdb = str_builder_new();
+    i = 0;
+    while (i < 200) {
+        str_builder_add_cstr(cdb, "key_");
+        str_builder_add_int(cdb, i);
+        str_builder_add_cstr(cdb, " = \"a value of some length\"\n");
+        i = i + 1;
+    }
+    str_builder_add_cstr(cdb, "---\n# Body\n\nSome markdown text.\n");
+    var cds = str_builder_build(cdb);
+    var b13 = bench_new("cyml_parse (one entry, 200-line header, 6.9KB)");
+    bench_batch_start(b13);
+    i = 0;
+    while (i < 1000) { bayan_cyml_parse(str_data(cds), str_len(cds)); i = i + 1; }
+    bench_batch_stop(b13, 1000);
+    bench_report(b13);
 
     return 0;
 }

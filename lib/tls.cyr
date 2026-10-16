@@ -1483,7 +1483,7 @@ fn tls_write(ctx, buf, len): i64 {
         var off = 0;
         while (off < len) {
             var chunk = len - off;
-            if (chunk > TLS_RECORD_MAX_PLAINTEXT) { chunk = TLS_RECORD_MAX_PLAINTEXT; }
+            if (chunk > _TLS_RECORD_MAX_PLAINTEXT) { chunk = _TLS_RECORD_MAX_PLAINTEXT; }
             var w = tls_native_write(nctx, buf + off, chunk);
             if (w < 0) { return w; }
             off = off + w;

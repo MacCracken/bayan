@@ -12,28 +12,8 @@
 > 6.7.9 and 6.7.11, the 6.6.13 / 6.6.16 follow-ups, YAML, PDF, M0 and the scaffold's empty M1 / M2).
 > The 6.6.6 by-value `Str` analysis, the one part with no other home, is now
 > [architecture note 001](../architecture/001-str-parameters-are-handles.md).
-
-## 1.6.1 — patch: the rest of the cyml scans, refusals, cleanups
-
-- **cyml: the `---` searches hop line to line.** Three delimiter searches still call `_cyml_is_delim`
-  at every byte: the single-entry search and each entry's search in `bayan_cyml_parse`, and
-  `bayan_cyml_split`. That is the shape 1.6.0 removed from the marker scan. It was left out of 1.6.0
-  because an entry's header is short, so this is a small share of a parse. Use 1.6.0's method: the
-  previous parser as a scratch oracle, every prefix of random token documents, mutants checked.
-- **cyml: `bayan_cyml_parse` returns 0 when an allocation is refused.** The doc, the single-entry
-  array, each entry and the multi-entry array are all used unchecked, so the parse faults when memory
-  runs out (the module header has said so since 1.5.3; Known gap 9). Prove it with an
-  every-allocation-point refusal sweep, as 1.5.13 did for TOML.
-- **Flag loops → `loop`.** The five `var go = 1; while (go == 1)` scans (`src/toml.cyr` ×3,
-  `src/json.cyr`, `src/cyml.cyr`) become `loop { … break; }`. No behaviour change.
-- **`src/u128.cyr`: the comment above `_u128_lshr64` says `>>` sign-extends.** It is a logical shift
-  on every backend (measured at 1.5.10: `-16 >> 2` is `0x3ffffffffffffffc`). Known gap 13.
-- **A guard against including the vendored `lib/bayan.cyr`.** It is bayan's own fold, and every
-  `lib sync --full` puts it back. It defines every symbol `src/` does, from an older release (Known
-  gap 4). Add a CI step that fails when anything in `src/`, `tests/` or `scripts/` includes it.
-- **The ADRs never written** (Known gap 5): the carve, the `_compat` aliases, the sublib split,
-  yaml parsing into json's tree, and 1.5.3's choice to decode in the parser. The last is the
-  strongest: its reasoning carries over to yaml (1.8.0).
+> 1.6.1 (2026-10-15) shipped its slot whole and removed it; its two kept cyml delimiter answers
+> joined 1.7.0.
 
 ## 1.6.2 — patch: aarch64 128-by-64 division
 
@@ -59,6 +39,16 @@ defect, and the release's header says what a consumer should re-check.
   changing it is a decision). Decide whether the first marker is an empty entry. If it is, the skip
   after a match has to stop on the marker's own newline. The empty entry's header bounds also need
   checking, because its header would start past its end.
+- **cyml: a `---` at the start of the searched region is not a delimiter** (Known gap 15;
+  pinned at 1.6.1, as in every release since 1.0.0). Two places, one edge. `"\n---\nbody\n"`: byte 0 is tested for the
+  flush form `---\n` only, so a leading blank line hides the delimiter and the whole text is header
+  (`bayan_cyml_split` agrees: no delimiter). 1.5.1 fixed this shape in the marker scan.
+  `"[[entries]]\n---\nA\n"`: an entry's search starts past its marker's newline, so the `---` is
+  header text (`---\nA`) and the entry has no body. Decide both together. If both become
+  delimiters, the change is in `_cyml_next_delim`'s offset-0 case and in where an entry's search
+  starts, and `tests/bayan.tcyr`'s 1.6.1 rows are the ones to rewrite. Use 1.6.1's method to show
+  that nothing else moves: the previous module renamed as a scratch oracle, random token documents
+  at every prefix.
 
 ## 1.8.0 — minor: yaml decodes escapes
 

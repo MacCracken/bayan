@@ -163,10 +163,14 @@ fn bayan_u128_muleq(dst, src): i64 { return bayan_u128_mul(dst, dst, src); }
 
 # -------- Shifts & bitwise --------
 #
-# Cyrius `>>` sign-extends (arithmetic). For unsigned semantics we
-# strip the sign bit after a 1-bit shift, then finish the rest:
+# Cyrius `>>` is a LOGICAL shift: it fills with zeros on every backend
+# (measured at 1.5.10 on cyrius 6.6.12 and at 1.6.1 on 6.7.12, on x86_64,
+# aarch64 and cx: `-16 >> 2` is 0x3ffffffffffffffc). Until 1.6.1 this
+# comment said it sign-extends, and the mask below was written for that.
+# It is kept: it costs one AND, and it keeps this shift unsigned whatever a
+# backend's `>>` does.
 #   (x >> 1) & 0x7FFFFFFFFFFFFFFF   →   bit 63 now 0
-#   >> (n-1)                         →   safe to arithmetic-shift
+#   >> (n-1)                         →   a zero fill either way
 # Defined for 0 <= n < 64. Caller handles n == 0 (return x unchanged)
 # and n >= 64 (whole-limb shift paths).
 fn _u128_lshr64(x, n): i64 {

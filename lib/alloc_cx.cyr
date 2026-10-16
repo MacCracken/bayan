@@ -4,7 +4,7 @@
 #
 # WHY A STATIC BUMP HEAP AND NOT mmap/brk (v6.6.6): a .cyx guest has no
 # allocatable address space of its own. cxvm gives it ONE flat region
-# (`_cx_mem`, 1 MB — programs/cxvm.cyr) holding code, data and a downward
+# (`_cx_mem`, 8 MiB since 6.7.12 — programs/cxvm.cyr) holding code, data and a downward
 # stack, and guest pointers are OFFSETS into that region which cxvm translates
 # on the pointer-taking syscalls. So a host allocation is useless here twice
 # over: cxvm's syscall dispatch captures only r2..r6, so the 6-argument mmap
@@ -32,7 +32,7 @@ var _heap_used = 0;       # bytes handed out since the last init/reset
 # against the Linux arm behaves the same here. The real bound is the buffer.
 var ALLOC_MAX = 0x80000000;
 
-# 16384 slots x 8 B = 131072 B (128 KB), inside cxvm's 1 MB `_cx_mem`. It shares that
+# 16384 slots x 8 B = 131072 B (128 KB), inside cxvm's 8 MiB `_cx_mem`. It shares that
 # region with the program's code, the rest of its data and a stack growing
 # down from the top, so this cannot be raised much without shrinking the
 # usable stack — raise _CX_MEM_SIZE in programs/cxvm.cyr first if it ever

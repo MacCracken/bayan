@@ -380,10 +380,9 @@ fn _json_slurp(path): Str {
     var sb = str_builder_new();
     var chunk = alloc(65536);
     if (chunk == 0) { file_close(fd); return 0; }
-    var go = 1;
-    while (go == 1) {
+    loop {
         var n = file_read(fd, chunk, 65536);
-        if (n <= 0) { go = 0; }
+        if (n <= 0) { break; }
         else { str_builder_add(sb, str_new(chunk, n)); }
     }
     file_close(fd);
@@ -416,12 +415,11 @@ fn bayan_json_parse_file_r(path): i64 {
     var chunk = alloc(65536);
     if (chunk == 0) { sys_close(fd); return Err(JsonIoErr); }
     var total = 0;
-    var rgo = 1;
-    while (rgo == 1) {
+    loop {
         var rd_r_tag, rd_r = file_read_r(fd, chunk, 65536);
         if (is_err_result(rd_r_tag) == 1) { sys_close(fd); return Err(JsonIoErr); }
         var n = rd_r;
-        if (n <= 0) { rgo = 0; }
+        if (n <= 0) { break; }
         else {
             str_builder_add(sb, str_new(chunk, n));
             total = total + n;

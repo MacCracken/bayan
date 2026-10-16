@@ -224,21 +224,18 @@ fn _async_poll(rt, timeout): i64 {
     # v6.5.26 — room for 8 ready fds per wait, not 1. maxevents was 1, so even with
     # several fds ready the reactor woke one task per syscall; with multiple waiters
     # that is a needless round trip per direction.
-    var evbuf[128];
+    var evbuf[128];                    # 8 events at EPOLL_EVENT_SIZE (12 x86_64, 16 aarch64)
     var nr = sys_epoll_wait(epfd, &evbuf, 8, timeout);
     var ei = 0;
     while (ei < nr) {
-        var eoff = ei * 16;
-        var fired = load32(&evbuf + eoff);
-        # epoll_event.data offset is ABI-dependent: x86_64 has EPOLL_PACKED
-        # (data @4); aarch64 leaves the struct unpacked so the u64 aligns to @8.
-        # Must match the write in _async_wait_events. (CHANGELOG [6.4.42])
-        #ifdef CYRIUS_ARCH_AARCH64
-        var wfd = load64(&evbuf + eoff + 8);
-        #endif
-        #ifndef CYRIUS_ARCH_AARCH64
-        var wfd = load64(&evbuf + eoff + 4);
-        #endif
+        # The peer's readers and stride: epoll_event's layout is ABI-dependent (x86_64 packs it,
+        # data @4, 12 bytes; aarch64 does not, data @8, 16 bytes) and must match the writes in
+        # _async_wait_events / the MOD below. The stride was 16 on every arch, so on x86_64 the
+        # 2nd..8th event of one wait were read 4, 8, … bytes off — a stale or garbage fd, the
+        # real one re-reported only by the next wait. CHANGELOG [6.7.12]
+        var ev = &evbuf + ei * EPOLL_EVENT_SIZE;
+        var fired = epoll_event_events(ev);
+        var wfd = epoll_event_data(ev);
         # v6.5.26 — data is the FD, so resolve it to EVERY parked task waiting on
         # it whose mask intersects what actually fired. Previously data was a single
         # task pointer and exactly one task could ever be woken per fd.

@@ -459,7 +459,12 @@ fn sys_rmdir(path): i64 {
 }
 
 # Delete a file.
+# cx (this peer is the .cyx guest's table): -ENOSYS. cxvm passes unlink's path to the host
+# untranslated — a guest offset — so it answered -EFAULT and left the file. CHANGELOG [6.7.12]
 fn sys_unlink(path): i64 {
+    #ifdef CYRIUS_TARGET_CX
+    return 0 - 38;
+    #endif
     return syscall(SYS_UNLINK, path);
 }
 
@@ -540,7 +545,12 @@ fn sys_fork(): i64 {
 }
 
 # pipe: create pipe, fds[0]=read end, fds[1]=write end
+# cx: -ENOSYS, and `fds` is left as it was. cxvm passes the fd-pair buffer to the host
+# untranslated (a guest offset: -EFAULT). CHANGELOG [6.7.12]
 fn sys_pipe(fds): i64 {
+    #ifdef CYRIUS_TARGET_CX
+    return 0 - 38;
+    #endif
     return syscall(SYS_PIPE, fds);
 }
 
@@ -591,6 +601,19 @@ fn epoll_event_new(events, data): i64 {
     store64(ev + 4, data);
     return ev;
 }
+
+# The size of one epoll_event on x86_64 Linux — the array stride sys_epoll_wait writes at. The
+# struct is EPOLL_PACKED here, { u32 events, u64 data @4 }: 12 bytes (16 on aarch64, where it is
+# not packed). CHANGELOG [6.7.12]
+const EPOLL_EVENT_SIZE = 12;
+
+# The events mask of the epoll_event at `ev` (one element of a sys_epoll_wait array, or an
+# epoll_event_new result).
+fn epoll_event_events(ev): i64 { return load32(ev); }
+
+# The u64 data of the epoll_event at `ev` — at offset 4 on x86_64 (the packed layout
+# epoll_event_new writes). Step through a sys_epoll_wait array by EPOLL_EVENT_SIZE.
+fn epoll_event_data(ev): i64 { return load64(ev + 4); }
 
 # sys_epoll_ctl moved to lib/syscalls_linux_common.cyr at v5.11.20.
 

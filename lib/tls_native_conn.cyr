@@ -471,7 +471,7 @@ fn _tn_connect_hs(ctx, sock_fd): i64 {
             _tn_send_hs_alert(ctx, sock_fd);
             return ch2n;
         }
-        var c2cap = ch2n + TLS_RECORD_HEADER_LEN * (1 + ch2n / TLS_RECORD_MAX_PLAINTEXT);
+        var c2cap = ch2n + TLS_RECORD_HEADER_LEN * (1 + ch2n / _TLS_RECORD_MAX_PLAINTEXT);
         var c2rec = _tn_alloc(ctx, c2cap);
         if (c2rec == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
         var c2rn = _tn_hs_plain_records(ch2, ch2n, c2rec, c2cap);
@@ -494,7 +494,10 @@ fn _tn_connect_hs(ctx, sock_fd): i64 {
     var frl = _tn_read_rec(ctx, sock_fd, inbuf, cap, _TN_CCS_MAY);
     if (frl < 0) { return _tn_read_fail(ctx, frl); }
     var rf = tls_native_client_recv_flight(ctx, inbuf, frl);
-    if (rf != TLS_OK) { return rf; }
+    if (rf != TLS_OK) {
+        _tn_send_hs_alert(ctx, sock_fd);   # the refusals that name one (6.7.12), sealed under our handshake key
+        return rf;
+    }
     # Verify the server Finished + send the client second flight. v6.2.8: this
     # may include the client Certificate + CertificateVerify (mTLS client-auth)
     # ahead of the Finished, so size for a cert chain (was 256 — Finished-only).
@@ -1369,9 +1372,9 @@ fn _tn_ctx_buf(ctx, off, n): i64 {
 fn tls_native_write(ctx, buf, len): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
     if (load64(ctx + TLS_CTX_OFF_STATE) != TLS_STATE_CONNECTED) { return TLS_ERR_PROTOCOL; }
-    if (len > TLS_RECORD_MAX_PLAINTEXT) { return TLS_ERR_INVALID_PARAM; }   # caller fragments
+    if (len > _TLS_RECORD_MAX_PLAINTEXT) { return TLS_ERR_INVALID_PARAM; }   # caller fragments
     var fd = load64(ctx + TLS_CTX_OFF_SOCK_FD);
-    var rec = _tn_ctx_buf(ctx, TLS_CTX_OFF_WRITE_BUF, TLS_RECORD_MAX_PLAINTEXT + 64);
+    var rec = _tn_ctx_buf(ctx, TLS_CTX_OFF_WRITE_BUF, _TLS_RECORD_MAX_PLAINTEXT + 64);
     if (rec == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     var rn = tls_native_seal_app(ctx, buf, len, rec, len + 64);
     if (rn < 0) { return rn; }
@@ -1468,7 +1471,7 @@ fn tls_native_read(ctx, buf, maxlen): i64 {
                 # 16384-byte hold), then deliver the first `maxlen` bytes.
                 var hb = load64(ctx + TLS_CTX_OFF_READ_HOLD);
                 if (hb == 0) {
-                    hb = _tn_alloc(ctx, TLS_RECORD_MAX_PLAINTEXT);
+                    hb = _tn_alloc(ctx, _TLS_RECORD_MAX_PLAINTEXT);
                     if (hb == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
                     store64(ctx + TLS_CTX_OFF_READ_HOLD, hb);
                 }

@@ -2,6 +2,174 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.1] — 2026-10-15
+
+Patch release, the roadmap's 1.6.1 slot. The toolchain pin moves **6.7.11 → 6.7.12**. cyml's three
+`---` searches get 1.6.0's treatment and hop from line to line: a single-entry document with a
+200-line header parses in **0.40×** 1.6.0's time, and `bayan_cyml_split` runs in 0.25×.
+`bayan_cyml_parse` returns 0 when an allocation is refused, where it faulted, and its file loader
+returns an `Err`. Smaller items: the flag loops become `loop`, a wrong comment in `u128` is fixed, CI
+refuses any route to the vendored `lib/bayan.cyr`, and the five unwritten ADRs are written. Public
+API: nothing added or removed. A parse that is not refused memory returns what 1.6.0 returned for
+every input, and the differential under Tests is the proof. The two delimiter answers that a fix
+would change are pinned for 1.7.0. The sources and `dist/` still build on cyrius ≥ 6.7.9 (checked on
+6.7.9; see the pin entry).
+
+### Changed
+
+- **The `---` searches hop from newline to newline instead of testing every byte.** The single-entry
+  search, each entry's search and `bayan_cyml_split` called `_cyml_is_delim(data, len, pos)` at every
+  byte offset. That is the shape 1.6.0 removed from the marker scan, left in place then because an
+  entry's header is short. The new private `_cyml_next_delim(data, len, i)` returns the first
+  delimiter at or after `i`. It walks to each newline in a tight loop and compares `---\n` only there
+  (`_cyml_delim_at`), testing the flush form at byte 0 first. An entry's search passes the entry's
+  end as `len`, as before. Measured with both modules in one binary, fastest of 9 interleaved rounds
+  of 200 parses, on a host at load average ~15, so the ratios are the result, not the times:
+
+  | Document | Bytes | 1.6.0 | 1.6.1 | 1.6.1 / 1.6.0 |
+  |---|---:|---:|---:|---:|
+  | parse, 95-entry font | 8,816 | 50.5 µs | 46.1 µs | 0.91 |
+  | parse, 300-entry font | 27,676 | 159.3 µs | 143.5 µs | 0.90 |
+  | parse, one entry, 200-line header | 6,922 | 54.4 µs | 22.1 µs | 0.40 |
+  | parse, 50 entries × 20-line headers | 24,768 | 243.4 µs | 131.2 µs | 0.54 |
+  | `bayan_cyml_split`, 200-line header | 6,922 | 44.1 µs | 10.9 µs | 0.25 |
+
+  A font entry's header is one line, so the font rows move least, as 1.6.0 predicted.
+- **Removed (private): `_cyml_is_delim`.** `_cyml_next_delim` answers what it answered at every
+  offset (pinned below). Nothing else in bayan called it.
+- **Two answers the searches keep, now pinned so that changing them is a decision.** Both are the
+  same edge in two places: a delimiter at the start of the searched region. (1) `"\n---\n"` at byte 0
+  is not a delimiter. Byte 0 is tested for the flush form `---\n` only, so a document that opens with
+  a blank line and then `---` has no delimiter, and its whole text is header. 1.5.1 fixed this shape
+  in the marker scan. (2) An entry's search starts past its marker's newline, so a `---` flush against
+  the marker (`[[entries]]\n---\nA\n`) is header text (`---\nA`), and the entry has no body. Both
+  date from 1.0.0. Fixing either changes what a document parses to, which a patch does not do, so
+  they join the roadmap's 1.7.0 slot.
+- **Flag loops → `loop { … break; }`, all nine** (the roadmap counted the five whose flag is named
+  `go`): `_toml_scan_key_a`, `bayan_toml_inline_parse_a`, the four read loops of `_toml_slurp`,
+  `bayan_toml_parse_file_r`, `_json_slurp` and `bayan_json_parse_file_r`, cyml's
+  `_cyml_read_file_trimmed` and `bayan_cyml_parse_file_r`, and the quoted-field scan in
+  `bayan_csv_parse_line`. In each, the flag was set as the body's last action, so `break` exits at the
+  same point. No behaviour change: the suite, fuzz and the differential are unchanged.
+- **`src/u128.cyr`: the comment above `_u128_lshr64` said cyrius `>>` sign-extends** (Known gap 13).
+  It is a logical shift. Re-measured on 6.7.12: `-16 >> 2` is `0x3ffffffffffffffc` on x86_64, on
+  aarch64 under qemu and on cx (a local `cycc_cx`; the release ships none). The mask stays, and the
+  comment now says why: one AND keeps the shift unsigned whatever a backend's `>>` does.
+- **cyrius pin `6.7.11` → `6.7.12`.** `lib/` re-vendored by `cyrius lib sync --full --relock`: 113
+  files, byte-identical to the 6.7.12 snapshot (installed from the tag, `97abbfec`; its
+  `SOURCE_COMMIT` records that the tree matches the tag), and `cyrius.lock` covers all 113
+  (`deps --verify`). 31 files changed. One is `lib/bayan.cyr`, cyrius's fold of bayan 1.6.0,
+  byte-identical to 1.6.0's `dist/bayan.cyr`. On 6.7.12, `cyrius deps` alone refuses to re-lock
+  while `lib/` holds files that its resolve did not vendor (22 of them here) and names
+  `lib sync --full` as the fix, so on a bump the order is now `lib sync --full --relock`, then
+  `deps` and `deps --verify`. The 1.6.0 sources built and passed every gate on 6.7.12 before any
+  change, on x86_64 and on aarch64 under qemu, and `distlib --all --check` passed with `dist/`
+  unchanged. **The floor stays 6.7.9**: checked in a scratch copy pinned to 6.7.9 with its `lib/`
+  (see Tests).
+- **`dist/` regenerated** (`cyrius distlib --all`, all 10 bundles). `bayan.cyr` and `bayan-cyml`
+  carry the delimiter scan and the refusal checks. Every bundle that holds one of the loops changes
+  only there (`bayan-csv`, `-json`, `-yaml`, `-toml`), and `bayan-u128` carries the comment. The other
+  three change only their version header. The `.deps` sidecars are unchanged, and a second
+  regeneration changes nothing.
+
+### Fixed
+
+- **`bayan_cyml_parse` returns 0 when an allocation is refused** (the last item of Known gap 9). The
+  doc, the single-entry array, each entry and the multi-entry array were stored through unchecked,
+  so under allocator exhaustion the parse wrote to address 0. The module header had said so since
+  1.5.3. The entry-offset array was checked, but it answered with the doc built so far, no header
+  and no entries, which a caller cannot tell from an empty document. Each is checked now, and a
+  refusal returns 0. The three arrays called bare `alloc`, while the doc and entries went through
+  `default_alloc()`. All of them now go through `default_alloc()`, the same global bump allocation
+  as before, so one lever reaches every allocation point.
+- **`bayan_cyml_parse_file_r` returns `Err(CymlIoErr)` on every refused allocation**, never
+  `Ok(0)`, the convention toml's loader has followed since 1.5.11: every accessor answers 0 for a 0
+  doc, so `Ok(0)` would read as an empty document. Only the read chunk was checked before. A refused
+  builder or chunk `Str` faulted, a refused grow ended the process (the default `str_builder_add`
+  does), and a refused result or parse faulted. The loop now appends with `str_builder_add_a`, which
+  reports a refused grow, and the chunk comes from `default_alloc()`.
+
+### Added
+
+- **CI: `Nothing reaches the vendored fold lib/bayan.cyr`** (`static` job;
+  `scripts/vendored-fold-guard.sh`, Known gap 4). Every `lib sync --full` vendors cyrius's fold of an
+  older bayan back into `lib/`, and it defines every symbol `src/` does. The guard fails on three
+  routes to it: an include of `lib/bayan.cyr` or a `lib/bayan-<name>.cyr` sublib from `src/`,
+  `tests/` or `scripts/` (comment lines are not includes, since `src/` headers name the bundle for
+  consumers); `bayan` in `cyrius.cyml`'s `[deps].stdlib`, or a `[deps.bayan]` table, either of which
+  makes `cyrius build` prepend it to every build with no include line; and a `bayan` leaf in a
+  `dist/*.deps` sidecar, which `consumer-check.sh` would include from `lib/`. Each route was planted
+  in a scratch copy of the tree (an include from each of the three directories, the two manifest
+  forms, a sidecar leaf) and each turned the guard red. A comment naming the file and the unchanged
+  tree stayed green.
+
+### Tests
+
+- **`tests/bayan.tcyr` +29: "cyml: the --- searches hop line to line and find what the per-byte
+  test found (1.6.1)".** It carries a copy of 1.6.0's `_cyml_is_delim`. From every offset of every
+  prefix of 10 documents, `_cyml_next_delim` must return the first offset where the copy says yes, or
+  `len`. That covers an entry's end bound too, because an entry's search is a prefix. The 1-entry
+  font is checked at every prefix and the 95-entry one at full length: 26,461 offsets in all. Parse
+  and split results are pinned, including both kept answers above. These are 1.6.0's values: the
+  group passes unchanged against the 1.6.0 module with only the two new helpers appended. Six
+  mutants each fail it: testing `\n---\n` at byte 0, dropping the flush test, comparing at the
+  newline instead of after it, starting the walk one byte late, bounding an entry's search by the
+  document instead of the entry, and an off-by-one `at + 4 >= len`. Comparing at the newline fails
+  eight rows, then faults in a later row that reads the missing span.
+- **Differential, 1.6.0 against 1.6.1: 0 differences.** The 1.6.0 module, renamed, against the new
+  one in one binary, over two corpora of 40,000 random token documents (0–39 tokens: delimiters with
+  and without their newline, CRLF and space-padded near misses, `--`, `----`, markers in each form,
+  lone `[` `]` `\r` `\n`, text). The second corpus is weighted towards markers. Each document is
+  parsed and split at every prefix length: 7,811,233 parses, 2,970,654 of them multi-entry, compared
+  field by field (doc header, every entry's header and body pointers and lengths) along with the five
+  outputs of `bayan_cyml_split`. 0 differences on x86_64, and 0 on aarch64 under qemu. The six
+  mutants above give 17,888–2,913,008 differences each.
+- **`tests/bayan.tcyr` +10: "cyml: bayan_cyml_parse returns 0, and the loader an Err, on every
+  refusal (1.6.1)".** toml's lever from 1.5.13: the default allocator's alloc slot is swapped for one
+  that refuses only the k-th request, for every k of one parse. Three documents are swept: no
+  delimiter (1 request), one entry (3) and three entries (6). Every refused parse returns 0. Then
+  every request of a whole `bayan_cyml_parse_file_r` load (12: the chunk, the builder, a chunk
+  `Str`, a grow, the result and its `Str`, and the parse's 6) is refused alone, and each load is an
+  `Err`. The request counts are pinned, so an allocation that left the default allocator would be
+  seen. Thirteen mutants each fail it: each of the eleven new checks removed alone (the offset
+  array's put back to `return doc`), and the offset array or the chunk put back on bare `alloc`.
+  Six of them fault, one ends the process with `str_builder: alloc failed`, and six fail a named row.
+- **`tests/bayan.bcyr` gains `cyml_parse (one entry, 200-line header, 6.9KB)`**: 19.8 µs in one
+  `cyrius bench` run (140.1 µs under qemu-aarch64). The 95-entry font row barely reaches the `---`
+  search, because a font entry's header is one line, so this row puts the search under the bench.
+- **The floor stays 6.7.9.** In a scratch copy pinned to 6.7.9 with 6.7.9's `lib/`, the build and
+  all 6 test files are warning-free, the smoke entry exits 42, 6.7.9's `distlib --all --check`
+  accepts the bundles 6.7.12 generated, and the guard passes. The new `loop` statements and
+  `str_builder_add_a` compile there.
+- Gates, all green on the 6.7.12 pin. x86_64: build, smoke, `cyrius test` (6/6), the deprecated
+  lookups, fuzz, bench, coverage 503/503 (it counts public functions; the private helpers moved),
+  mulmod speed, the PDF oracle and font metrics. aarch64 under qemu: build, smoke, test,
+  deprecated lookups, fuzz, bench, mulmod speed, the PDF writer byte-identical across targets. Also:
+  format, lint (0/0 across `src/`), `vet`, `distlib --all --check`, regeneration with no change,
+  `scripts/consumer-check.sh`, the raw-include build, and the new guard.
+- **The CI mirror, on the release toolchain: all six jobs green.** The 6.7.12 release was installed
+  through cyrius's `install.sh` into an isolated home (checksum and Ed25519 signature verified), and
+  its `lib/` is byte-identical to bayan's (113 files). Then every `run:` step of `ci.yml` ran job by
+  job, each job in its own fresh copy of the tree: `toolchain`, `static`, `x86_64`, `aarch64` (qemu),
+  `oracles` and `dist`. So the committed `dist/` is exactly what the release's `distlib` generates,
+  not only the local install's. The release tarball also ships `bin/cycc_cx`, which no release had
+  before (Known gap 12; noted, not acted on).
+
+### Docs
+
+- **Five ADRs, written after the fact** for decisions that had no record beyond this file:
+  [0005](docs/adr/0005-the-data-format-modules-are-carved-out-of-the-stdlib.md) the carve,
+  [0006](docs/adr/0006-legacy-names-are-forwarding-aliases-in-one-last-module.md) the `_compat`
+  aliases, [0007](docs/adr/0007-per-format-sublibs-beside-the-full-bundle.md) the per-format sublibs,
+  [0008](docs/adr/0008-yaml-parses-into-the-json-value-tree.md) yaml parsing into json's tree, and
+  [0009](docs/adr/0009-toml-strings-are-decoded-in-the-parser.md) 1.5.3's choice to decode TOML
+  strings in the parser (Known gap 5). Each names the release that decided, and marks any alternative
+  its record does not mention. 0009's argument is the case for yaml's escapes (1.8.0): the json tree
+  does not record quote style either.
+- [`docs/development/roadmap.md`](docs/development/roadmap.md): the 1.6.1 section is gone, and 1.7.0
+  gains the two kept delimiter answers. [`docs/benchmarks.md`](docs/benchmarks.md) gains the
+  delimiter table. `state.md` refreshed: Known gaps 4, 5, 9 and 13 are closed or narrowed.
+
 ## [1.6.0] — 2026-10-15
 
 Opens the 1.6 line. **`bayan_cyml_parse` takes 0.39× 1.5.14's time.** Since 1.5.1 it had tested

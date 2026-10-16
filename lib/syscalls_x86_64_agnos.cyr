@@ -627,8 +627,10 @@ enum AgnosRedirOp {
 }
 var SPAWN_LINE_MAX = 127;    # #43 line form (flags == 0) and #37: payload bytes
 const _SPAWN_ARGV_MAX = 1024;   # #43 SPAWN_F_ARGV blob: total bytes, NULs included (min 2)
+# Read-only mirror of `_SPAWN_ARGV_MAX`: lib/ reads the const; a write changes nothing (D16). CHANGELOG [6.7.12]
 var SPAWN_ARGV_MAX = _SPAWN_ARGV_MAX;   # the const sizes every argv blob buffer (6.7.6)
 const _SPAWN_ENV_MAX = 1024;    # #43 env blob (a3 / a4): total bytes, NULs included — the kernel's limit
+# Read-only mirror of `_SPAWN_ENV_MAX`: lib/ reads the const; a write changes nothing (D16). CHANGELOG [6.7.12]
 var SPAWN_ENV_MAX = _SPAWN_ENV_MAX;     # the const sizes every env blob buffer (6.7.9)
 # ⚠ SPAWN_ARGV_MAX and SPAWN_ENV_MAX tell a caller the kernel's limits; every buffer, cap and check
 # in the peer reads the CONST, so writing either var changes nothing here (before 6.7.9 a raised
@@ -2517,7 +2519,10 @@ fn _agnos_sock_open(): i64 {
 # the zero slot stays "free".
 # v6.6.8: a conn that sys_sock_accept marked starts with its listener's recv/send timeouts (see
 # _agnos_accept_from); the mark is consumed here, so it applies to this bind only.
+# Returns 0, or -1 with nothing stored when `fd` is not a tagged socket fd (it stored into slot
+# `fd & 7` whatever `fd` was: a -1 overwrote, and leaked, slot 7's conn). CHANGELOG [6.7.12]
 fn _agnos_sock_bind(fd, conn_id): i64 {
+    if (_agnos_is_sock_fd(fd) == 0) { return 0 - 1; }
     _agnos_conn_init();
     var slot = fd & 7;
     store64(&_agnos_conn_tbl + slot * 8, conn_id + 1);
@@ -2593,8 +2598,10 @@ fn _agnos_listen_class(ip): i64 {
 
 # Stash a bind for sock_listen: `port` (1..65535), the listen class and the bind address.
 # Returns 0, or -1 for a port outside 1..65535 — refused HERE because #56 packs the class into
-# the same register, so an oversized port would bleed into the class bits.
+# the same register, so an oversized port would bleed into the class bits — or -1 when `fd` is
+# not a tagged socket fd (a -1 stashed into slot 7). CHANGELOG [6.7.12]
 fn _agnos_listen_stash(fd, port, cls, ip): i64 {
+    if (_agnos_is_sock_fd(fd) == 0) { return 0 - 1; }
     if (port < 1) { return 0 - 1; }
     if (port > 65535) { return 0 - 1; }
     _agnos_conn_init();
@@ -2611,8 +2618,10 @@ fn _agnos_listen_stash(fd, port, cls, ip): i64 {
 # listen fd never routes a read/write to #48/#49.
 # v6.6.7: #56 carries the bind's class (port | class << 32). A LOOPBACK listen on a pre-1.57.7
 # kernel is refused (-1) — it FAILS CLOSED rather than listening on the network. An unbound
-# socket (no stashed port) is refused here instead of asking the kernel for port 0.
+# socket (no stashed port) is refused here instead of asking the kernel for port 0, and so is an
+# fd that is not a tagged socket fd (a -1 listened on slot 7's stash). CHANGELOG [6.7.12]
 fn _agnos_listen_start(fd): i64 {
+    if (_agnos_is_sock_fd(fd) == 0) { return 0 - 1; }
     _agnos_conn_init();
     var slot = fd & 7;
     var port = load64(&_agnos_listen_port + slot * 8);
@@ -2624,8 +2633,10 @@ fn _agnos_listen_start(fd): i64 {
 }
 
 # Resolve a tagged listen fd to its kernel listen_id, or -1 if the slot isn't a
-# LISTEN socket (used by sock_accept to map the fd back to its id before #57).
+# LISTEN socket (used by sock_accept to map the fd back to its id before #57) or `fd` is not a
+# tagged socket fd (a -1 resolved to slot 7's listener). CHANGELOG [6.7.12]
 fn _agnos_fd_listen(fd): i64 {
+    if (_agnos_is_sock_fd(fd) == 0) { return 0 - 1; }
     _agnos_conn_init();
     var slot = fd & 7;
     var v = load64(&_agnos_listen_tbl + slot * 8);

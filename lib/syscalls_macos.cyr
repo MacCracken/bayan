@@ -676,6 +676,16 @@ fn epoll_event_new(events, data): i64 {
     return ev;
 }
 
+# The size of one epoll_event in this peer's layout (x86_64's packed 12 bytes). Darwin has no
+# epoll — sys_epoll_wait declines — so this sizes epoll_event_new's layout only. CHANGELOG [6.7.12]
+const EPOLL_EVENT_SIZE = 12;
+
+# The events mask of the epoll_event at `ev` (an epoll_event_new result).
+fn epoll_event_events(ev): i64 { return load32(ev); }
+
+# The u64 data of the epoll_event at `ev` — at offset 4, the packed layout epoll_event_new writes.
+fn epoll_event_data(ev): i64 { return load64(ev + 4); }
+
 # Wait for epoll events. Declines with -ENOSYS (-78): Darwin has no epoll (its readiness API is
 # kqueue — sys_kqueue / sys_kevent below).
 fn sys_epoll_wait(epfd, events, maxevents, timeout): i64 {

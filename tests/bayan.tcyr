@@ -4228,4 +4228,199 @@ assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_INDENT, strlen(TM_INDEN
   "cyml: nor is an indented one");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_AT0, 0)), 0, "cyml: empty input has no entries");
 
+test_group("cyml: the --- searches hop line to line and find what the per-byte test found (1.6.1)");
+# The single-entry search, each entry's search and bayan_cyml_split called _cyml_is_delim at every
+# byte, the shape 1.6.0 removed from the marker scan. _cyml_next_delim walks to the next newline and
+# compares the delimiter only there. _td_is_delim_ref is the 1.6.0 per-byte test, copied here: from
+# every offset i, the answer must be the first p >= i at which the reference says yes, or len. An
+# entry's search passes the entry's end as len, so checking every prefix covers that bound too. The
+# parse and split results are pinned with their 1.6.0 values (a scratch differential of 7.8M parses
+# and splits against the 1.6.0 module agreed).
+fn _td_is_delim_ref(data, len, pos): i64 {
+    if (pos == 0) {
+        if (pos + 4 <= len) {
+            if (load8(data) == 45 && load8(data+1) == 45 && load8(data+2) == 45 && load8(data+3) == 10) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (pos + 5 > len) { return 0; }
+    if (load8(data + pos) != 10) { return 0; }
+    if (load8(data + pos + 1) != 45) { return 0; }
+    if (load8(data + pos + 2) != 45) { return 0; }
+    if (load8(data + pos + 3) != 45) { return 0; }
+    if (load8(data + pos + 4) != 10) { return 0; }
+    return 1;
+}
+var td_bad = 0;
+var td_offsets = 0;
+# Every offset of the document at `len`, as _tm_scan_agrees does for the marker scan.
+fn _td_scan_agrees(data, len): i64 {
+    var bad = 0;
+    var want = len;
+    var i = len;
+    while (i >= 0) {
+        if (i < len) {
+            if (_td_is_delim_ref(data, len, i) == 1) { want = i; }
+        }
+        if (_cyml_next_delim(data, len, i) != want) { bad = bad + 1; }
+        td_offsets = td_offsets + 1;
+        i = i - 1;
+    }
+    return bad;
+}
+fn _td_check(data, len): i64 {
+    var n = 0;
+    while (n <= len) {
+        td_bad = td_bad + _td_scan_agrees(data, n);
+        n = n + 1;
+    }
+    return 0;
+}
+var TD_FLUSH = "---\nbody\n";
+var TD_LEAD = "\n---\nbody\n";
+var TD_MID = "a = 1\n---\nbody\n";
+var TD_TWO = "a = 1\n---\nb\n---\nc\n";
+var TD_CUT = "a = 1\n---";
+var TD_CRLF = "a = 1\r\n---\r\nbody\n";
+var TD_NEAR = "a\n----\nb\n--\nc\n--- \nd\n";
+var TD_ENTRY = "[[entries]]\nid=1\n---\nA\n[[entries]]\nid=2\n---\nB\n";
+var TD_E_FLUSH = "[[entries]]\n---\nA\n";
+var TD_E_EDGE = "[[entries]]\nid=1\n---\n[[entries]]\nid=2\n---\nB\n";
+_td_check(TD_FLUSH, strlen(TD_FLUSH));
+_td_check(TD_LEAD, strlen(TD_LEAD));
+_td_check(TD_MID, strlen(TD_MID));
+_td_check(TD_TWO, strlen(TD_TWO));
+_td_check(TD_CUT, strlen(TD_CUT));
+_td_check(TD_CRLF, strlen(TD_CRLF));
+_td_check(TD_NEAR, strlen(TD_NEAR));
+_td_check(TD_ENTRY, strlen(TD_ENTRY));
+_td_check(TD_E_FLUSH, strlen(TD_E_FLUSH));
+_td_check(TD_E_EDGE, strlen(TD_E_EDGE));
+_td_check(str_data(TM_F1), str_len(TM_F1));
+td_bad = td_bad + _td_scan_agrees(str_data(TM_F95), str_len(TM_F95));
+assert_eq(td_offsets, 26461, "cyml: (the delimiter scan was asked from every offset of every document)");
+assert_eq(td_bad, 0, "cyml: _cyml_next_delim answers the per-byte test's first yes, from every offset");
+assert_eq(_cyml_delim_at(TD_FLUSH, 4, 0), 1, "cyml: `---\\n` is a delimiter where it fits");
+assert_eq(_cyml_delim_at(TD_FLUSH, 3, 0), 0, "cyml: and not where the input ends before its newline");
+# The single-entry parse, and split, which shares its search.
+var td_d = bayan_cyml_parse(TD_FLUSH, strlen(TD_FLUSH));
+assert_eq(bayan_cyml_doc_entry_count(td_d), 1, "cyml: a --- at byte 0 is a delimiter");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: with an empty header above it");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), TD_FLUSH + 4, "cyml: and the body after it");
+td_d = bayan_cyml_parse(TD_MID, strlen(TD_MID));
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 5, "cyml: a --- line ends the header");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), TD_MID + 10, "cyml: and the body starts past it");
+td_d = bayan_cyml_parse(TD_TWO, strlen(TD_TWO));
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(td_d, 0)), 7, "cyml: the first --- wins; the second is body");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_CUT, strlen(TD_CUT))), 0,
+  "cyml: a --- with no newline after it is not a delimiter");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_CRLF, strlen(TD_CRLF))), 0, "cyml: nor is a CRLF one");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_NEAR, strlen(TD_NEAR))), 0,
+  "cyml: nor ----, -- or `--- `");
+# A blank line before the --- hides it: byte 0 is tested for the flush form only, as in every
+# release since 1.0.0. The marker scan was fixed for this shape at 1.5.1; this is pinned so that
+# fixing it here (roadmap 1.7.0) is a decision, not a side effect.
+td_d = bayan_cyml_parse(TD_LEAD, strlen(TD_LEAD));
+assert_eq(bayan_cyml_doc_entry_count(td_d), 0, "cyml: a leading blank line hides the --- (as in 1.0.0 - 1.6.0)");
+assert_eq(bayan_cyml_doc_header_len(td_d), 10, "cyml: and the whole text is the header");
+var td_hp = 0; var td_hl = 0; var td_bp = 0; var td_bl = 0;
+assert_eq(bayan_cyml_split(TD_LEAD, strlen(TD_LEAD), &td_hp, &td_hl, &td_bp, &td_bl), 0,
+  "cyml: split agrees: no delimiter");
+assert_eq(bayan_cyml_split(TD_FLUSH, strlen(TD_FLUSH), &td_hp, &td_hl, &td_bp, &td_bl), 1,
+  "cyml: split finds a --- at byte 0");
+assert_eq(td_hl, 0, "cyml: (an empty header)");
+assert_eq(td_bp, TD_FLUSH + 4, "cyml: (and the body after the four bytes)");
+assert_eq(bayan_cyml_split(TD_TWO, strlen(TD_TWO), &td_hp, &td_hl, &td_bp, &td_bl), 1, "cyml: split takes the first");
+assert_eq(td_bl, 7, "cyml: (with the second --- in the body)");
+# Each entry's search.
+td_d = bayan_cyml_parse(TD_ENTRY, strlen(TD_ENTRY));
+assert_eq(bayan_cyml_doc_entry_count(td_d), 2, "cyml: two entries, each with its own ---");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 1)), 4, "cyml: the second entry's header is id=2");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 1)), TD_ENTRY + 44, "cyml: and its body is B");
+# An entry's search ends at the next marker's newline, so a --- whose newline IS that newline is
+# header text, and the entry has no body.
+td_d = bayan_cyml_parse(TD_E_EDGE, strlen(TD_E_EDGE));
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 8, "cyml: a --- just before a marker is header");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (that entry has no body)");
+assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(td_d, 1)), TD_E_EDGE + 33, "cyml: and the next entry is whole");
+# The search starts at the header, past the marker's newline, so a --- flush against the marker is
+# header text too (as in 1.0.0 - 1.6.0; roadmap 1.7.0).
+td_d = bayan_cyml_parse(TD_E_FLUSH, strlen(TD_E_FLUSH));
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 5,
+  "cyml: a --- flush against its marker is header (as in 1.0.0 - 1.6.0)");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (and the entry has no body)");
+
+test_group("cyml: bayan_cyml_parse returns 0, and the loader an Err, on every refusal (1.6.1)");
+# The doc, the single-entry array, each entry and the multi-entry array were used unchecked, so a
+# refused one was stored through at address 0, and a refused offset array returned the doc built so
+# far, which reads as an empty document. In the loader a refused builder, chunk Str, result or parse
+# faulted and a refused grow ended the process. The lever is toml's (1.5.13): the default
+# allocator's alloc slot, swapped for one that refuses the k-th request alone, for every k of one
+# parse. A fail-after allocator would refuse every request from the k-th on and hide a missing
+# check behind the refusal after it.
+var tr_nth = 0 - 1;
+var tr_calls = 0;
+fn _tr_refuse_nth(state, size): i64 {
+    tr_calls = tr_calls + 1;
+    if (tr_calls == tr_nth) { return 0; }
+    return alloc(size);
+}
+var tr_dv = default_alloc();
+var tr_saved = load64(tr_dv);
+# The requests one parse of `data` makes, then each refused alone. tr_partial counts the parses that
+# returned anything but 0.
+var tr_partial = 0;
+fn _tr_sweep(data, len): i64 {
+    tr_nth = 0 - 1;
+    tr_calls = 0;
+    store64(tr_dv, &_tr_refuse_nth);
+    bayan_cyml_parse(data, len);
+    var n = tr_calls;
+    var k = 1;
+    while (k <= n) {
+        tr_nth = k;
+        tr_calls = 0;
+        if (bayan_cyml_parse(data, len) != 0) { tr_partial = tr_partial + 1; }
+        k = k + 1;
+    }
+    tr_nth = 0 - 1;
+    store64(tr_dv, tr_saved);
+    return n;
+}
+var TR_ONE = "title = \"x\"\n---\nbody\n";
+var TR_MULTI = "[meta]\nname = \"m\"\n[[entries]]\nid = 1\n---\nA\n[[entries]]\nid = 2\n---\nB\n[[entries]]\nid = 3\n";
+var TR_NONE = "title = \"x\"\n";
+assert_eq(_tr_sweep(TR_NONE, strlen(TR_NONE)), 1, "cyml: a document with no --- and no marker allocates the doc");
+assert_eq(_tr_sweep(TR_ONE, strlen(TR_ONE)), 3, "cyml: one entry: the doc, the array and the entry");
+assert_eq(_tr_sweep(TR_MULTI, strlen(TR_MULTI)), 6,
+  "cyml: three entries: the doc, the offsets, the array and an entry each");
+assert_eq(tr_partial, 0, "cyml: parse, each allocation point refused alone, returns 0 (was a fault, or an empty doc)");
+var tr_d = bayan_cyml_parse(TR_MULTI, strlen(TR_MULTI));
+assert_eq(bayan_cyml_doc_entry_count(tr_d), 3, "cyml: (and with the slot restored the document has 3 entries)");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(tr_d, 2)), 0, "cyml: (the third with no body)");
+# The loader, the same way: every request of one load, each refused alone, is an Err.
+file_write_all("build/refusal-generated.cyml", TR_MULTI, strlen(TR_MULTI));
+tr_nth = 0 - 1;
+tr_calls = 0;
+store64(tr_dv, &_tr_refuse_nth);
+var tr_ok_tag, tr_ok = bayan_cyml_parse_file_r("build/refusal-generated.cyml");
+var tr_ln = tr_calls;
+var tr_k = 1;
+var tr_not_err = 0;
+while (tr_k <= tr_ln) {
+    tr_nth = tr_k;
+    tr_calls = 0;
+    var tr_tag, tr_v = bayan_cyml_parse_file_r("build/refusal-generated.cyml");
+    if (is_err_result(tr_tag) == 0) { tr_not_err = tr_not_err + 1; }
+    tr_k = tr_k + 1;
+}
+tr_nth = 0 - 1;
+store64(tr_dv, tr_saved);
+assert_eq(is_err_result(tr_ok_tag), 0, "cyml: the loader reads the refusal fixture");
+assert_eq(bayan_cyml_doc_entry_count(tr_ok), 3, "cyml: (to 3 entries)");
+assert_eq(tr_ln, 12, "cyml: (a load: the chunk, the builder, a chunk Str, a grow, the result and its Str, the parse's 6)");
+assert_eq(tr_not_err, 0, "cyml: parse_file_r, each allocation point refused alone, is an Err (was a fault, an exit or Ok(0))");
+
 var r = assert_summary();

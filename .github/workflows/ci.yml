@@ -157,6 +157,15 @@ jobs:
           printf '%s\n' "$out" | grep -Eq '[0-9]+ deps, 0 untrusted, 0 missing' || {
             echo "::error::cyrius vet reported untrusted or missing include deps"; exit 1; }
 
+      # lib/bayan.cyr is cyrius's fold of an OLDER bayan, vendored back into bayan's own lib/ by
+      # every `lib sync --full`, so deleting it does not last. It defines every symbol src/ does,
+      # and the last definition wins with only a warning, so reaching it would quietly bring back
+      # what later releases fixed (1.6.1, Known gap 4). The script refuses an include of it from
+      # src/, tests/ or scripts/, a `bayan` in [deps], and a `bayan` leaf in a dist/ sidecar; its
+      # header has the reasons. Each of those was planted at 1.6.1 and turned this step red.
+      - name: Nothing reaches the vendored fold lib/bayan.cyr
+        run: ./scripts/vendored-fold-guard.sh
+
       # Two naming hazards, both of which are silent in cyrius.
       - name: PDF — naming hazards
         run: |

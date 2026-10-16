@@ -439,13 +439,13 @@ fn xlseek(fd, off, whence): i64 {
 # which EMACHO_SYSXLAT renumbers to BSD 131); the macOS arm below still issues the literal 73,
 # the same number on both Macs — so the per-target dispatch is centralized here and a caller
 # using xflock can never hand-roll a Linux #73 that traps off-Linux (the agnos-ABI footgun
-# this wrapper set exists to end). Windows has no flock.
+# this wrapper set exists to end). Windows has no flock: its arm is _xflock_win below.
 fn xflock(fd, op): i64 {
     #ifdef CYRIUS_TARGET_AGNOS
     return sys_flock(fd, op);                  # agnos kernel #59 (inode-keyed advisory)
     #endif
     #ifdef CYRIUS_TARGET_WIN
-    return -1;                                 # Windows: no flock (LockFileEx — not wired)
+    return _xflock_win(fd, op);                # LockFileEx / UnlockFileEx on a sentinel byte
     #endif
     #ifdef CYRIUS_TARGET_MACOS
     # v6.5.16: was `syscall(92, ...)` labelled "BSD flock". Darwin 92 is **fcntl** —
@@ -470,6 +470,49 @@ fn xflock(fd, op): i64 {
     #endif
     #endif
 }
+
+#ifdef CYRIUS_TARGET_WIN
+# xflock's Windows arm: flock emulated with kernel32 byte-range locks (LockFileEx 0xF04C,
+# UnlockFileEx 0xF04D, GetLastError 0xF04B). Windows byte locks are MANDATORY: locking the
+# file's real bytes would fail every read and write through another handle (patra's own), so
+# the lock is ONE sentinel byte at 2^63 - 1, past any data a file can hold — it excludes other
+# lockers only. A held range relocked on the same handle blocks or stacks, so LOCK_SH / LOCK_EX
+# drop this handle's lock first (flock's own conversion is not atomic either). Returns 0;
+# -11 (EAGAIN on PE) when LOCK_NB finds the lock held (ERROR_LOCK_VIOLATION 33, or
+# ERROR_IO_PENDING 997 on an overlapped handle); -22 for an op that is not LOCK_SH, LOCK_EX or
+# LOCK_UN (+LOCK_NB), as on Linux; -1 for any other failure. LOCK_UN of an unheld lock is 0
+# (ERROR_NOT_LOCKED 158), as on Linux. Measured on cass. CHANGELOG [6.7.12]
+fn _xflock_win(fd, op): i64 {
+    var cmd = op & (0 - 5);                    # drop LOCK_NB (4)
+    if (cmd != 1) { if (cmd != 2) { if (cmd != 8) { return 0 - 22; } } }
+    var ov[32];                                # OVERLAPPED: Internal, InternalHigh, Offset:OffsetHigh, hEvent
+    store64(&ov, 0);
+    store64(&ov + 8, 0);
+    store64(&ov + 16, 0x7FFFFFFFFFFFFFFF);     # the sentinel byte's offset
+    store64(&ov + 24, 0);
+    var u = syscall(0xF04D, fd, 0, 1, 0, &ov);    # UnlockFileEx
+    if (u < 0) { return 0 - 1; }               # -38: a compiler without the reroute
+    var e = 0;
+    if (u == 0) { e = syscall(0xF04B) & 0xFFFFFFFF; }
+    if (cmd == 8) {
+        if (e == 0) { return 0; }
+        if (e == 158) { return 0; }            # ERROR_NOT_LOCKED
+        return 0 - 1;
+    }
+    var fl = 0;
+    if (cmd == 2) { fl = 2; }                  # LOCKFILE_EXCLUSIVE_LOCK
+    if ((op & 4) != 0) { fl = fl | 1; }        # LOCKFILE_FAIL_IMMEDIATELY
+    store64(&ov, 0);
+    store64(&ov + 8, 0);
+    var l = syscall(0xF04C, fd, fl, 0, 1, 0, &ov);  # LockFileEx
+    if (l > 0) { return 0; }
+    if (l < 0) { return 0 - 1; }               # -38: a compiler without the reroute
+    e = syscall(0xF04B) & 0xFFFFFFFF;
+    if (e == 33) { return 0 - 11; }            # ERROR_LOCK_VIOLATION
+    if (e == 997) { return 0 - 11; }           # ERROR_IO_PENDING
+    return 0 - 1;
+}
+#endif
 
 # Close a file descriptor
 fn file_close(fd): i64 {

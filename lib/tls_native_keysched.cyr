@@ -27,10 +27,12 @@
 # beside it added 2 + 256 + 256 and the constant did not — so the scratch it sizes was two
 # bytes short; see tls_native_hkdf_expand_label.)
 const _TLS_HKDF_LABEL_BUF_LEN = 2 + (1 + 255) + (1 + 255);
+# Read-only mirror of `_TLS_HKDF_LABEL_BUF_LEN`: lib/ reads the const; a write changes nothing (D16). CHANGELOG [6.7.12]
 var TLS_HKDF_LABEL_BUF_LEN = _TLS_HKDF_LABEL_BUF_LEN;
 var TLS_KEYSCHED_STATE_LEN = 104;     # 13 i64 slots (+1 @ v6.2.25: ALLOC) — see layout below
 var TLS_KS_OFF_ALLOC       = 96;      # v6.2.25 Allocator handle (0=global bump); derive fns route through it
 const _TLS_MAX_DIGEST_LEN = 48;       # SHA-384
+# Read-only mirror of `_TLS_MAX_DIGEST_LEN`: lib/ reads the const; a write changes nothing (D16). CHANGELOG [6.7.12]
 var TLS_MAX_DIGEST_LEN = _TLS_MAX_DIGEST_LEN;
 
 # Key schedule "which sec" identifiers (for keysched_get_secret).

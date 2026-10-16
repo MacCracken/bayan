@@ -624,6 +624,13 @@ fn sock_bind(fd, addr, port) : Result {
     # ⛔ CYRIUS-2026-0008 (v6.6.7): `addr` used to be IGNORED, so a 127.0.0.1 server listened
     # on the network. On an agnos kernel older than 1.57.7 the loopback class is
     # refused at sock_listen — the server does not start, which is the safe answer.
+    # An fd that is not a tagged socket fd is refused first, before any table write (each of the
+    # four agnos arms stashed into, listened on, accepted from or connected into slot `fd & 7`
+    # whatever `fd` was: a failed open's -1 was slot 7). CHANGELOG [6.7.12]
+    if (_agnos_is_sock_fd(fd) == 0) {             # not a tagged socket fd: Linux's answers,
+        if (fd < 0) { return Err(9); }             # EBADF for a negative fd,
+        return Err(88);                            # ENOTSOCK for any other
+    }
     var ip = _agnos_bswap32(addr);
     var cls = _agnos_listen_class(ip);
     if (cls < 0) { return Err(99); }
@@ -645,6 +652,10 @@ fn sock_listen(fd, backlog) : Result {
     # Issue sock_listen(#56) on the port stashed by sock_bind (the kernel merges
     # bind+listen → a listen_id, stored in the fd's adapter slot). backlog is
     # advisory on AGNOS — the kernel's 8-conn-slot table caps it. v6.2.22.
+    if (_agnos_is_sock_fd(fd) == 0) {             # not a tagged socket fd: Linux's answers,
+        if (fd < 0) { return Err(9); }             # EBADF for a negative fd,
+        return Err(88);                            # ENOTSOCK for any other
+    }
     var r = _agnos_listen_start(fd);
     # port in use / kernel conn table full / unbound — or a LOOPBACK bind on an agnos
     # older than 1.57.7, which has no address classes: refused, never widened (CYRIUS-2026-0008).
@@ -672,6 +683,10 @@ fn sock_accept(fd) : Result {
     # a Linux non-blocking accept). On success wrap the conn_id in a FRESH tagged
     # fd via the client-band adapter — the accepted conn then transparently uses
     # sock_send#48 / sock_recv#49 / sock_close#50. v6.2.22.
+    if (_agnos_is_sock_fd(fd) == 0) {             # not a tagged socket fd: Linux's answers,
+        if (fd < 0) { return Err(9); }             # EBADF for a negative fd,
+        return Err(88);                            # ENOTSOCK for any other
+    }
     var lid = _agnos_fd_listen(fd);
     if (lid < 0) { return Err(1); }              # fd isn't a LISTEN socket
     var cid = sys_sock_accept(lid);
@@ -713,6 +728,11 @@ fn sock_connect(fd, addr, port) : Result {
     # packed (sockaddr sin_addr; INADDR_LOOPBACK 0x0100007F), but #47 wants the
     # kernel ip4() form (oct1<<24)|…|oct4 (0x7F000001) — byte-swap it. src_port
     # 0 → kernel auto-assigns ephemeral. Blocks ~8s polling for the SYN-ACK.
+    # The fd is checked BEFORE #47: a conn opened for a non-socket fd would leak. CHANGELOG [6.7.12]
+    if (_agnos_is_sock_fd(fd) == 0) {             # not a tagged socket fd: Linux's answers,
+        if (fd < 0) { return Err(9); }             # EBADF for a negative fd,
+        return Err(88);                            # ENOTSOCK for any other
+    }
     var conn = sys_sock_connect(_agnos_bswap32(addr), port, 0);
     if (conn < 0) { return Err(1); }
     _agnos_sock_bind(fd, conn);
@@ -979,7 +999,9 @@ fn net_connect_nb(fd, addr, port, timeout_ms): i64 {
     # fixed) polling for the SYN-ACK, itself a bounded-timeout connect. The
     # fcntl/poll/getsockopt/connect dance below is Linux-only (syscalls
     # 72/7/55/42, absent from the agnos ABI), so route to the blocking #47 path;
-    # timeout_ms is advisory here. 0 connected, _NET_CONN_NB_ERR on full/timeout/RST.
+    # timeout_ms is advisory here. 0 connected, _NET_CONN_NB_ERR on full/timeout/RST — and on an
+    # fd that is not a tagged socket fd, BEFORE #47 (its conn would leak). CHANGELOG [6.7.12]
+    if (_agnos_is_sock_fd(fd) == 0) { return _NET_CONN_NB_ERR; }
     var aconn = sys_sock_connect(_agnos_bswap32(addr), port, 0);
     if (aconn < 0) { return _NET_CONN_NB_ERR; }
     _agnos_sock_bind(fd, aconn);

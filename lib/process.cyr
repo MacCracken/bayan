@@ -140,15 +140,15 @@ fn proc_timeout_ms(): i64 {
 # execve — by `_proc_child_guard` and by `spawn` (which has no guard): the mask is emptied and
 # SIGPIPE / SIGXFSZ go back to SIG_DFL (Python's `restore_signals` pair; Rust's Command empties
 # the mask and resets SIGPIPE). Every OTHER ignore is kept on purpose: a SIGHUP that `nohup`
-# ignored is the operator's choice and must reach the command. The mask half is Linux only: the
-# macOS floor declines sigprocmask (-78, no Mach-O route), so a cyrius program there cannot block
-# a signal to hand on — but a mask it inherited from its own launcher still passes through
-# (issues/2026-10-11-macos-exec-child-keeps-launcher-signal-mask.md). CHANGELOG [6.7.9]
+# ignored is the operator's choice and must reach the command. CHANGELOG [6.7.9]
+# 6.7.12 — the mask half runs on macOS too: sys_sigprocmask works there now (Darwin's 329 through
+# a shim), so a mask inherited from a launcher no longer passes through to the child. cx (its own
+# target, no signal delivery) keeps skipping it. CHANGELOG [6.7.12]
 var _PROC_SIGXFSZ = 25;   # Linux (x86_64 and aarch64) and Darwin alike; lib/'s Signal enums have no name for it
 
 fn _proc_child_signals(): i64 {
-    #ifdef CYRIUS_TARGET_LINUX
-    var empty[8];          # a kernel sigset: 8 bytes, rt_sigprocmask's sigsetsize
+    #ifndef CYRIUS_TARGET_CX
+    var empty[8];          # a sigset: 8 bytes (rt_sigprocmask's sigsetsize; Darwin reads the low 4)
     store64(&empty, 0);
     sys_sigprocmask(SIG_SETMASK, &empty, 0);
     #endif

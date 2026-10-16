@@ -1,7 +1,9 @@
 # lib/ws_server.cyr — server-side WebSocket (RFC 6455)
 #
-# Companion to lib/ws.cyr (client-side).
-# Self-sufficient: includes syscalls.cyr, alloc.cyr, string.cyr, str.cyr, net.cyr, sha1.cyr and
+# Companion to lib/ws.cyr (client-side), which it includes: the WS_OP_* opcodes and the WS_OPEN /
+# WS_CLOSING / WS_CLOSED states are ws.cyr's enum constants, one home per name (a second copy here
+# made `cyrius distlib`'s owner rule refuse every WS_* name as a tie). CHANGELOG [6.7.12]
+# Self-sufficient: includes syscalls.cyr, alloc.cyr, string.cyr, str.cyr, net.cyr, ws.cyr, sha1.cyr and
 # two folds — bayan (base64_encode; base64.cyr was folded into it) and sandhi
 # (sandhi_server_find_header; http_server.cyr was folded into it) — whose bundles carry their
 # own requires blocks since 6.6.19 R1. CHANGELOG [6.6.19]
@@ -18,24 +20,14 @@ include "lib/alloc.cyr"
 include "lib/string.cyr"
 include "lib/str.cyr"
 include "lib/net.cyr"
+include "lib/ws.cyr"
 include "lib/sha1.cyr"
 include "lib/bayan.cyr"
 include "lib/sandhi.cyr"
 
 # ================================================================
-# WebSocket constants
+# WebSocket constants (the opcodes and states: lib/ws.cyr's WsOpcode / WsState)
 # ================================================================
-var WS_OP_CONTINUATION = 0;
-var WS_OP_TEXT         = 1;
-var WS_OP_BINARY       = 2;
-var WS_OP_CLOSE        = 8;
-var WS_OP_PING         = 9;
-var WS_OP_PONG         = 10;
-
-var WS_OPEN    = 1;
-var WS_CLOSING = 2;
-var WS_CLOSED  = 3;
-
 var WS_MAX_PAYLOAD = 1048576;   # 1 MB cap on incoming frame payloads
 
 # Magic GUID per RFC 6455 § 1.3 — appended to client key before SHA-1.

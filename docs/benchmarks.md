@@ -136,7 +136,38 @@ because a batch yields a single sample.
   per byte: a call and a return before, one load and one compare now.
 - **Left for 1.6.1:** the `---` searches (each entry's, the single-entry file's, and
   `bayan_cyml_split`) still call `_cyml_is_delim` at every byte. An entry's header is short, so they
-  are a small share of these numbers.
+  are a small share of these numbers. (Done in 1.6.1; see the next section.)
+
+## CYML `---` search — `bayan_cyml_parse` / `bayan_cyml_split` (1.6.1)
+
+- **Toolchain**: cyrius 6.7.12 · **bayan**: 1.6.0 vs 1.6.1, both modules in one binary · same host,
+  **load average ~15**, so the times run high (the 1.6.0 parser's 95-entry font is 50.5 µs here
+  against 41.2 µs in the table above). The ratios are interleaved run by run and held across two
+  runs (within 0.01).
+- **Method**: the fastest of 9 interleaved rounds of 200 calls per module.
+
+| Document | Bytes | 1.6.0 | 1.6.1 | 1.6.1 / 1.6.0 |
+|---|---:|---:|---:|---:|
+| parse, 95-entry font | 8,816 | 50.5 µs | 46.1 µs | 0.91 |
+| parse, 300-entry font | 27,676 | 159.3 µs | 143.5 µs | 0.90 |
+| parse, one entry, 200-line header | 6,922 | 54.4 µs | 22.1 µs | 0.40 |
+| parse, 50 entries × 20-line headers | 24,768 | 243.4 µs | 131.2 µs | 0.54 |
+| `bayan_cyml_split`, 200-line header | 6,922 | 44.1 µs | 10.9 µs | 0.25 |
+
+`tests/bayan.bcyr` gains the single-entry row: `cyml_parse (one entry, 200-line header, 6.9KB)`,
+19.8 µs in one `cyrius bench` run (140.1 µs under qemu-aarch64).
+
+### Reading these
+
+- **The same change as 1.6.0's, applied to the delimiter.** `_cyml_next_delim` walks to the next
+  newline and compares `---\n` only there. Before, each search called `_cyml_is_delim` at every
+  byte.
+- **What moves is the share of the input the search covers.** In a font, the delimiter search reads
+  one header line per entry, and most of the bytes are glyph rows that only the marker scan reads,
+  so the font rows move 9–10%. A single entry's header is nearly the whole document. `split` does
+  nothing but the search, so it gains most.
+- **The parse hops line to line throughout now.** What is left per byte is the newline walk itself,
+  a load and a compare, in each marker pass and in the delimiter search.
 
 ### Not yet measured
 

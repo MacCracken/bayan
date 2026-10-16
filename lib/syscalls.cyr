@@ -86,7 +86,8 @@ include "lib/syscalls_x86_64_agnos.cyr"
 # else goes to the host raw, WITHOUT pointer translation — so a wrapper outside that set
 # compiles on cx and will not work. (This read "read/write/open/close/lseek/exit" until
 # 6.6.10, two releases after 318/228 were added; docs/platform-status.md states the whole
-# guest contract.) Before this arm
+# guest contract.) 6.7.12: sys_pipe / sys_fstat / sys_unlink refuse with -ENOSYS on cx and
+# lib/mmap.cyr's cyr_mmap with -1, rather than hand the host a guest offset. Before this arm
 # the cx driver matched no target at all, so `sys_exit` (and every other
 # wrapper) was undefined and `lib/assert.cyr` could not compile for cx.
 #ifdef CYRIUS_TARGET_CX

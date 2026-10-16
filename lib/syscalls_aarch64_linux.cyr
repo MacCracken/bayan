@@ -883,6 +883,19 @@ fn epoll_event_new(events, data): i64 {
     return ev;
 }
 
+# The size of one epoll_event on aarch64 — the array stride sys_epoll_wait writes at. The struct
+# is not packed here, so the u64 data aligns to offset 8: 16 bytes (12 on x86_64, which packs
+# it). Reading a returned array at x86_64's 12 / +4 read the wrong bytes. CHANGELOG [6.7.12]
+const EPOLL_EVENT_SIZE = 16;
+
+# The events mask of the epoll_event at `ev` (one element of a sys_epoll_wait array, or an
+# epoll_event_new result).
+fn epoll_event_events(ev): i64 { return load32(ev); }
+
+# The u64 data of the epoll_event at `ev` — at offset 8 on aarch64 (the unpacked layout
+# epoll_event_new writes). Step through a sys_epoll_wait array by EPOLL_EVENT_SIZE.
+fn epoll_event_data(ev): i64 { return load64(ev + 8); }
+
 # sys_epoll_ctl moved to lib/syscalls_linux_common.cyr at v5.11.20.
 
 # Wait for epoll events. aarch64 has only epoll_pwait (#22) — but 22 is x86 `pipe`,
