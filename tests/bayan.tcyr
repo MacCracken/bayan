@@ -4516,4 +4516,75 @@ assert_eq(str_eq_cstr(bayan_json_build(jb_kind), "{\"n\": 42, \"o\": {}}"), 1,
 assert_eq(JSON_PAIR_SIZE, 24, "json: a pair is 24 bytes as of 1.7.0 (it was 16)");
 assert_eq(str_eq_cstr(bayan_json_build(bayan_json_parse(str_from("{}"))), "{}"), 1, "json: an empty object builds as {}");
 
+test_group("csv: a refused allocation returns 0, never a short row or a fault (1.7.1)");
+# Each csv function answered a refusal its own way: parse_line with the fields it had so far, a
+# short row a caller cannot tell from a real one; escape by storing through address 0; write_line by
+# handing a refused escape's 0 to strlen; and either one, when its vec could not grow, by ending the
+# process. The lever is toml's (1.5.13) and cyml's (1.6.1): the default allocator's alloc slot,
+# swapped for one that refuses the k-th request alone, for every k of one call. The inputs reach
+# every allocation point: 18 fields grow the vec past its 16 slots, and quoted fields make escape
+# allocate.
+var cs_nth = 0 - 1;
+var cs_calls = 0;
+fn _cs_refuse_nth(state, size): i64 {
+    cs_calls = cs_calls + 1;
+    if (cs_calls == cs_nth) { return 0; }
+    return alloc(size);
+}
+var cs_dv = default_alloc();
+var cs_saved = load64(cs_dv);
+var cs_partial = 0;
+fn _cs_call(kind, arg): i64 {
+    if (kind == 0) { return bayan_csv_parse_line(arg); }
+    if (kind == 1) { return bayan_csv_escape(arg); }
+    return bayan_csv_write_line(arg);
+}
+# The requests one call makes, then each refused alone; cs_partial counts the calls that returned
+# anything but 0.
+fn _cs_sweep(kind, arg): i64 {
+    cs_nth = 0 - 1;
+    cs_calls = 0;
+    store64(cs_dv, &_cs_refuse_nth);
+    _cs_call(kind, arg);
+    var n = cs_calls;
+    var k = 1;
+    while (k <= n) {
+        cs_nth = k;
+        cs_calls = 0;
+        if (_cs_call(kind, arg) != 0) { cs_partial = cs_partial + 1; }
+        k = k + 1;
+    }
+    cs_nth = 0 - 1;
+    store64(cs_dv, cs_saved);
+    return n;
+}
+var cs_sb = str_builder_new();
+var cs_row = vec_new();
+var cs_i = 0;
+while (cs_i < 18) {
+    if (cs_i > 0) { str_builder_putc(cs_sb, 44); }
+    if (cs_i % 3 == 0) {
+        str_builder_add_cstr(cs_sb, "\"x,y\"");
+        vec_push(cs_row, "x,y");
+    } else {
+        str_builder_add_cstr(cs_sb, "f");
+        vec_push(cs_row, "f");
+    }
+    cs_i = cs_i + 1;
+}
+var CS_LINE = str_data(str_builder_build(cs_sb));
+var cs_lone = vec_new();
+vec_push(cs_lone, "");
+assert_eq(_cs_sweep(0, CS_LINE), 22, "csv: parse_line makes 22 requests: the vec (2), the scratch, 18 fields, one growth");
+assert_eq(_cs_sweep(1, "a,b"), 1, "csv: escape of a field that needs quotes makes one");
+assert_eq(_cs_sweep(1, "plain"), 0, "csv: (and of one that does not, none: it returns the field)");
+assert_eq(_cs_sweep(2, cs_row), 10, "csv: write_line makes 10: the vec (2), six escapes, one growth, the record");
+assert_eq(_cs_sweep(2, cs_lone), 1, "csv: (a row of one empty field, one)");
+assert_eq(cs_partial, 0, "csv: each allocation point refused alone returns 0 (was a short row, a fault or an exit)");
+assert_eq(vec_len(bayan_csv_parse_line(CS_LINE)), 18, "csv: (with the slot restored the line has 18 fields)");
+assert_eq(streq(vec_get(bayan_csv_parse_line(CS_LINE), 17), "f"), 1, "csv: (the last one whole)");
+var cs_back = bayan_csv_parse_line(bayan_csv_write_line(cs_row));
+assert_eq(vec_len(cs_back), 18, "csv: (and the row round-trips)");
+assert_eq(streq(vec_get(cs_back, 0), "x,y"), 1, "csv: (its quoted fields whole)");
+
 var r = assert_summary();

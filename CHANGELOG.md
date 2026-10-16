@@ -2,6 +2,65 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.1] — 2026-10-15
+
+Patch release, the roadmap's 1.7.1 slot. **Each csv function returns 0 when an allocation is
+refused** (Known gap 16, found while 1.7.0 rewrote the parser). Until now each answered a refusal
+in its own wrong way, and none of them with 0. Public API: nothing added or removed, and no function
+returns anything different for any input it is not refused memory on. ⚠ A caller that passes
+`bayan_csv_parse_line`'s result straight to `vec_len` should check it for 0 first, as it would
+`bayan_toml_parse`'s. The pin stays 6.7.12, and the floor 6.7.9 (checked there).
+
+### Fixed
+
+- **`bayan_csv_parse_line` returns 0, never a short row.** A refused field copy or scratch buffer
+  returned the fields read so far, a row a caller cannot tell from a real one. A refused vec
+  header was pushed to (a fault), and a refused growth past 16 fields ended the process, as the
+  default `vec_push` does.
+- **`bayan_csv_escape` returns 0 instead of storing through address 0.** Its output buffer, needed
+  only for a field that must be quoted, was used unchecked. A field that needs no quotes is still
+  returned as it is, with no allocation.
+- **`bayan_csv_write_line` returns 0** for a refused escape (it handed the 0 to `strlen`) and a
+  refused vec or vec growth (a fault or an exit). The record buffer and 1.7.0's lone-empty-field
+  buffer were the only allocations it checked.
+- Every allocation in the module goes through `default_alloc()`: the same global bump allocation
+  as the bare `alloc` it replaces, routed through the slot a test can swap. Pushes use
+  `vec_push_a`, which reports a refused growth instead of ending the process. The module header
+  states the contract.
+
+### Tests
+
+- **`tests/bayan.tcyr` +10 (1,601 → 1,611): "csv: a refused allocation returns 0, never a short
+  row or a fault (1.7.1)".** The lever used for TOML at 1.5.13 and cyml at 1.6.1: the default
+  allocator's alloc slot is swapped for one that refuses only the k-th request, for every k of one
+  call. A line of 18 fields, six of them quoted, grows the vec past its 16 slots. Its parse makes 22
+  requests (the vec's two, the scratch, 18 field copies, one growth), and writing the matching row
+  makes 10 (the vec's two, six escapes, one growth, the record). An escape that quotes makes one, an
+  escape that does not makes none, and a row of one empty field makes one. Every refused call
+  returns 0. The counts are pinned, so an allocation that left the default allocator would be seen.
+- **Thirteen mutants each fail it:** each of the new checks removed alone, the two pushes back on
+  `vec_push`, and each allocation back on bare `alloc`. Four segfault, two end the process with
+  `vec: alloc failed`, and seven fail a named row.
+- The CSV vectors (4,835 from Python's `csv`) are unchanged and 0 wrong.
+- **The floor stays 6.7.9.** In a scratch copy pinned to 6.7.9 with its `lib/`: the build and all 6
+  test files are warning-free (the sweep included), the smoke entry exits 42, and 6.7.9's
+  `distlib --all --check` accepts the bundles 6.7.12 generated.
+- Gates, all green on the 6.7.12 pin. x86_64: build, smoke, `cyrius test` (6/6), the deprecated
+  lookups, fuzz, bench, coverage 506/506, the cost gate. aarch64 under qemu: build, smoke, test,
+  deprecated lookups, fuzz, bench, the cost gate, the PDF writer byte-identical across targets.
+  Also: format, lint (0/0 across `src/`), `vet`, the arch-arm check, the vendored-fold guard,
+  `distlib --all --check`, regeneration with no change, `scripts/consumer-check.sh` and the
+  raw-include build. Then the CI mirror: every `ci.yml` job, each in its own fresh copy of the tree,
+  on the 6.7.12 release, all six green.
+- **`dist/` regenerated** (`cyrius distlib --all`). `bayan.cyr` and `bayan-csv` carry the checks
+  (+13 lines); the other eight change only their version header. The `.deps` sidecars are
+  unchanged.
+
+### Docs
+
+- [`docs/development/roadmap.md`](docs/development/roadmap.md): the 1.7.1 section is gone; 1.8.0 is
+  next. `state.md` refreshed: Known gap 16 is closed.
+
 ## [1.7.0] — 2026-10-15
 
 Minor release, the roadmap's 1.7.0 slot: **four outputs that were silently wrong**, each fixed

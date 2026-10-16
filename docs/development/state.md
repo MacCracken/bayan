@@ -6,7 +6,15 @@
 
 ## Version
 
-**1.7.0** — a minor, the roadmap's 1.7.0 slot whole: four outputs that were silently wrong, each its
+**1.7.1** — a patch, the roadmap's 1.7.1 slot whole; pin unchanged at **6.7.12**. csv returns 0 on
+every refused allocation (Known gap 16). Each function answered a refusal differently before:
+`bayan_csv_parse_line` returned the fields it had so far (a short row), `bayan_csv_escape` stored
+through address 0, `bayan_csv_write_line` handed a refused escape's 0 to `strlen`, and a refused vec
+growth ended the process. Every allocation now goes through `default_alloc()`, and a sweep refuses
+each allocation point alone (22 in a parse of 18 fields, 10 in a write). Thirteen mutants each fail
+it. Public API: unchanged; no answer to any input changed. Floor 6.7.9.
+
+Before it, **1.7.0** — a minor, the roadmap's 1.7.0 slot whole: four outputs that were silently wrong, each its
 own CHANGELOG entry, and what a consumer should re-check is in that entry's header. **csv** reads
 and writes what Python's `csv` module does: a trailing empty field, CRLF records, CR forcing quotes,
 text after a closing quote kept in its field (4,835 oracle vectors, regenerated in CI).
@@ -285,7 +293,7 @@ Eight data/big-integer modules carved byte-identical from cyrius stdlib
 (public functions prefixed `bayan_`), plus two greenfield modules written
 in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
 `json.cyr` in bundle order) and `pdf` (1.5.0 — cross-dep-free, so its position
-is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.7.0):
+is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.7.1):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
@@ -298,7 +306,7 @@ is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.7.
 | `src/dtoa.cyr`   | 463  | 3  | `bayan_f64_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
 | `src/base64.cyr` | 217  | 4  | `bayan_base64_*` |
-| `src/csv.cyr`    | 186  | 3  | `bayan_csv_*` |
+| `src/csv.cyr`    | 199  | 3  | `bayan_csv_*` |
 
 `toml` has gone 17 -> 21 -> **33** public functions across 1.5.3 and 1.5.4,
 and roughly tripled in size. 1.5.3 added the escape decoder, the literal-string
@@ -333,8 +341,8 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **17,446**-line bundle (17,272 at 1.6.2, 17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
-  regenerated via `cyrius distlib --all` at 1.7.0 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
+- `dist/bayan.cyr` — **17,459**-line bundle (17,446 at 1.7.0, 17,272 at 1.6.2, 17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
+  regenerated via `cyrius distlib --all` at 1.7.1 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
@@ -343,7 +351,7 @@ this is mutation-verified.
   sidecar. Canonical `bayan_*` names only. Every sidecar is complete:
   `scripts/consumer-check.sh` builds all 10 bundles from their declared leaves
   alone, and goes red when a needed one is deleted (checked at 1.5.7). Lines and
-  leaf counts below are measured at 1.7.0 (6.7.12's distlib; the sidecars are
+  leaf counts below are measured at 1.7.1 (6.7.12's distlib; the sidecars are
   unchanged since 1.5.14); the base bundle declares 11 (1.5.14 added `math` to it
   and to json / yaml).
 
@@ -357,7 +365,7 @@ this is mutation-verified.
   | `bayan-u128`   | 829  | 1 |
   | `bayan-bigint` | 462  | 2 |
   | `bayan-base64` | 229  | 2 |
-  | `bayan-csv`    | 199  | 3 |
+  | `bayan-csv`    | 212  | 3 |
 
   `bayan-toml` and `bayan-cyml` stopped listing `fmt` at 1.5.7, and that is
   correct: cyrius 6.6.6's `lib/io.cyr` includes `fmt.cyr` itself, so the `io`
@@ -366,7 +374,7 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,601 asserts, green** @1.7.0 on x86_64 and aarch64 under qemu (1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **1,611 asserts, green** @1.7.1 on x86_64 and aarch64 under qemu (1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
@@ -786,7 +794,8 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
    leading blank line makes the whole text header. And `"[[entries]]\n---\nA\n"` gives an entry
    whose header is `---\nA`, with no body: an entry's search starts past the marker's newline. Both
    date from 1.0.0. Found while making the searches hop at 1.6.1; a fix changed output, so it waited.
-16. **csv does not check its allocations** (found at 1.7.0; roadmap 1.7.1). `bayan_csv_escape`
+16. ~~**csv does not check its allocations**~~ **Fixed in 1.7.1**: every function returns 0 on a
+   refusal, proved by an every-allocation-point sweep. The history (found at 1.7.0): `bayan_csv_escape`
    stores through an unchecked `alloc`, `bayan_csv_parse_line` answers a refused copy with the
    fields it has so far (a short row), and `bayan_csv_write_line` passes a refused escape's 0 to
    `strlen`. The other modules return 0 on a refusal and prove it with a sweep.
@@ -876,7 +885,7 @@ entries). CI verifies it before resolving.
 
 ## Next
 
-[`roadmap.md`](roadmap.md) holds the sequence. **1.7.1** comes next, a patch: csv's allocation
-refusals (Known gap 16). Then yaml escapes and cyml CRLF lines (1.8.0; the first argued by ADR
-0009), `bayan_markdown_*` (1.9.0), typed public names (1.10.0), TOML into the tagged tree (1.11.0),
-and the audit and frozen surface (1.12.0).
+[`roadmap.md`](roadmap.md) holds the sequence. **1.8.0** comes next, a minor: yaml decodes its
+double-quoted escapes (argued by ADR 0009) and cyml reads CRLF lines (Known gap 17). Then
+`bayan_markdown_*` (1.9.0), typed public names (1.10.0), TOML into the tagged tree (1.11.0), and the
+audit and frozen surface (1.12.0).

@@ -16,16 +16,7 @@
 > joined 1.7.0.
 > 1.6.2 (2026-10-15) shipped its slot whole and removed it. So did 1.7.0, whose cyml line rule also
 > covers the end of a region and a last line with no newline; it added 1.7.1 and a 1.8.0 item.
-
-## 1.7.1 — patch: csv's allocation refusals
-
-- **`src/csv.cyr` does not check its allocations the way the other modules now do** (Known gap 16,
-  found while 1.7.0 rewrote the parser). `bayan_csv_escape` stores through an unchecked `alloc`,
-  so a refusal writes to address 0. `bayan_csv_parse_line` answers a refused field copy with the
-  fields it has so far, a short row a caller cannot tell from a real one. `bayan_csv_write_line`
-  passes a refused escape's 0 to `strlen`. Return 0 on every refusal instead, and prove it with an
-  every-allocation-point sweep, as 1.5.13 did for TOML and 1.6.1 for cyml. A patch: no answer to
-  input changes, only what a refusal returns.
+> 1.7.1 (2026-10-15) shipped its slot whole and removed it.
 
 ## 1.8.0 — minor: yaml decodes escapes; cyml reads CRLF lines
 
