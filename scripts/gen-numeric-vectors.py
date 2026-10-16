@@ -60,9 +60,14 @@ def _divlu_steps(a, b, m):
 
     The last one is the exit only `rhat < 2^32` gets right: a loop that
     retested at rhat == 2^32 (`<=`) would read `rhat << 32` as 0 there."""
-    B = 1 << 32
     p = (a % m) * (b % m)
-    u1, u0 = p >> 64, p & M64
+    return _divlu_core(p >> 64, p & M64, m)
+
+
+def _divlu_core(u1, u0, m):
+    """_divlu_steps for the 128-bit numerator u1 * 2^64 + u0, u1 < m (1.6.2:
+    split out so that the aarch64 128-by-64 division can be aimed too)."""
+    B = 1 << 32
     s = 64 - m.bit_length()
     v = m << s
     vn1, vn0 = v >> 32, v & (B - 1)
@@ -203,6 +208,130 @@ def mulmod_rhat_exact(quota=8):
     return rows
 
 
+def _div_row(a, d):
+    """(a, d) as a DV row's operands, the dividend reduced to 128 bits."""
+    return (a & M128, d)
+
+
+def _div_steps(a, d):
+    """_divlu_core for bayan_u128_divmod's aarch64 path (1.6.2): the high
+    word is divided first, so the two-digit division sees (a.hi % d, a.lo)."""
+    return _divlu_core((a >> 64) % d, a & M64, d)
+
+
+def div_aimed(quota=8):
+    """128-by-64 divisions aimed at the correction steps of the two-digit
+    division bayan_u128_divmod uses on aarch64 (1.6.2): per digit, one
+    correction, two corrections, an estimate of 2^32 or more, and an exit
+    because rhat reached 2^32, each with a normalising shift of 0 and not.
+    Unlike mulmod's, the numerator here is any value below d * 2^64, so the
+    first digit can correct twice too. _divlu_core only CHOOSES the inputs;
+    the expected values are Python's // and %."""
+    rnd = random.Random(16201)
+    want = [f"{t}{dg}{sx}" for dg in (1, 2) for t in ("d1-", "d2-", "big-", "rexit-")
+            for sx in ("s0", "s>0")]
+    got = {t: 0 for t in want}
+    rows = []
+    for it in range(400000):
+        if all(got[t] >= quota for t in want):
+            break
+        kind = it % 4
+        L = rnd.randint(1, 64)
+        if kind == 1:
+            L = 64
+        d = rnd.getrandbits(L) | (1 << (L - 1))
+        if kind == 2:                                  # vn1 near 2^31, vn0 near 2^32
+            L = rnd.randint(33, 64)
+            d = (1 << (L - 1)) | (((1 << (L - 32)) - 1) ^ rnd.getrandbits(4))
+        if kind == 3:                                  # numerator just below d * 2^64
+            u1 = d - 1 - rnd.getrandbits(rnd.randint(0, 33)) % d
+        else:
+            u1 = rnd.getrandbits(64) % d
+        u0 = rnd.getrandbits(64)
+        if kind == 0:
+            u0 = M64 - rnd.getrandbits(rnd.randint(0, 40))
+        qh = rnd.getrandbits(64) % ((M64 - u1) // d + 1)
+        a = ((qh * d + u1) << 64) | u0
+        steps = _div_steps(a, d)
+        sx = "s0" if d >> 63 else "s>0"
+        hit = []
+        for dg, (dec, big, rexit, _) in zip((1, 2), steps):
+            if dec == 1: hit.append(f"d1-{dg}{sx}")
+            if dec == 2: hit.append(f"d2-{dg}{sx}")
+            if big: hit.append(f"big-{dg}{sx}")
+            if rexit: hit.append(f"rexit-{dg}{sx}")
+        if not any(got[t] < quota for t in hit):
+            continue
+        for t in hit:
+            got[t] += 1
+        rows.append(_div_row(a, d))
+    assert all(got[t] >= quota for t in want), got
+    return rows
+
+
+def div_rhat_exact(quota=8):
+    """128-by-64 divisions that leave a digit's correction loop at
+    rhat == 2^32 exactly, `quota` each for digit 1 and digit 2, with s = 0 and
+    s > 0 (1.6.2; the method of mulmod_rhat_exact, which is simpler here
+    because the dividend is chosen directly). The digit's numerator is fixed
+    as q-hat * vn1 + (2^32 - vn1), with q-hat large enough to need one
+    correction; _divlu_core confirms each pick."""
+    B = 1 << 32
+    rnd = random.Random(16203)
+    rows = []
+    for digit in (1, 2):
+        for s0 in (True, False):
+            got = 0
+            while got < quota:
+                if s0:
+                    d = rnd.getrandbits(64) | (1 << 63)
+                else:
+                    L = rnd.randint(33, 63)
+                    d = rnd.getrandbits(L) | (1 << (L - 1))
+                s = 64 - d.bit_length()
+                v = d << s
+                vn1, vn0 = v >> 32, v & (B - 1)
+                rh = B - vn1
+                if rh >= vn1 or vn0 == 0:
+                    continue
+                qmin = rh * B // vn0 + 1
+                qmax = (v - 1 - rh) // vn1
+                if qmin > qmax:
+                    continue
+                num = rnd.randint(qmin, qmax) * vn1 + rh
+                low = rnd.getrandbits(64) & ~((1 << s) - 1)
+                if digit == 1:                         # num is the top 64 bits
+                    n = (num << 64) | low
+                else:                                  # num is the second numerator
+                    top96 = rnd.getrandbits(32) * v + num
+                    n = (top96 << 32) | (low & (B - 1) & ~((1 << s) - 1))
+                u = n >> s
+                u1 = u >> 64
+                if u1 >= d:
+                    continue
+                qh = rnd.getrandbits(64) % ((M64 - u1) // d + 1)
+                a = ((qh * d + u1) << 64) | (u & M64)
+                if not _div_steps(a, d)[digit - 1][3]:
+                    continue
+                got += 1
+                rows.append(_div_row(a, d))
+    return rows
+
+
+def div_edges():
+    """Divisors at the normalising-shift and digit boundaries, against
+    dividends at the quotient's limits (1.6.2)."""
+    ds = [1, 2, 3, (1 << 32) - 1, 1 << 32, (1 << 32) + 1, (1 << 33) - 1,
+          (1 << 63) - 1, 1 << 63, (1 << 63) + 1, M64 - 1, M64,
+          0x80000000FFFFFFFF, 0xFFFFFFFF00000001, 1000000007]
+    rows = []
+    for d in ds:
+        for a in (0, 1, d - 1, d, d + 1, M64, 1 << 64, (d - 1) << 64,
+                  ((d - 1) << 64) | M64, M128, M128 - 1, (M64 << 64) | (d - 1)):
+            rows.append(_div_row(a, d))
+    return rows
+
+
 def main():
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "."
     os.makedirs(out_dir, exist_ok=True)
@@ -292,6 +421,15 @@ def main():
                   1 << 63, (1 << 63) + 1, M64 - 58, M64):
             for base in (3, M64, rnd.getrandbits(64)):
                 emit("PM", base, e, m, pow(base, e, m))
+
+    # 1.6.2: 128-by-64 divisions aimed at the aarch64 two-digit division's
+    # correction steps, its rhat == 2^32 exits, and its boundaries. Appended,
+    # with their own Random instances, so every line above is unchanged.
+    for a, d in div_aimed() + div_rhat_exact() + div_edges():
+        q, r = a // d, a % d
+        alo, ahi = parts(a)
+        qlo, qhi = parts(q)
+        emit("DV", alo, ahi, d, 0, qlo, qhi, r, 0)
 
     p = os.path.join(out_dir, "u128.vec")
     with open(p, "w") as f:

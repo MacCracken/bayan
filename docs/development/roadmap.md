@@ -14,14 +14,7 @@
 > [architecture note 001](../architecture/001-str-parameters-are-handles.md).
 > 1.6.1 (2026-10-15) shipped its slot whole and removed it; its two kept cyml delimiter answers
 > joined 1.7.0.
-
-## 1.6.2 — patch: aarch64 128-by-64 division
-
-- **`bayan_u128_div` / `_mod` / `_divmod` on aarch64 are bit-serial** for a 64-bit divisor (Known
-  gap 11). 1.5.10 gave mulmod its own asm and left these: no mulmod path reaches them now.
-  aarch64 has no 128/64 divide instruction. Use two-digit Algorithm D over `udiv`, the shape of
-  1.5.10's mulmod block, with the same checks (re-assembled from mnemonics, branches read on their
-  labels, a correction-bound proof in the comment). `tests/mulmod_speed.cyr`'s method gates the cost.
+> 1.6.2 (2026-10-15) shipped its slot whole and removed it.
 
 ## 1.7.0 — minor: output that is silently wrong
 

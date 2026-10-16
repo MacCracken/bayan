@@ -169,6 +169,31 @@ because a batch yields a single sample.
 - **The parse hops line to line throughout now.** What is left per byte is the newline walk itself,
   a load and a compare, in each marker pass and in the delimiter search.
 
+## u128 divmod by a 64-bit divisor — `bayan_u128_divmod` (1.6.2)
+
+- **Toolchain**: cyrius 6.7.12 · **bayan**: 1.6.1 vs 1.6.2 · `tests/mulmod_speed.cyr`'s method:
+  fastest of 15 alternating ~2 ms windows, divmod against a plain one-multiply-one-divide call in
+  the same process. Each call's dividend high word is the previous call's answer.
+
+| Target | Divisor | 1.6.1 | 1.6.2 |
+|---|---|---:|---:|
+| aarch64 (qemu) | 31-bit | 701× (22.0 µs) | 7.3× (221 ns) |
+| aarch64 (qemu) | 62-bit | 667× (21.1 µs) | 7.8× (236 ns) |
+| aarch64 (qemu) | 64-bit | 645× (20.4 µs) | 7.9× (240 ns) |
+| x86_64 | 31 / 62 / 64-bit | 6.5–6.6× (28 ns) | unchanged |
+
+### Reading these
+
+- **1.0.2 to 1.6.1 divided bit by bit on aarch64.** 1.0.2 put x86's two hardware `div` behind
+  `#ifdef CYRIUS_ARCH_X86` (their bytes were trapping on aarch64), and aarch64 fell through to the
+  portable loop: 128 shift-subtract rounds of three to five helper calls each. The cost gate had no
+  divmod row, so nothing saw it.
+- **1.6.2 is the same multiple as x86**, about 7× a bare division. Both are a call, the limb loads
+  and the stores around the divide: two `div` on x86, one `udiv` and the two-digit division on
+  aarch64. A digit's correction loop runs at most twice.
+- **A divisor of 2^64 or more is still bit-serial on every target.** Nothing in bayan divides by
+  one; the u64 helpers and the vectors' 64-bit-divisor rows are what the fast paths serve.
+
 ### Not yet measured
 
 Compression (the Flate hooks), multi-page documents at scale, and the

@@ -2103,7 +2103,7 @@ assert_neq(bayan_yaml_parse_buf("a: 1\nb:\n  a: 2\n", 15), 0,
 # self-consistency; that is how u256_mul shipped for five releases with 46% of
 # its products wrong. Regenerate with scripts/gen-numeric-vectors.py.
 #
-# The vector RUNNERS live in tests/vectors.tcyr — 12,651 u128 checks and 656
+# The vector RUNNERS live in tests/vectors.tcyr — 13,843 u128 checks and 656
 # f64 checks would swamp this file's assert counts. What follows pins the
 # behaviours a vector file cannot express.
 # =============================================================================

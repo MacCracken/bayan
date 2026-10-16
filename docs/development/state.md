@@ -6,7 +6,17 @@
 
 ## Version
 
-**1.6.1** — a patch, the roadmap's 1.6.1 slot whole; pin **6.7.11 → 6.7.12**. cyml's three `---`
+**1.6.2** — a patch, the roadmap's 1.6.2 slot whole; pin unchanged at **6.7.12**. On aarch64,
+`bayan_u128_divmod` (and `_div`, `_mod`, `_diveq`, `_modeq`) by a divisor below 2^64 runs two-digit
+Algorithm D over `udiv` in one asm block, the routine 1.5.10's mulmod block uses, now keeping the
+quotient too. Until 1.6.2 it took 128 shift-subtract rounds: **644–707×** a plain 64-bit division under
+qemu-aarch64 then, **7.3–7.9×** now (x86's two-`div` path: 6.5×). Answers unchanged: 298 new oracle
+rows aimed at both digits' correction steps and `rhat == 2^32` exits, and a 1,000,000-division
+differential against 1.6.1 on aarch64, 0 differences. `tests/mulmod_speed.cyr` gains divmod rows (red
+on 1.6.1), and `scripts/check-arch-arms.py` a `FN:asm` mode CI runs on divmod. Public API: unchanged.
+A divisor of 2^64 or more stays bit-serial on every target, and cx stays on the loop.
+
+Before it, **1.6.1** — a patch, the roadmap's 1.6.1 slot whole; pin **6.7.11 → 6.7.12**. cyml's three `---`
 searches hop line to line, as the marker scan has since 1.6.0 (the new private `_cyml_next_delim`):
 a single-entry document with a 200-line header parses in **0.40×** 1.6.0's time and
 `bayan_cyml_split` runs in 0.25×. A differential of 7,811,233 parses and splits against the 1.6.0
@@ -217,9 +227,10 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
   deps` alone refuses to re-lock** while `lib/` holds files its resolve did not vendor, and names
   `lib sync --full`, so a bump now runs `lib sync --full --relock` first, then `deps` and
   `deps --verify`. **Minimum toolchain for the sources and `dist/`: 6.7.9** (`f64_parse_n`; 6.7.2 for
-  `const` before it). Re-checked at 1.6.1 in a scratch copy pinned to 6.7.9 with its `lib/`: build
-  and all 6 test files warning-free, smoke 42, and 6.7.9's `distlib --all --check` accepts the
-  6.7.12-generated bundles. Every `ci.yml` job also ran at 1.6.1 in its own fresh tree on the 6.7.12
+  `const` before it). Re-checked at 1.6.2 in a scratch copy pinned to 6.7.9 with its `lib/`: build
+  and all 6 test files warning-free, smoke 42, the u128 vectors 0 wrong when 6.7.9's aarch64
+  compiler builds the new divmod block, and 6.7.9's `distlib --all --check` accepts the
+  6.7.12-generated bundles (at 1.6.1 the same, less the aarch64 vectors). Every `ci.yml` job also ran at 1.6.1 in its own fresh tree on the 6.7.12
   **release** (installed through `install.sh` into an isolated home; checksum and signature
   verified): all six green, and the release's `distlib` regenerates `dist/` byte-identical. At 1.6.0
   it moved `6.7.9` → `6.7.11` with `cyrius deps` then `lib sync
@@ -262,7 +273,7 @@ Eight data/big-integer modules carved byte-identical from cyrius stdlib
 (public functions prefixed `bayan_`), plus two greenfield modules written
 in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
 `json.cyr` in bundle order) and `pdf` (1.5.0 — cross-dep-free, so its position
-is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.6.1):
+is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.6.2):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
@@ -270,7 +281,7 @@ is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.6.
 | `src/json.cyr`   | 2162 | 71 | `bayan_json_*` |
 | `src/toml.cyr`   | 1727 | 33 | `bayan_toml_*` |
 | `src/yaml.cyr`   | 899  | 12 | `bayan_yaml_*` |
-| `src/u128.cyr`   | 692  | 35 | `bayan_u128_*` / `bayan_u64_*` |
+| `src/u128.cyr`   | 818  | 35 | `bayan_u128_*` / `bayan_u64_*` |
 | `src/cyml.cyr`   | 627  | 17 | `bayan_cyml_*` |
 | `src/dtoa.cyr`   | 463  | 3  | `bayan_f64_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
@@ -291,6 +302,9 @@ the derivation of the window in the comment that sets it. It shrank 933 ->
 `lib/math.cyr` — became what `bayan_f64_parse` calls; what remains is Grisu2
 (`bayan_f64_to_json`), its table, and the lenient parse front.
 
+`u128` grew 692 -> **818** lines at 1.6.2 with no new public function: the aarch64 divmod
+block and the proof in its comment, as 1.5.10's mulmod block did before it (567 -> 688).
+
 `json` grew 1922 -> **2153** lines and 69 -> **71** public functions at 1.5.10:
 the flat parser's four scanners and its header contract, `bayan_json_parse_a`,
 and `bayan_json_v_obj_get_by_cstr` (the bare `bayan_json_v_obj_get` is now a
@@ -307,8 +321,8 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **17,146**-line bundle (17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13), regenerated via
-  `cyrius distlib --all` at 1.6.1 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
+- `dist/bayan.cyr` — **17,272**-line bundle (17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
+  regenerated via `cyrius distlib --all` at 1.6.2 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
@@ -317,7 +331,7 @@ this is mutation-verified.
   sidecar. Canonical `bayan_*` names only. Every sidecar is complete:
   `scripts/consumer-check.sh` builds all 10 bundles from their declared leaves
   alone, and goes red when a needed one is deleted (checked at 1.5.7). Lines and
-  leaf counts below are measured at 1.6.1 (6.7.12's distlib; the sidecars are
+  leaf counts below are measured at 1.6.2 (6.7.12's distlib; the sidecars are
   unchanged since 1.5.14); the base bundle declares 11 (1.5.14 added `math` to it
   and to json / yaml).
 
@@ -328,7 +342,7 @@ this is mutation-verified.
   | `bayan-json`   | 2649 | 11 |
   | `bayan-toml`   | 1743 | 6 |
   | `bayan-cyml`   | 643  | 6 |
-  | `bayan-u128`   | 703  | 1 |
+  | `bayan-u128`   | 829  | 1 |
   | `bayan-bigint` | 462  | 2 |
   | `bayan-base64` | 229  | 2 |
   | `bayan-csv`    | 161  | 3 |
@@ -419,7 +433,10 @@ this is mutation-verified.
   either one removed. A test that cannot fail is a test that has stopped being
   a test.
 - `tests/vectors.tcyr` — **oracle-driven, expected values from Python**:
-  **12,651** u128 checks (12,334 before 1.5.10 added 317 rows: 79 mulmod rows
+  **13,843** u128 checks (12,651 before 1.6.2 added 298 divmod rows, four checks each: 86 aimed at
+  each digit's one and two corrections, estimates of 2^32 or more and `rhat` exits, 32 constructed
+  to exit at `rhat == 2^32` exactly, and 180 at the divisor and quotient boundaries; 12,334 before
+  1.5.10 added 317 rows: 79 mulmod rows
   aimed at the Algorithm-D correction steps, 56 CONSTRUCTED to leave each
   correction loop at `rhat == 2^32` exactly, 32 powmod rows over 64-bit moduli
   and 150 with exponents ≥ 2^63), 656 f64 round-trip checks, **7,736 f64 parse vectors**
@@ -456,7 +473,9 @@ this is mutation-verified.
   x86_64 and under qemu-aarch64: per-call mulmod cost against a plain `(a*b)%m`
   call in the same process, failing above 50×. It sees a fall back to a bit-serial
   loop (~600×), not x86's ~13× hardware-divide wide path. Timing stays out of the
-  deterministic suite.
+  deterministic suite. **1.6.2 adds three divmod rows** (31-, 62- and 64-bit
+  divisors under a 128-bit dividend): 644–707× on aarch64 at 1.6.1, so the
+  program exits 3 there; 7.3–7.9× at 1.6.2, and 6.5× on x86.
 - `tests/pdf_fixture.cyr` — writes a representative document for CI to run
   through `scripts/pdfcheck.py`. The writer's real gate: the assertions cannot
   see a byte-accounting bug, and an independent strict parser can.
@@ -514,9 +533,9 @@ parallel jobs** (it was one 32-step job), each installing the pin through
 | job | gates |
 |---|---|
 | `toolchain` | version consistency · `cyrius.lock` verifies · `cyrius deps` changes nothing · `lib/` == the pinned snapshot |
-| `static` | format · lint · include audit · nothing reaches the vendored fold (1.6.1) · pdf naming hazards · typed-lookup overload base · mulmod arch arms |
-| `x86_64` | build · smoke 42 · suite · fuzz · bench · `coverage --min 100` · mulmod cost |
-| `aarch64` | cross-built, run under qemu: build + smoke · suite · all fuzz harnesses · bench · mulmod cost · pdf output byte-identical to x86_64's |
+| `static` | format · lint · include audit · nothing reaches the vendored fold (1.6.1) · pdf naming hazards · typed-lookup overload base · mulmod and divmod arch arms (divmod 1.6.2) |
+| `x86_64` | build · smoke 42 · suite · fuzz · bench · `coverage --min 100` · mulmod and divmod cost |
+| `aarch64` | cross-built, run under qemu: build + smoke · suite · all fuzz harnesses · bench · mulmod and divmod cost · pdf output byte-identical to x86_64's |
 | `oracles` | pdf writer through `pdfcheck.py` · fixture polarity · font metrics (+ regeneration where groff exists) · numeric and TOML vectors regenerate |
 | `dist` | `distlib --check` · regeneration changes nothing · consumer-check (incl. the deprecation gate) |
 
@@ -719,11 +738,14 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
    field is not emitted (`a,` parses to one field where the RFC has two, so a
    round trip loses a column), records are LF-terminated where the RFC says
    CRLF, and CR does not trigger quoting. Documented at 1.5.3, not fixed.
-11. **aarch64 `bayan_u128_div` / `_mod` / `_divmod` are still bit-serial** for a
-   64-bit divisor (the 2026-09-30 mulmod issue's "third route", not taken at
-   1.5.10: no aarch64 mulmod path reaches them any more). On x86, mulmod with a
-   modulus ≥ 2^63 takes the hardware-divide wide path at ~13× a plain call; the
-   speed gate's 50× limit does not see that path.
+11. ~~**aarch64 `bayan_u128_div` / `_mod` / `_divmod` are still bit-serial** for a
+   64-bit divisor~~ **Fixed in 1.6.2**: two-digit Algorithm D over `udiv`, 644–707× →
+   7.3–7.9× a plain division under qemu, gated by `tests/mulmod_speed.cyr`'s new rows. (It was
+   the 2026-09-30 mulmod issue's "third route", not taken at 1.5.10, when no aarch64 mulmod path
+   reached it any more.) What stays: a divisor of 2^64 or more is shift-subtract on every target,
+   x86 included, and cx divides bit by bit. On x86, mulmod with a modulus ≥ 2^63 takes the
+   hardware-divide wide path at ~13× a plain call; the speed gate's 50× limit does not see that
+   path.
 12. **CI cannot compile cx** — possibly no longer: the **6.7.12** release tarball, installed at
    1.6.1 through `install.sh` (checksum and Ed25519 signature verified), ships `bin/cycc_cx`.
    Unexplored: whether a cx build of bayan's suite runs under its `cxvm`, and so whether CI can
@@ -763,13 +785,18 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
 - `scripts/check-arch-arms.py` — **new at 1.5.10.** Applies a function's
   `#ifdef` arms as x86, aarch64 and a target with no `CYRIUS_ARCH_*` macro (cx),
   and fails when one is left with no arm that sets `result`, or x86/aarch64 with
-  no asm block. Stdlib only.
+  no asm block. Stdlib only. `FN:asm` (1.6.2) checks the asm blocks alone (one on
+  x86 and aarch64, none on cx), for bayan_u128_divmod, whose hardware arms sit in
+  front of a loop every target compiles.
 - `scripts/gen-numeric-vectors.py` — u128 + f64 vectors from Python, and at
   1.5.7 `f64parse.vec` (the aimed parse vectors). At 1.5.10 it also aims mulmod
   rows at the Algorithm-D correction steps, constructs rows that exit each
   correction loop at `rhat == 2^32`, and adds powmod rows over 64-bit moduli and
   with exponents ≥ 2^63. The latter uses its own
-  `random.Random`, so adding it left the other two byte-identical.
+  `random.Random`, so adding it left the other two byte-identical. 1.6.2 appends divmod rows the
+  same way (`div_aimed` and `div_rhat_exact`, each with its own `random.Random`,
+  then the fixed `div_edges`), and splits the `divlu` model into `_divlu_core(u1, u0, m)`
+  so that both callers aim with one model; every earlier line is unchanged.
 - `scripts/gen-toml-vectors.py` — **new at 1.5.3.** TOML string vectors from
   `tomllib`. Every line is verified with the oracle before it is written: a
   document Python rejects aborts generation rather than becoming a vector that
@@ -821,7 +848,7 @@ entries). CI verifies it before resolving.
 
 ## Next
 
-[`roadmap.md`](roadmap.md) holds the sequence. **1.6.2** comes next: aarch64 128-by-64 division.
-Then the silently-wrong-output minor (1.7.0: csv, `bayan_json_build`, cyml adjacent markers, and the
+[`roadmap.md`](roadmap.md) holds the sequence. The 1.6.x patch slots are done. **1.7.0** comes
+next, the silently-wrong-output minor ( csv, `bayan_json_build`, cyml adjacent markers, and the
 cyml delimiter edge pinned at 1.6.1), yaml escapes (1.8.0, argued by ADR 0009), `bayan_markdown_*` (1.9.0), typed
 public names (1.10.0), TOML into the tagged tree (1.11.0), and the audit and frozen surface (1.12.0).

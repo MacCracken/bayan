@@ -26,7 +26,7 @@ defaults:
 #
 #   toolchain  the pin, the manifest's version claims, cyrius.lock and lib/
 #   static     format, lint, include audit, and the source-level naming checks
-#   x86_64     build, smoke, suite, fuzz, bench, coverage, mulmod cost
+#   x86_64     build, smoke, suite, fuzz, bench, coverage, mulmod + divmod cost
 #   aarch64    the same program cross-built for aarch64 and run under qemu
 #   oracles    independent oracles: the PDF validator, font metrics, vectors
 #   dist       the bundles, their regeneration, and the consumer/deprecation gate
@@ -211,8 +211,12 @@ jobs:
       # with no asm block (a misspelt arch macro drops the hardware arm and every
       # suite still passes, at several times the cost). It is red on the 1.5.9
       # source twice over: cx has no arm, and aarch64 has no hardware one.
-      - name: u64 mulmod — every target compiles an arm that sets the result
-        run: python3 scripts/check-arch-arms.py src/u128.cyr bayan_u64_mulmod
+      # bayan_u128_divmod (1.6.2) has hardware arms in front of a portable loop
+      # every target compiles, so `:asm` checks only the asm blocks: one on
+      # x86_64 and on aarch64, none on cx (whose bytes would be some other
+      # machine's). A misspelt or a widened aarch64 gate each turn it red.
+      - name: u64 mulmod and u128 divmod — every target compiles the right arms
+        run: python3 scripts/check-arch-arms.py src/u128.cyr bayan_u64_mulmod bayan_u128_divmod:asm
 
   # --- x86_64: the host target ---------------------------------------------
   x86_64:
@@ -291,8 +295,9 @@ jobs:
       # operands to the wide path: that path divides in hardware and costs ~13x,
       # inside the limit. The limit, and why it does not flake on a busy runner,
       # is in the header of tests/mulmod_speed.cyr. The aarch64 job runs the
-      # same program.
-      - name: mulmod costs about one division
+      # same program. 1.6.2 adds bayan_u128_divmod by a 64-bit divisor, whose
+      # aarch64 path was bit-serial (~650-700x) through 1.6.1.
+      - name: mulmod and 128/64 divmod cost about one division
         run: |
           set -euo pipefail
           ./scripts/no-warnings.sh cyrius build tests/mulmod_speed.cyr build/mulmod-speed
@@ -369,9 +374,10 @@ jobs:
             qemu-aarch64 "build/bench-${n}-a64"
           done
 
-      # The aarch64 half of the x86 job's cost check (see there): this is the
-      # step that was ~600x on 1.5.9 and is ~2x now.
-      - name: mulmod costs about one division
+      # The aarch64 half of the x86 job's cost check (see there): mulmod was
+      # ~600x here on 1.5.9 and is ~2x now; divmod by a 64-bit divisor was
+      # ~650-700x on 1.6.1 and is ~8x now (x86: ~7x, call overhead included).
+      - name: mulmod and 128/64 divmod cost about one division
         run: |
           set -euo pipefail
           ./scripts/no-warnings.sh cyrius build --aarch64 tests/mulmod_speed.cyr build/mulmod-speed-a64

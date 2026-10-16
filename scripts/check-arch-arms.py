@@ -23,9 +23,14 @@ and pass every suite at several times the cost.
 A directive it cannot evaluate (`#if` with a comparison, a `#define` inside
 the body) fails the check rather than being guessed at.
 
-Usage:  check-arch-arms.py FILE FN [FN ...]
-        e.g. check-arch-arms.py src/u128.cyr bayan_u64_mulmod
-Exit 0 when every target sets `result` in every named function, 1 otherwise.
+`FN:asm` checks the asm blocks only (1.6.2): one survives on x86_64 and on
+aarch64, none with neither macro. That is for a function whose hardware arms
+are fast paths in front of portable code that every target compiles, as in
+bayan_u128_divmod, so there is no `result` for an arm to set.
+
+Usage:  check-arch-arms.py FILE FN[:asm] [FN[:asm] ...]
+        e.g. check-arch-arms.py src/u128.cyr bayan_u64_mulmod bayan_u128_divmod:asm
+Exit 0 when every named function passes on every target, 1 otherwise.
 """
 import re
 import sys
@@ -112,13 +117,18 @@ def main():
     with open(path, encoding="utf-8") as f:
         lines = f.read().split("\n")
     bad = 0
-    for fn in fns:
+    for spec in fns:
+        fn, _, mode = spec.partition(":")
+        if mode not in ("", "asm"):
+            print(f"FAIL {path}: {spec}: unknown check `{mode}`")
+            bad += 1
+            continue
         try:
             body = body_of(lines, fn)
             for name, defs, needs_asm in TARGETS:
                 code = surviving(body, defs)
                 has_asm = any(ASM.match(l) for l in code)
-                if not any(SETS_RESULT.match(l) for l in code):
+                if mode == "" and not any(SETS_RESULT.match(l) for l in code):
                     print(f"FAIL {path}: {fn}: on {name} no arm sets `result`, "
                           "so the fn returns the value it was declared with")
                     bad += 1
@@ -130,6 +140,9 @@ def main():
                     print(f"FAIL {path}: {fn}: on {name} no asm block survives; "
                           "the hardware arm is gone (a misspelt arch macro?)")
                     bad += 1
+                elif mode == "asm":
+                    print(f"ok   {path}: {fn}: {name} " +
+                          ("keeps its asm block" if needs_asm else "compiles no asm"))
                 else:
                     print(f"ok   {path}: {fn}: {name} sets `result`")
         except Unsupported as e:

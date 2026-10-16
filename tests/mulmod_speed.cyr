@@ -1,5 +1,6 @@
 # tests/mulmod_speed.cyr — bayan_u64_mulmod must cost about one division, on
-# every target CI runs (1.5.10).
+# every target CI runs (1.5.10), and so must bayan_u128_divmod by a 64-bit
+# divisor (1.6.2).
 #
 # Through 1.5.9 aarch64 sent every mulmod through _u64_mulmod_wide, whose
 # 128-round shift-subtract cost ~600x a plain `(a * b) % m` call under
@@ -17,6 +18,10 @@
 #                                                    path, with a hardware div)
 #   aarch64 under qemu, 1.5.10    2x / 2x / 2-3x
 #   aarch64 under qemu, 1.5.9     ~650-750x on all three
+# 1.6.2 adds three divmod rows: a 128-bit dividend over a 31-, 62- and 64-bit
+# divisor, each call's high word fed by the last call's answer. Through 1.6.1
+# aarch64 divided bit by bit (128 shift-subtract rounds) while x86 took two
+# hardware `div`; the measurements are in the CHANGELOG [1.6.2] entry.
 # On a host loaded to 2.7 runnable threads per core, thirty runs per target
 # peaked at 36x (x86, 64-bit row) and 16x (aarch64) and never failed, and the
 # lowest of 45 attempts on 1.5.9 was 383x. 50x has room on both sides.
@@ -44,13 +49,28 @@ fn say(m: cstring): i64 { print(m, strlen(m)); return 0; }
 
 fn _floor_mulmod(a, b, m): i64 { return (a * b) % m; }
 
-# kind 0: the floor helper; kind 1: bayan_u64_mulmod. Each call feeds the next,
-# so neither loop can be hoisted or skipped.
+var _da: u128 = 0;
+var _dd: u128 = 0;
+var _dq: u128 = 0;
+var _dr: u128 = 0;
+
+# One 128-by-64 divmod: (x * 2^64 + lo) / d. The next call's high word is this
+# call's quotient and remainder mixed, so no two calls are alike.
+fn _divmod_step(x, lo, d): i64 {
+    bayan_u128_set(&_da, lo, x);
+    bayan_u128_from_u64(&_dd, d);
+    bayan_u128_divmod(&_dq, &_dr, &_da, &_dd);
+    return bayan_u128_lo(&_dq) ^ bayan_u128_lo(&_dr);
+}
+
+# kind 0: the floor helper; kind 1: bayan_u64_mulmod; kind 2: bayan_u128_divmod.
+# Each call feeds the next, so no loop can be hoisted or skipped.
 fn _run(kind, n, a, b, m): i64 {
     var x = a;
     var i = 0;
     if (kind == 0) { while (i < n) { x = _floor_mulmod(x, b, m); i = i + 1; } }
     if (kind == 1) { while (i < n) { x = bayan_u64_mulmod(x, b, m); i = i + 1; } }
+    if (kind == 2) { while (i < n) { x = _divmod_step(x, b, m); i = i + 1; } }
     _sink = _sink + x;
     return 0;
 }
@@ -76,16 +96,16 @@ var FA = 0x1D2C3B4A;
 var FB = 0x5A4B3C2D;
 var FM = 0x6A3F92C5;
 
-# One measurement: 1 when this attempt is over the limit.
-fn _attempt(label: cstring, a, b, m): i64 {
+# One measurement of `kind` (1 or 2): 1 when this attempt is over the limit.
+fn _attempt(kind, label: cstring, a, b, m): i64 {
     var nf = _calls(0, FA, FB, FM);
-    var nm = _calls(1, a, b, m);
+    var nm = _calls(kind, a, b, m);
     var best_floor = 0;
     var best_mm = 0;
     var r = 0;
     while (r < ROUNDS) {
         var tf = _window(0, nf, FA, FB, FM);
-        var tm = _window(1, nm, a, b, m);
+        var tm = _window(kind, nm, a, b, m);
         if (r == 0 || tf < best_floor) { best_floor = tf; }
         if (r == 0 || tm < best_mm) { best_mm = tm; }
         r = r + 1;
@@ -105,10 +125,10 @@ fn _attempt(label: cstring, a, b, m): i64 {
 # A row fails only when all three attempts are over the limit. The defect is
 # deterministic — the bit-serial path is slow every time — so a retry cannot
 # hide it; it can only outlast a load spike on a shared runner.
-fn row(label: cstring, a, b, m): i64 {
+fn row(kind, label: cstring, a, b, m): i64 {
     var k = 0;
     while (k < 3) {
-        if (_attempt(label, a, b, m) == 0) { return 0; }
+        if (_attempt(kind, label, a, b, m) == 0) { return 0; }
         k = k + 1;
     }
     return 1;
@@ -117,9 +137,13 @@ fn row(label: cstring, a, b, m): i64 {
 fn main(): i64 {
     say("bayan_u64_mulmod on reduced operands vs a plain (a * b) % m call\n");
     var slow = 0;
-    slow = slow + row("31-bit modulus  ", FA, FB, FM);
-    slow = slow + row("62-bit modulus  ", 0x1A2B3C4D5E6F7081, 0x2C3D4E5F60718293, 0x2E4F7A1C9B3D5E87);
-    slow = slow + row("64-bit modulus  ", 0x9E3779B97F4A7C15, 0xB7E151628AED2A6B, 0xC3A5C85C97CB3127);
+    slow = slow + row(1, "31-bit modulus  ", FA, FB, FM);
+    slow = slow + row(1, "62-bit modulus  ", 0x1A2B3C4D5E6F7081, 0x2C3D4E5F60718293, 0x2E4F7A1C9B3D5E87);
+    slow = slow + row(1, "64-bit modulus  ", 0x9E3779B97F4A7C15, 0xB7E151628AED2A6B, 0xC3A5C85C97CB3127);
+    say("bayan_u128_divmod, a 128-bit dividend over a 64-bit divisor, vs the same floor\n");
+    slow = slow + row(2, "31-bit divisor  ", FA, FB, FM);
+    slow = slow + row(2, "62-bit divisor  ", 0x1A2B3C4D5E6F7081, 0x2C3D4E5F60718293, 0x2E4F7A1C9B3D5E87);
+    slow = slow + row(2, "64-bit divisor  ", 0x9E3779B97F4A7C15, 0xB7E151628AED2A6B, 0xC3A5C85C97CB3127);
     say("rows over the limit: "); fmt_int(slow); say("\n");
     if (_sink == 7) { say("\n"); }
     return slow;

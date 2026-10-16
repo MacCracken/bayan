@@ -2,6 +2,106 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.2] — 2026-10-15
+
+Patch release, the roadmap's 1.6.2 slot. On aarch64, **`bayan_u128_divmod` by a divisor below
+2^64 runs in 7.3–7.9× a plain 64-bit division under qemu, down from 644–707×** (about 21 µs to
+230 ns per call). Through 1.6.1 it took 128 shift-subtract rounds there, while x86 took two `div`.
+`bayan_u128_div`, `_mod`, `_diveq` and `_modeq` go through it. Answers are unchanged: 298 new
+oracle rows aimed at the new routine's correction steps, and a 1,000,000-division differential
+against 1.6.1 on aarch64, with 0 differences. Public API: nothing added or removed. x86_64 and cx
+compile what they did, and a divisor of 2^64 or more is still divided bit by bit on every target.
+The pin stays 6.7.12, and the floor 6.7.9 (checked there).
+
+### Changed
+
+- **aarch64 `bayan_u128_divmod`: a divisor below 2^64 takes two-digit Algorithm D over `udiv`**
+  (Known gap 11). aarch64 has no 128-by-64 divide, so 1.0.2 sent it to the portable shift-subtract
+  loop, three to five helper calls a round, 128 rounds. 1.5.10 gave mulmod its own asm and left
+  this, because no mulmod path reached it any more. The new block in `bayan_u128_divmod` takes
+  `q.hi = a.hi / d` and `u1 = a.hi % d` with `udiv`/`msub`, then divides `u1 * 2^64 + a.lo` by `d`
+  with Knuth's Algorithm D in two 32-bit digits (Hacker's Delight's `divlu`). That is the routine
+  1.5.10's mulmod block runs for its remainder, keeping the quotient as well. Four `udiv`, no loop
+  over bits, no calls. The proof is in the comment above it. `u1 < d` bounds the quotient to 64
+  bits. Each digit's estimate is at most 2^32 + 1 and corrects at most twice. Neither `q-hat * vn0`
+  nor `rhat << 32` can overflow, because `rhat` is checked against 2^32 with `b.lo` before every
+  retest; a `b.ls` there would decrement a correct digit at `rhat == 2^32`. The mod-2^64 partial
+  remainders are exact. Unlike mulmod's, the numerator is any value below `d * 2^64`, so both
+  correction loops are live: either digit can need its second correction. The two `b.hs` tests are
+  redundant (with a two-digit divisor the product test alone is exact) and stay, as they do in
+  mulmod, for fidelity to the textbook routine.
+- **The block reads its parameters with `param_load`** and the limbs through the pointers, so it
+  does not depend on the fn's local layout as the x86 block does. It loads every input before its
+  first store, so `qdst` or `rdst` may be `a` or `b` (`bayan_u128_diveq` passes `dst` as both).
+  Scratch is x0–x15, as in mulmod's block. The 58 encoded words (the four `param_load`s are the
+  compiler's) were assembled by llvm-mc 23.1.1 and by GNU as 2.47, which agree on every word, and
+  read back with objdump, which places every branch on the label named beside it. Except for the
+  moves in and out, the two correction loops are mulmod's words.
+- **`scripts/check-arch-arms.py` gains `FN:asm`**, a check of the asm blocks alone: one survives on
+  x86_64 and on aarch64, none with neither macro. `bayan_u128_divmod`'s hardware arms are fast
+  paths in front of a loop that every target compiles, so it has no `result` for an arm to set,
+  which is what the plain mode requires. CI's static step now checks `bayan_u64_mulmod
+  bayan_u128_divmod:asm`. Three planted mis-gatings each turn it red: the aarch64 macro misspelt,
+  the aarch64 arm gated `#ifndef CYRIUS_ARCH_X86` (cx would compile aarch64 bytes), and the x86
+  macro misspelt.
+- **`dist/` regenerated** (`cyrius distlib --all`, all 10 bundles). `bayan.cyr` and `bayan-u128`
+  carry the block (+126 lines). The other eight change only their version header. The `.deps`
+  sidecars are unchanged, and a second regeneration changes nothing.
+
+### Tests
+
+- **`tests/fixtures/numeric/u128.vec` +298 `DV` rows** (5,913 → 6,211 lines), expected values from
+  Python's `//` and `%`. `scripts/gen-numeric-vectors.py` splits its `divlu` model into
+  `_divlu_core(u1, u0, m)` so that the division can be aimed with the model mulmod's rows use, and
+  appends three groups, each after everything before it, so every earlier line is byte-identical.
+  - 86 rows aimed (`div_aimed`): 8 or more for each digit's one correction, two corrections, an
+    estimate of 2^32 or more, and a loop exit because `rhat` reached 2^32, with a normalising shift
+    of 0 and of more than 0. Across all 298 rows, two corrections occur on digit 1 in 29 and on
+    digit 2 in 18.
+  - 32 rows constructed (`div_rhat_exact`) to leave a digit's loop at `rhat == 2^32` exactly, the
+    exit where `b.lo` and `b.ls` differ: 8 per digit and shift.
+  - 180 boundary rows (`div_edges`): divisors 1, 2, 3, 2^32 ± 1, 2^32, 2^33 − 1, 2^63 ± 1, 2^63,
+    2^64 − 2, 2^64 − 1, `0x80000000FFFFFFFF`, `0xFFFFFFFF00000001` and 10^9 + 7, against dividends at
+    the quotient's limits.
+  `tests/vectors.tcyr` runs each row through divmod, div and mod: **13,843 u128 checks** (from
+  12,651), 0 wrong on x86_64 and on aarch64 under qemu.
+- **The mnemonic program, interpreted:** a scratch interpreter of the 58 instructions with 64-bit
+  aarch64 semantics (a `nop` standing in for the two `param_load`s before the stores), run on the assembled text, agrees with Python on 100,514 divisions (the 514
+  64-bit-divisor rows and 100,000 random ones). Six mnemonic mutants (each back-edge's `b.lo` as
+  `b.ls`, the csel, a decrement, the digit shift, a `b.hs` retargeted) give 16–270 wrong rows each.
+- **Byte mutants, under qemu-aarch64:** 14 single-word mutants of the real block, against the
+  vectors. 12 fail, with 64–1,892 wrong checks each: both back-edges as `b.ls`, both back-edges
+  dropped, both decrements dropped, the csel, the digit shift, the `q.hi` and `r.hi` stores, the
+  first `udiv`, and the final shift. The two `b.hs` drops survive, as the comment proves they must.
+- **Differential, 1.6.1 against 1.6.2 on aarch64: 0 differences.** The 1.6.1 module renamed, beside
+  the new one, over 1,000,000 random divisions: divisors of 1–64 bits, dividends of mixed widths,
+  just below `d * 2^64`, `2^128 − 1`, and exact multiples. Then 20,000 calls with the quotient
+  written into `a` and the remainder into `b`, checked against the non-aliased answer. Two byte
+  mutants give 12,819 and 162,135 differences.
+- **`tests/mulmod_speed.cyr` gains three divmod rows** (a 128-bit dividend over 31-, 62- and 64-bit
+  divisors, each call's high word fed by the last answer), against the same floor and 50× limit. On
+  1.6.1, aarch64 measures 644–707× and the program exits 3; on 1.6.2 it measures 7.3–7.9×, and
+  x86_64 6.5–6.6× (call overhead included). CI's two cost steps are renamed to say so.
+- **The floor stays 6.7.9.** In a scratch copy pinned to 6.7.9 with its `lib/`: the build and all 6
+  test files are warning-free, the smoke entry exits 42, `tests/vectors.tcyr` built by 6.7.9's
+  aarch64 compiler gives 13,843 u128 checks with 0 wrong under qemu (so the block and its
+  `param_load`s work on that backend too), and 6.7.9's `distlib --all --check` accepts the bundles
+  6.7.12 generated.
+- Gates, all green on the 6.7.12 pin. x86_64: build, smoke, `cyrius test` (6/6), the deprecated
+  lookups, fuzz, bench, coverage 503/503, the cost gate. aarch64 under qemu: build, smoke, test,
+  deprecated lookups, fuzz, bench, the cost gate, the PDF writer byte-identical across targets.
+  Also: format, lint (0/0 across `src/`), `vet`, the arch-arm check, the vendored-fold guard,
+  `distlib --all --check`, regeneration with no change, `scripts/consumer-check.sh` and the
+  raw-include build. Then the CI mirror: every `ci.yml` job, each in its own fresh copy of the tree,
+  on the 6.7.12 release (installed through `install.sh`, checksum and signature verified), all six
+  green.
+
+### Docs
+
+- [`docs/development/roadmap.md`](docs/development/roadmap.md): the 1.6.2 section is gone; 1.7.0 is
+  next. [`docs/benchmarks.md`](docs/benchmarks.md) gains the divmod table. `state.md` refreshed:
+  Known gap 11 is closed for 64-bit divisors.
+
 ## [1.6.1] — 2026-10-15
 
 Patch release, the roadmap's 1.6.1 slot. The toolchain pin moves **6.7.11 → 6.7.12**. cyml's three

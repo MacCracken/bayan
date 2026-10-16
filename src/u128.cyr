@@ -321,9 +321,12 @@ fn bayan_u128_ule(a, b): i64 { return bayan_u128_uge(b, a); }
 # anything else that needs scalar-limb borrow propagation.
 # (Kept local to the file; public callers use bayan_u128_sub.)
 
-# (qdst, rdst) = (a / b, a % b)  — shift-subtract long division.
+# (qdst, rdst) = (a / b, a % b).
 # On b == 0, writes "u128: division by zero" to stderr and exits 1.
-# Algorithm:
+# A divisor below 2^64 takes a hardware path: two `div` on x86_64, two-digit
+# Algorithm D over `udiv` on aarch64 (1.6.2). A wider divisor, and every
+# division on a target with neither arch macro (cx), takes shift-subtract
+# long division:
 #   q = 0, r = 0
 #   for i in 127..0:
 #       r = (r << 1) | bit_i(a)
@@ -385,6 +388,129 @@ fn bayan_u128_divmod(qdst, rdst, a, b): i64 {
         store64(qdst + 8, q_hi_fast);
         store64(rdst,     r_final);
         store64(rdst + 8, 0);
+        return 0;
+    }
+    #endif
+    #ifdef CYRIUS_ARCH_AARCH64
+    if (b_hi == 0) {
+        # aarch64 has no 128/64 divide (1.6.2 — this was bit-serial). Through
+        # 1.6.1 every aarch64 division took the loop below: 128 shift-subtract
+        # rounds with three to five helper calls each, ~650-700x a plain 64-bit
+        # division under qemu-aarch64 (tests/mulmod_speed.cyr), where x86 takes
+        # two `div`. Now, for a divisor d below 2^64: q.hi = a.hi / d and
+        # u1 = a.hi % d by udiv/msub, then (u1 * 2^64 + a.lo) / d by Knuth's
+        # Algorithm D with two 32-bit digits (TAOCP vol. 2, 4.3.1; Hacker's
+        # Delight 2nd ed., fig. 9-3 `divlu`). That is the routine 1.5.10's
+        # mulmod block runs for its remainder, keeping the quotient as well:
+        # four udiv, no loop over bits, no calls.
+        #
+        # Why it is exact, given d != 0 (checked above) and u1 < d:
+        #  - u1 < d makes (u1 * 2^64 + a.lo) / d fit in 64 bits. With
+        #    s = clz(d), v = d << s has bit 63 set, and un32, the top 64 bits
+        #    of the numerator shifted by s, is below v. `lsr` takes its count
+        #    mod 64, so for s = 0 `u0 >> (64 - s)` would be u0, not 0; the
+        #    csel zeroes it.
+        #  - A digit's estimate q-hat = num / vn1 is at most 2^32 + 1 (num < v
+        #    < (vn1 + 1) * 2^32, and vn1 >= 2^31), and Knuth's theorem B gives
+        #    q-hat - 2 <= q <= q-hat, so each correction loop runs at most
+        #    twice. Unlike mulmod's numerator, this one is any value below
+        #    d * 2^64, so either digit can need both corrections (the u128
+        #    vectors have rows that do, for s = 0 and s > 0).
+        #  - `q-hat * vn0` fits in 64 bits: q-hat <= 2^32 + 1 and vn0 < 2^32
+        #    give at most 2^64 - 1. rhat starts below vn1 < 2^32 and is checked
+        #    against 2^32 before every retest, so `rhat << 32` keeps all its
+        #    bits. That check must be `b.lo`: at rhat == 2^32 exactly,
+        #    `rhat << 32` is 0, and a `b.ls` retest would decrement a digit that
+        #    is already right (the vectors have rows aimed at that exit).
+        #  - un21 and `r << s` are formed mod 2^64. Their true values are
+        #    partial remainders below v, so the wrap is exact; `r << s` has its
+        #    low s bits clear, and `lsr` by s gives r.
+        #  - q.lo = q1 * 2^32 + q0, both digits below 2^32 once corrected.
+        #
+        # The two `b.hs` tests stay for fidelity to the textbook routine,
+        # although removing either changes no result (a mutation pass sees
+        # them survive; that is not a gap in the tests). The product cannot
+        # overflow without them (above), and with a two-digit divisor the
+        # product test alone is exact: q-hat * v > num * 2^32 + un
+        # exactly when q-hat * vn0 > rhat * 2^32 + un, so every q-hat >= 2^32,
+        # which is always too large, is corrected without them. Both correction
+        # loops' back-edges, by contrast, are live (mulmod's first one is not).
+        #
+        # The block reads its four pointer parameters with param_load (their
+        # real prologue slots) and the limbs through them, so unlike the x86
+        # block above it does not depend on this fn's local layout. Every input
+        # is loaded before the first store, so qdst or rdst may be a or b
+        # (bayan_u128_diveq passes dst as both qdst and a). It stores q, then r,
+        # as the loop does. Scratch is x0-x15, caller-saved under AAPCS64 and
+        # never live across a statement in cyrius's aarch64 codegen; x16-x18
+        # and x28 are untouched. The 58 encoded words (the param_loads are the
+        # compiler's) were assembled by llvm-mc 23.1.1 and by GNU as 2.47, which
+        # agree on every word, and read back with objdump, which places every
+        # branch on the label named beside it.
+        asm {
+            param_load(x0, 2);        # a
+            param_load(x1, 3);        # b
+            0x03; 0x00; 0x40; 0xF9;   #      ldr   x3, [x0]            ; u0 = a.lo
+            0x04; 0x04; 0x40; 0xF9;   #      ldr   x4, [x0, #8]        ; a.hi
+            0x22; 0x00; 0x40; 0xF9;   #      ldr   x2, [x1]            ; d = b.lo (nonzero)
+            0x80; 0x08; 0xC2; 0x9A;   #      udiv  x0, x4, x2          ; q.hi = a.hi / d
+            0x04; 0x90; 0x02; 0x9B;   #      msub  x4, x0, x2, x4      ; u1 = a.hi % d < d
+            0x45; 0x10; 0xC0; 0xDA;   #      clz   x5, x2              ; s
+            0x42; 0x20; 0xC5; 0x9A;   #      lsl   x2, x2, x5          ; v = d << s
+            0x46; 0xFC; 0x60; 0xD3;   #      lsr   x6, x2, #32         ; vn1
+            0x47; 0x7C; 0x40; 0x92;   #      and   x7, x2, #0xffffffff ; vn0
+            0x88; 0x20; 0xC5; 0x9A;   #      lsl   x8, x4, x5
+            0xE9; 0x03; 0x05; 0xCB;   #      neg   x9, x5
+            0x69; 0x24; 0xC9; 0x9A;   #      lsr   x9, x3, x9          ; u0 >> (64 - s)
+            0xBF; 0x00; 0x00; 0xF1;   #      cmp   x5, #0
+            0xE9; 0x03; 0x89; 0x9A;   #      csel  x9, xzr, x9, eq     ; 0 when s == 0
+            0x08; 0x01; 0x09; 0xAA;   #      orr   x8, x8, x9          ; un32
+            0x6A; 0x20; 0xC5; 0x9A;   #      lsl   x10, x3, x5         ; un10
+            0x4B; 0xFD; 0x60; 0xD3;   #      lsr   x11, x10, #32       ; un1
+            0x4A; 0x7D; 0x40; 0x92;   #      and   x10, x10, #0xffffffff ; un0
+            0x2F; 0x00; 0xC0; 0xD2;   #      mov   x15, #0x100000000   ; b = 2^32
+            0x0C; 0x09; 0xC6; 0x9A;   #      udiv  x12, x8, x6         ; q1
+            0x8D; 0xA1; 0x06; 0x9B;   #      msub  x13, x12, x6, x8    ; rhat
+            0x9F; 0x01; 0x0F; 0xEB;   # L1:  cmp   x12, x15
+            0xC2; 0x00; 0x00; 0x54;   #      b.hs  L2                  ; q1 >= b
+            0x8E; 0x7D; 0x07; 0x9B;   #      mul   x14, x12, x7
+            0xA9; 0x7D; 0x60; 0xD3;   #      lsl   x9, x13, #32
+            0x29; 0x01; 0x0B; 0xAA;   #      orr   x9, x9, x11
+            0xDF; 0x01; 0x09; 0xEB;   #      cmp   x14, x9
+            0xA9; 0x00; 0x00; 0x54;   #      b.ls  L3                  ; q1*vn0 <= b*rhat+un1
+            0x8C; 0x05; 0x00; 0xD1;   # L2:  sub   x12, x12, #1
+            0xAD; 0x01; 0x06; 0x8B;   #      add   x13, x13, x6
+            0xBF; 0x01; 0x0F; 0xEB;   #      cmp   x13, x15
+            0xC3; 0xFE; 0xFF; 0x54;   #      b.lo  L1
+            0x09; 0x7D; 0x60; 0xD3;   # L3:  lsl   x9, x8, #32
+            0x29; 0x01; 0x0B; 0xAA;   #      orr   x9, x9, x11
+            0x89; 0xA5; 0x02; 0x9B;   #      msub  x9, x12, x2, x9     ; un21
+            0xE1; 0x03; 0x0C; 0xAA;   #      mov   x1, x12             ; q1, kept
+            0x2C; 0x09; 0xC6; 0x9A;   #      udiv  x12, x9, x6         ; q0
+            0x8D; 0xA5; 0x06; 0x9B;   #      msub  x13, x12, x6, x9    ; rhat
+            0x9F; 0x01; 0x0F; 0xEB;   # L4:  cmp   x12, x15
+            0xC2; 0x00; 0x00; 0x54;   #      b.hs  L5                  ; q0 >= b
+            0x8E; 0x7D; 0x07; 0x9B;   #      mul   x14, x12, x7
+            0xA8; 0x7D; 0x60; 0xD3;   #      lsl   x8, x13, #32
+            0x08; 0x01; 0x0A; 0xAA;   #      orr   x8, x8, x10
+            0xDF; 0x01; 0x08; 0xEB;   #      cmp   x14, x8
+            0xA9; 0x00; 0x00; 0x54;   #      b.ls  L6                  ; q0*vn0 <= b*rhat+un0
+            0x8C; 0x05; 0x00; 0xD1;   # L5:  sub   x12, x12, #1
+            0xAD; 0x01; 0x06; 0x8B;   #      add   x13, x13, x6
+            0xBF; 0x01; 0x0F; 0xEB;   #      cmp   x13, x15
+            0xC3; 0xFE; 0xFF; 0x54;   #      b.lo  L4
+            0x28; 0x7D; 0x60; 0xD3;   # L6:  lsl   x8, x9, #32
+            0x08; 0x01; 0x0A; 0xAA;   #      orr   x8, x8, x10
+            0x88; 0xA1; 0x02; 0x9B;   #      msub  x8, x12, x2, x8     ; r << s
+            0x08; 0x25; 0xC5; 0x9A;   #      lsr   x8, x8, x5          ; r
+            0x81; 0x81; 0x01; 0xAA;   #      orr   x1, x12, x1, lsl #32 ; q.lo = q1 * 2^32 + q0
+            param_load(x9, 0);        # qdst
+            param_load(x10, 1);       # rdst
+            0x21; 0x01; 0x00; 0xF9;   #      str   x1, [x9]            ; q.lo
+            0x20; 0x05; 0x00; 0xF9;   #      str   x0, [x9, #8]        ; q.hi
+            0x48; 0x01; 0x00; 0xF9;   #      str   x8, [x10]           ; r.lo
+            0x5F; 0x05; 0x00; 0xF9;   #      str   xzr, [x10, #8]      ; r.hi = 0
+        }
         return 0;
     }
     #endif
