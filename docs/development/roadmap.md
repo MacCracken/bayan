@@ -14,36 +14,20 @@
 > [architecture note 001](../architecture/001-str-parameters-are-handles.md).
 > 1.6.1 (2026-10-15) shipped its slot whole and removed it; its two kept cyml delimiter answers
 > joined 1.7.0.
-> 1.6.2 (2026-10-15) shipped its slot whole and removed it.
+> 1.6.2 (2026-10-15) shipped its slot whole and removed it. So did 1.7.0, whose cyml line rule also
+> covers the end of a region and a last line with no newline; it added 1.7.1 and a 1.8.0 item.
 
-## 1.7.0 — minor: output that is silently wrong
+## 1.7.1 — patch: csv's allocation refusals
 
-Each item changes what a public function returns, so each gets its own CHANGELOG entry naming the
-defect, and the release's header says what a consumer should re-check.
+- **`src/csv.cyr` does not check its allocations the way the other modules now do** (Known gap 16,
+  found while 1.7.0 rewrote the parser). `bayan_csv_escape` stores through an unchecked `alloc`,
+  so a refusal writes to address 0. `bayan_csv_parse_line` answers a refused field copy with the
+  fields it has so far, a short row a caller cannot tell from a real one. `bayan_csv_write_line`
+  passes a refused escape's 0 to `strlen`. Return 0 on every refusal instead, and prove it with an
+  every-allocation-point sweep, as 1.5.13 did for TOML and 1.6.1 for cyml. A patch: no answer to
+  input changes, only what a refusal returns.
 
-- **csv: RFC 4180** (Known gap 10). A trailing empty field is dropped (`a,` parses to one field, so
-  a round trip loses a column). Records end in LF where the RFC says CRLF. A CR in a field does not
-  trigger quoting. Oracle: Python's `csv` module.
-- **`bayan_json_build` quotes every value and escapes nothing** (Known gap 14). A number comes back
-  as a string, a nested value as a quoted span, and a `"` or `\` inside a value makes invalid JSON.
-  `bayan_json_build(bayan_json_parse(doc))` should be valid JSON with the same values.
-- **cyml: adjacent `[[entries]]` markers.** `[[entries]]\n[[entries]]\nid=2\n---\nB\n` parses as
-  one entry whose header begins with the second marker (since 1.5.1, and pinned at 1.6.0 so that
-  changing it is a decision). Decide whether the first marker is an empty entry. If it is, the skip
-  after a match has to stop on the marker's own newline. The empty entry's header bounds also need
-  checking, because its header would start past its end.
-- **cyml: a `---` at the start of the searched region is not a delimiter** (Known gap 15;
-  pinned at 1.6.1, as in every release since 1.0.0). Two places, one edge. `"\n---\nbody\n"`: byte 0 is tested for the
-  flush form `---\n` only, so a leading blank line hides the delimiter and the whole text is header
-  (`bayan_cyml_split` agrees: no delimiter). 1.5.1 fixed this shape in the marker scan.
-  `"[[entries]]\n---\nA\n"`: an entry's search starts past its marker's newline, so the `---` is
-  header text (`---\nA`) and the entry has no body. Decide both together. If both become
-  delimiters, the change is in `_cyml_next_delim`'s offset-0 case and in where an entry's search
-  starts, and `tests/bayan.tcyr`'s 1.6.1 rows are the ones to rewrite. Use 1.6.1's method to show
-  that nothing else moves: the previous module renamed as a scratch oracle, random token documents
-  at every prefix.
-
-## 1.8.0 — minor: yaml decodes escapes
+## 1.8.0 — minor: yaml decodes escapes; cyml reads CRLF lines
 
 - **Double-quoted yaml scalars keep their `\` escapes verbatim** (`src/yaml.cyr:20`, `:371`: "no
   \-escape decoding — the toml convention"). That convention ended in 1.5.3, when toml started
@@ -51,6 +35,12 @@ defect, and the release's header says what a consumer should re-check.
   [archived](issues/archived/2026-08-22-mneme-toml-basic-strings-not-unescaped.md), named yaml too).
   Pick the oracle before writing the code, as toml has `tomllib`. cyml needs nothing here: it returns
   its headers as raw TOML spans and decodes no values itself.
+- **cyml: a CR does not end a line** (Known gap 17). `[[entries]]\r\n` and `---\r\n` are text, so a
+  `.cyml` saved with CRLF line endings parses to no entries and one block of header text: neither
+  its markers nor its `---` lines are seen, and nothing reports it. TOML allows CRLF, so the headers
+  would be fine; only the two line tests are not. 1.7.0 settled what a marker or delimiter line is;
+  let `\r\n` end one too. Check it as 1.7.0 did: a line-by-line Python model of the rule (rebuilt;
+  1.7.0's was scratch) against the parser at every prefix of random documents, now with CRLF.
 
 ## 1.9.0 — minor: `bayan_markdown_*`
 
@@ -73,8 +63,8 @@ Both items break source: a consumer's code can stop compiling. Before this relea
 names against the other folds in cyrius `lib/`. A `const` beside a same-named `var` in another
 fold is a hard error.
 
-- **Public constants as `const`:** `JTAG_*`, `TOML_K_*`, `JS_EV_*` and the public `PDF_*`, about
-  50 top-level `var`s. A `const` has no storage, so `&NAME` or an assignment stops compiling.
+- **Public constants as `const`:** `JTAG_*`, `TOML_K_*`, `JSON_K_*` (new at 1.7.0), `JS_EV_*` and the
+  public `PDF_*`, about 55 top-level `var`s. A `const` has no storage, so `&NAME` or an assignment stops compiling.
 - **`: bool` on the 27 public predicates** (`bayan_*_is_*` / `_has_*`, e.g.
   `bayan_toml_pair_is_array`). A `: bool` return is type-checked, so integer use at a call site
   can stop compiling.

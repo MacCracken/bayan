@@ -28,7 +28,7 @@ defaults:
 #   static     format, lint, include audit, and the source-level naming checks
 #   x86_64     build, smoke, suite, fuzz, bench, coverage, mulmod + divmod cost
 #   aarch64    the same program cross-built for aarch64 and run under qemu
-#   oracles    independent oracles: the PDF validator, font metrics, vectors
+#   oracles    independent oracles: the PDF validator, font metrics, vectors (u128, f64, toml, csv)
 #   dist       the bundles, their regeneration, and the consumer/deprecation gate
 #
 # The committed lib/ is what every job builds against; only `toolchain` runs
@@ -502,6 +502,18 @@ jobs:
           python3 -W error scripts/gen-toml-vectors.py "${RUNNER_TEMP}/tv"
           diff "${RUNNER_TEMP}/tv/strings.vec" tests/fixtures/toml/strings.vec \
             || { echo "::error::toml vectors differ from scripts/gen-toml-vectors.py output"; exit 1; }
+
+      # Same contract for the CSV vectors (1.7.0). Their oracle is Python's `csv`
+      # module, stdlib like `tomllib`. src/csv.cyr dropped a trailing empty field,
+      # wrote LF records, left a CR unquoted and split a field at the text after
+      # its closing quote, all of it under a green suite that never asked a CSV
+      # reader other than bayan.
+      - name: CSV vectors regenerate identically
+        run: |
+          set -euo pipefail
+          python3 -W error scripts/gen-csv-vectors.py "${RUNNER_TEMP}/cv"
+          diff "${RUNNER_TEMP}/cv/csv.vec" tests/fixtures/csv/csv.vec \
+            || { echo "::error::csv vectors differ from scripts/gen-csv-vectors.py output"; exit 1; }
 
   # --- distribution: bayan's actual product is dist/, not build/ -----------
   dist:

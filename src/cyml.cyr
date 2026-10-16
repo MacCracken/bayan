@@ -8,6 +8,16 @@
 # Single-entry: one header, one body.
 # Multi-entry: file-level TOML, then [[entries]] with per-entry header+body.
 # Parser returns zero-copy pointers into the input buffer.
+#
+# LINES (1.7.0). A marker is a line that is exactly `[[entries]]`, and a
+# delimiter a line that is exactly `---`. Each begins the input or follows a
+# `\n`, and ends at a `\n` or at the end of the input; a delimiter may also
+# end at the end of its entry, where the next marker's line begins. Two marker
+# lines in a row are two entries, the first one empty. Until 1.7.0 a marker
+# right after a marker, a `---` after a blank first line or right after its
+# marker or right before the next one, and either line as the last line with
+# no newline after it, were all read as text (CHANGELOG [1.7.0]). A `\r` does
+# not end a line: `[[entries]]\r\n` and `---\r\n` are text.
 
 # v5.8.30 — Result-returning *_r variant for the file-loading
 # parser (`bayan_cyml_parse_file_r`). Bare `bayan_cyml_parse(data, len)` keeps
@@ -98,54 +108,75 @@ fn bayan_cyml_doc_entry(d, n): i64 {
     return load64(entries + n * 8);
 }
 
-# 1 when the literal `---\n` sits at `at`.
+# 1 when `---` sits at `at` and ends its line: a `\n` follows, or the end of
+# the searched region (the input, or the entry's end). Whether `at` begins a
+# line is the caller's test.
 fn _cyml_delim_at(data, len, at): i64 {
-    if (at + 4 > len) { return 0; }
+    if (at + 3 > len) { return 0; }
     if (load8(data + at)     != 45) { return 0; }   # -
     if (load8(data + at + 1) != 45) { return 0; }   # -
     if (load8(data + at + 2) != 45) { return 0; }   # -
-    if (load8(data + at + 3) != 10) { return 0; }   # \n
+    if (at + 3 < len && load8(data + at + 3) != 10) { return 0; }   # \n, or the end
     return 1;
 }
 
-# The first delimiter position p >= i, or len if there is none. A delimiter
-# position is 0 for "---\n" flush against the start of the document, and
-# otherwise the offset of the "\n" in "\n---\n". The whole delimiter lies in
-# data[0..len): an entry's search passes the entry's end as `len`.
+# The start of the first `---` line at or after i, or len if there is none. A
+# `---` line begins at byte 0 or after a `\n`, and ends at a `\n` or at the end
+# of data[0..len): an entry's search passes the entry's end as `len`, and its
+# start (just past its marker's newline) as `i`. The body follows the line's
+# newline, or is empty when the line ends the region (_cyml_body_at).
 #
-# ONE CALL PER DELIMITER, NOT PER BYTE (1.6.1). This replaces
+# ONE CALL PER DELIMITER, NOT PER BYTE (1.6.1). This replaced
 # `_cyml_is_delim(data, len, pos)`, a yes/no test that the single-entry search,
 # each entry's search and bayan_cyml_split called at every byte offset: the
 # shape 1.6.0 removed from the marker scan (_cyml_next_entries, below). It
-# walks to the next newline in a tight loop and runs the 4-byte compare only
-# there. It answers what the old test answered at every byte from i on;
-# tests/bayan.tcyr checks that against a copy of the old test.
+# walks to the next newline in a tight loop and runs the compare only there.
 #
-# OFFSET 0 IS THE FLUSH FORM ONLY, as it always was: "\n---\n" at byte 0 is not
-# a delimiter, so a document that opens with a blank line and then `---` has
-# none, and its `---` line is header text. 1.5.1 fixed the same shape in the
-# marker scan. Here a fix changes what a document parses to, so it waits for a
-# minor (roadmap 1.7.0) and tests/bayan.tcyr pins today's answer.
+# A WHOLE LINE, WHEREVER IT IS (1.7.0 — four places missed it). To 1.6.2 the
+# test was "\n---\n" (or "---\n" at byte 0), with the whole of it inside the
+# region, so a `---` line was not a delimiter when it
+#   - followed a blank first line: "\n---\nbody", where byte 0 was tested for
+#     the flush form only, and the whole text became the header;
+#   - came straight after its entry's marker: "[[entries]]\n---\nA", where the
+#     search began past the marker's newline, so the header was `---\nA`;
+#   - came just before the next marker, whose newline it shares: the entry's
+#     header kept the `---`, and its body was lost;
+#   - was the input's last line, with no newline after it.
+# 1.5.1 fixed the first shape in the marker scan; the rest are this one rule
+# applied at the region's two ends. tests/bayan.tcyr pins each. A scratch
+# reference written line by line from the rule agreed with this module on all
+# 1,960,742 prefixes of 30,000 random documents (parse and split each), on
+# x86_64 and on aarch64.
 fn _cyml_next_delim(data, len, i): i64 {
-    var p = i;
-    if (p == 0) {
+    if (i == 0) {
         if (_cyml_delim_at(data, len, 0) == 1) { return 0; }
-        p = 1;
     }
+    # A newline at p makes p + 1 a line start; walk from i - 1, so that i
+    # itself counts when the byte before it is a newline.
+    var p = i - 1;
+    if (p < 0) { p = 0; }
     while (p < len) {
         if (load8(data + p) == 10) {
-            # _cyml_delim_at's own `at + 4 > len` is the `p + 5 > len` bound,
-            # so a delimiter cut off by the end of input is not one.
-            if (_cyml_delim_at(data, len, p + 1) == 1) { return p; }
+            if (_cyml_delim_at(data, len, p + 1) == 1) { return p + 1; }
         }
         p = p + 1;
     }
     return len;
 }
 
-# 1 when the literal `[[entries]]\n` sits at `at`.
+# Where the body after the `---` line at q begins, in data[0..len): past the
+# line's newline, or len when the line ends the region.
+fn _cyml_body_at(q, len): i64 {
+    if (q + 4 > len) { return len; }
+    return q + 4;
+}
+
+# 1 when the marker line `[[entries]]` starts at `at`: the 11 bytes, then
+# `\n` or the end of the input. The end of the input counts from 1.7.0: a
+# file's last line need not end in a newline, and `x\n[[entries]]` used to be
+# a single entry whose body held the marker as text.
 fn _cyml_marker_at(data, len, at): i64 {
-    if (at + 12 > len) { return 0; }
+    if (at + 11 > len) { return 0; }
     if (load8(data + at)      != 91)  { return 0; }   # [
     if (load8(data + at + 1)  != 91)  { return 0; }   # [
     if (load8(data + at + 2)  != 101) { return 0; }   # e
@@ -157,13 +188,13 @@ fn _cyml_marker_at(data, len, at): i64 {
     if (load8(data + at + 8)  != 115) { return 0; }   # s
     if (load8(data + at + 9)  != 93)  { return 0; }   # ]
     if (load8(data + at + 10) != 93)  { return 0; }   # ]
-    if (load8(data + at + 11) != 10)  { return 0; }   # \n
+    if (at + 11 < len && load8(data + at + 11) != 10) { return 0; }   # \n, or the end
     return 1;
 }
 
 # The first marker position p >= i, or len if there is none. A marker
-# position is 0 for "[[entries]]\n" flush against the start of the document,
-# and otherwise the offset of the "\n" in "\n[[entries]]\n".
+# position is 0 for a marker line flush against the start of the document,
+# and otherwise the offset of the "\n" that ends the line before it.
 #
 # ONE CALL PER MARKER, NOT PER BYTE (1.6.0 — this doubled the parse time).
 # This replaces `_cyml_is_entries(data, len, pos)`, a yes/no test that
@@ -194,8 +225,8 @@ fn _cyml_next_entries(data, len, i): i64 {
     var p = i;
     while (p < len) {
         if (load8(data + p) == 10) {
-            # _cyml_marker_at's own `at + 12 > len` is the `p + 13 > len`
-            # bound, so a marker cut off by the end of input is not one.
+            # _cyml_marker_at's own bound means a marker cut off by the end
+            # of the input is not one; one that ends there is.
             if (_cyml_marker_at(data, len, p + 1) == 1) { return p; }
         }
         p = p + 1;
@@ -263,12 +294,19 @@ fn bayan_cyml_parse(data, len): i64 {
     # rather than testing every byte. Two passes stay: one pass into a
     # doubling array would be faster again, but alloc is a bump allocator, so
     # every outgrown array would stay behind, which the exact count avoids.
-    # After a match the skip is the marker's length: 12 at offset 0, else 13.
+    # After a match the scan resumes ON the marker's own newline (1.7.0 — this
+    # merged two entries): 11 past offset 0, else 12, the end of `[[entries]]`.
+    # It used to resume past that newline, and a marker can only follow one,
+    # so a second marker right after the first was not seen: `[[entries]]\n
+    # [[entries]]\nid=2` was one entry whose header began with the second
+    # marker, from 1.5.1 to 1.6.2. Two marker lines are two entries, the first
+    # one empty, as two `[[t]]` lines are two tables in TOML (and bayan's TOML
+    # parser has kept an empty one since 1.5.4).
     var entry_count = 0;
     var i = _cyml_next_entries(data, len, 0);
     while (i < len) {
         entry_count = entry_count + 1;
-        if (i == 0) { i = 12; } else { i = i + 13; }
+        if (i == 0) { i = 11; } else { i = i + 12; }
         i = _cyml_next_entries(data, len, i);
     }
 
@@ -281,7 +319,7 @@ fn bayan_cyml_parse(data, len): i64 {
         while (i < len && w < entry_count) {
             store64(entry_starts + w * 8, i);
             w = w + 1;
-            if (i == 0) { i = 12; } else { i = i + 13; }
+            if (i == 0) { i = 11; } else { i = i + 12; }
             i = _cyml_next_entries(data, len, i);
         }
     }
@@ -296,11 +334,10 @@ fn bayan_cyml_parse(data, len): i64 {
             store64(doc + 24, 0);
             return doc;
         }
-        # Header = data[0..delim_pos], body = data[delim_pos+4/5..end]
+        # Header = data[0..delim_pos], body = the text after the `---` line
         var hp = 0; var hl = 0; var bp = 0; var bl = 0;
         _cyml_trim(data, delim_pos, &hp, &hl);
-        var body_start = delim_pos + 4;
-        if (delim_pos > 0) { body_start = delim_pos + 5; }
+        var body_start = _cyml_body_at(delim_pos, len);
         _cyml_trim(data + body_start, len - body_start, &bp, &bl);
 
         store64(doc, hp);
@@ -334,13 +371,16 @@ fn bayan_cyml_parse(data, len): i64 {
         var eend = len;
         if (ei + 1 < entry_count) { eend = load64(entry_starts + (ei + 1) * 8); }
 
-        # Entry header starts after "[[entries]]\n"
+        # The entry's header starts after the marker line and its newline. An
+        # empty entry (a marker straight after a marker), or a marker that
+        # ends the input, has no header: its next marker, or the end, comes
+        # first, and the start is held there.
         var hdr_start = estart + 12;
         if (estart > 0) { hdr_start = estart + 13; }
+        if (hdr_start > eend) { hdr_start = eend; }
 
-        # Find --- within this entry. The search starts at the header, past the
-        # marker's own newline, so a `---` flush against the marker is header
-        # text (pinned in tests/bayan.tcyr; roadmap 1.7.0).
+        # Find the `---` line within this entry. hdr_start follows the marker's
+        # newline, so a `---` flush against the marker counts (1.7.0).
         var edelim = _cyml_next_delim(data, eend, hdr_start);
 
         var e = 0;
@@ -352,7 +392,7 @@ fn bayan_cyml_parse(data, len): i64 {
         } else {
             var ehp = 0; var ehl = 0; var ebp = 0; var ebl = 0;
             _cyml_trim(data + hdr_start, edelim - hdr_start, &ehp, &ehl);
-            var ebody_start = edelim + 5;
+            var ebody_start = _cyml_body_at(edelim, eend);
             _cyml_trim(data + ebody_start, eend - ebody_start, &ebp, &ebl);
             e = bayan_cyml_entry_new(ehp, ehl, ebp, ebl);
         }
@@ -557,8 +597,7 @@ fn bayan_cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len): i6
     var i = _cyml_next_delim(data, len, 0);
     if (i >= len) { return 0; }
     _cyml_trim(data, i, out_hdr, out_hdr_len);
-    var body_start = i + 4;
-    if (i > 0) { body_start = i + 5; }
+    var body_start = _cyml_body_at(i, len);
     _cyml_trim(data + body_start, len - body_start, out_body, out_body_len);
     return 1;
 }

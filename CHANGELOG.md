@@ -2,6 +2,155 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0] — 2026-10-15
+
+Minor release, the roadmap's 1.7.0 slot: **four outputs that were silently wrong**, each fixed
+against something other than bayan. csv now reads and writes what Python's `csv` module does.
+`bayan_json_build` writes valid JSON with the values it parsed. cyml's markers and `---`
+delimiters are whole lines wherever they fall. The pin stays 6.7.12, and the floor 6.7.9 (checked
+there).
+
+> ### ⚠ What to re-check, by module
+>
+> - **csv.** `bayan_csv_parse_line` returns one more field for a line ending in a comma, no longer
+>   keeps the line's own CR, LF or CRLF in its last field, and keeps the text after a closing quote
+>   in that field (`"a"b,c` is `ab`, `c`, not three fields). `bayan_csv_write_line` ends records in
+>   CRLF, not LF, and writes a row of one empty field as `""`. `bayan_csv_escape` quotes a field
+>   holding a CR. Drop any code that compensated for the old answers.
+> - **json.** `bayan_json_build` writes a parsed number, `true`, `false`, `null`, object or array
+>   unquoted, as it was read, and escapes a hand-built pair's key and value. A pair is **24 bytes**
+>   (`JSON_PAIR_SIZE`), up from 16: code that allocated a pair itself, or assumed its size, must
+>   change. Pairs read through the accessors are unaffected.
+> - **cyml.** A document parses as before unless it has one of these shapes, each of which now
+>   parses differently: two adjacent `[[entries]]` lines (now two entries, the first empty); a
+>   `---` line directly after a marker or directly before the next one, or right after a blank
+>   first line (now a delimiter); a marker or a `---` as the last line with no newline after it
+>   (now a marker or a delimiter). Check documents with those shapes.
+
+### Changed — csv reads and writes RFC 4180 as Python's `csv` does (Known gap 10)
+
+- **A trailing empty field is a field.** `a,` parsed to one field and `,,` to two (the RFC: two and
+  three), so a row ending in an empty field lost a column on every round trip. Documented since
+  1.5.3.
+- **Records end in CRLF** (RFC 4180 s2.1), from `bayan_csv_write_line`; they ended in a lone LF. And
+  **`bayan_csv_parse_line` no longer keeps a line's terminator as data**: `a,b\r\n`, `a,b\n` and
+  `a,b\r` all give `b`. It returned `b\n` for the writer's own output, so bayan's round trip was
+  broken on the last field.
+- **A field holding CR is quoted** by `bayan_csv_escape`. It was written bare, and came back from
+  any reader as a line break.
+- **The text after a closing quote stays in its field** (found here, not on the roadmap):
+  `"a"b,c` parsed to `a`, `b`, `c`, where Python's reader gives `ab`, `c`, so every later column
+  shifted by one. The parser is now RFC 4180's grammar as Python runs it: four states, where a
+  quote just after a closing quote is an escaped one, and anything else but a comma or the
+  terminator continues the field.
+- **A row of one empty field is written `""`**, as Python writes it. Written bare it was an empty
+  line, which reads back as a record of no fields.
+- **One record per call**, stated in the module header. A CR or LF outside quotes ends the record
+  only as the line's terminator: its last byte, or CRLF as its last two. Anywhere else it is kept
+  as data, where Python would start a second record. Inside quotes CR and LF are data, so a quoted
+  record spanning lines parses whole when it is passed whole.
+
+### Changed — `bayan_json_build` writes valid JSON with the same values (Known gap 14)
+
+- **Each pair is written by its kind.** The build quoted every value and escaped nothing: a number
+  came back as a string, a nested value as a quoted span (`{"o": "{"a":1}"}`, not JSON), and a `"`
+  or `\` in a hand-built value broke the document. Now a pair from `bayan_json_parse` is written as
+  it was read: a string's raw body between quotes, and a number, `true`, `false`, `null`, object or
+  array as its raw bytes. So `bayan_json_build(bayan_json_parse(doc))` has doc's members and
+  values. A hand-built pair is text: its key and value are escaped (`_jb_append_string`, the tree
+  serializer's), and the value is written as a string, as it always was. A raw byte below 0x20 in a
+  parsed string, which JSON forbids but the flat parser takes, is written as `\u00XX`. Other bytes
+  a non-JSON document can carry through the lenient parser (an unvalidated bare value such as
+  `abc`, an escape JSON does not define) come out as they went in.
+- **The flat pair records its kind and is 24 bytes** (`{ key, value, kind }`; `JSON_PAIR_SIZE` 16
+  → 24). `bayan_json_parse_a` records the form it read, and `bayan_json_pair_new(_a)` keeps its
+  signature and makes a `JSON_K_TEXT` pair. This is how TOML's pairs have worked since 1.5.4, for
+  the same reason: only the parser knows what form a value took.
+
+### Changed — cyml markers and delimiters are whole lines wherever they fall (Known gap 15)
+
+- **Two adjacent `[[entries]]` lines are two entries, the first one empty.** From 1.5.1 to 1.6.2
+  they were one entry whose header began with the second marker: the scan resumed past the first
+  marker's newline, and a marker can only follow one. It resumes on that newline now (11 past
+  offset 0, else 12), and both passes take the same step. An empty entry's header start is held at
+  its end, so its header is empty and it has no body. This is TOML's reading of two `[[t]]` lines,
+  and bayan's TOML parser has kept an empty table since 1.5.4. 1.6.0 pinned the old answer so that
+  changing it would be a decision; the roadmap asked for one.
+- **A `---` line is a delimiter after a blank first line** (`\n---\nbody`: an empty header and the
+  body), and **straight after its entry's marker** (`[[entries]]\n---\nA`: the body `A`). To 1.6.2
+  byte 0 was tested for `---\n` only, and an entry's search began past the marker's newline, so both
+  were header text. 1.5.1 fixed the first shape in the marker scan.
+- **The same rule at the region's far end** (found here; the roadmap named the near end). A `---`
+  line just before the next marker, whose newline it shares, is that entry's delimiter, with an
+  empty body; it was header text, and the entry had no body. A `---` that is the last line, with no
+  newline after it, is a delimiter too. And **a marker that is the last line** (`x\n[[entries]]`)
+  is a marker, opening an empty entry; it was text. A file's last line need not end in a newline.
+- `_cyml_next_delim` now returns the start of the `---` line rather than the newline before it, and
+  the new private `_cyml_body_at` says where the body begins: past the line's newline, or at the
+  region's end. `_cyml_marker_at` and `_cyml_delim_at` accept the end of the input or region where
+  they needed `\n`. The rule is stated once, in the module header.
+- **Not changed:** a CR does not end a line, so `[[entries]]\r\n` and `---\r\n` are still text
+  (Known gap 17, roadmap 1.8.0).
+
+### Added
+
+- `JSON_K_TEXT`, `JSON_K_STRING`, `JSON_K_BARE`, `JSON_K_OBJECT`, `JSON_K_ARRAY`;
+  `bayan_json_pair_kind(p)`; `bayan_json_pair_new_kind(key, value, kind)` and its `_a` form. Any
+  kind but `JSON_K_TEXT` says that the key and value are raw JSON source bytes, which the build
+  writes unchanged. The constants are `var`s like `JTAG_*`, and join roadmap 1.10.0's `const` list.
+  No `_compat` aliases: the alias set is closed (ADR 0006).
+- **`scripts/gen-csv-vectors.py` and `tests/fixtures/csv/csv.vec`**: 4,835 vectors from Python's
+  `csv` module (3,993 parse, 619 write, 223 escape), each verified against the module before it is
+  written. Lines Python would split at a mid-line break are left out (see "one record per call").
+  CI's `oracles` job regenerates them and requires no change, as for the TOML and numeric vectors.
+
+### Tests
+
+- **`tests/vectors.tcyr`: the CSV vectors, 0 wrong.** On 1.6.2's module 3,747 of the 4,835
+  disagreed with Python.
+- **`tests/bayan.tcyr` 1,553 → 1,601.** csv: +22, one row per fixed answer, plus the mid-line
+  breaks the oracle cannot see. Two 1.5.1 rows that pinned the LF terminator now pin CRLF. json:
+  +13, each kind's output, the raw control byte, hand-built escaping, `pair_new_kind` and the pair
+  size. cyml: +13, as the 1.6.0 and 1.6.1 groups' pins for adjacent markers, a marker at the end,
+  and the four delimiter edges move to their 1.7.0 answers, each label naming the old one. The two scan
+  references now state the 1.7.0 rule (the marker reference loses its own `pos + 13` bound; the
+  delimiter reference is rewritten for whole lines and the line-start position).
+- **csv mutants:** nine, each failing at least one suite. The oracle misses one, any CR or LF
+  ending the record, because it has no mid-line breaks; the pinned rows catch it. The pinned rows
+  miss one, a quote opening a field mid-field; the oracle catches it with 673 wrong.
+- **JSON round trip against Python's `json`:** 22,000 random documents: 20,000 objects with
+  escapes, non-ASCII text, nesting, numbers, booleans and null, at three separator styles, and
+  2,000 with raw control bytes in strings. `bayan_json_build(bayan_json_parse(doc))` loads in Python
+  and equals `json.loads(doc)` (non-strict for the control bytes) for every one. 1.6.2's output was
+  not JSON for 12,624 and had different values for 5,368 more. Six mutants fail the pinned rows;
+  the three that touch parsed documents fail the round trip too.
+- **cyml against a line-by-line reference:** a scratch Python model written from the rule (markers
+  and `---` lines found as lines, then trimmed), not from `src/cyml.cyr`, against the parser and
+  `bayan_cyml_split` at every prefix of 30,000 random token documents: 1,960,742 prefixes, each
+  compared through a hash of every field. 0 differences on x86_64 and on aarch64 under qemu.
+  1.6.2's module differs on 26,108 of the documents, the corpus being dense in the edge shapes.
+  Eight mutants (each side of the marker rule, the header clamp, each side of the delimiter rule,
+  the body start, a count pass stepping past the newline) give 3,632–22,985 differences each and
+  fail the pinned rows too.
+- **The floor stays 6.7.9.** In a scratch copy pinned to 6.7.9 with its `lib/`: the build and all 6
+  test files are warning-free (the CSV vectors 0 wrong there too), the smoke entry exits 42, and
+  6.7.9's `distlib --all --check` accepts the bundles 6.7.12 generated.
+- Gates, all green on the 6.7.12 pin. x86_64: build, smoke, `cyrius test` (6/6), the deprecated
+  lookups, fuzz, bench, coverage 506/506 (the three new json functions included), the cost gate.
+  aarch64 under qemu: build, smoke, test, deprecated lookups, fuzz, bench, the cost gate, the PDF
+  writer byte-identical across targets. Also: format, lint (0/0 across `src/`), `vet`, the arch-arm
+  check, the vendored-fold guard, `distlib --all --check`, regeneration with no change,
+  `scripts/consumer-check.sh` and the raw-include build. Then the CI mirror: every `ci.yml` job,
+  each in its own fresh copy of the tree, on the 6.7.12 release, all six green, including the new
+  CSV regeneration step.
+
+### Docs
+
+- [`docs/development/roadmap.md`](docs/development/roadmap.md): the 1.7.0 section is gone. Added:
+  **1.7.1**, csv's allocation refusals (Known gap 16, found here); a **1.8.0** item for cyml CRLF
+  lines (Known gap 17); `JSON_K_*` in 1.10.0's `const` list. `state.md` refreshed: Known gaps 10, 14
+  and 15 are closed, 16 and 17 open.
+
 ## [1.6.2] — 2026-10-15
 
 Patch release, the roadmap's 1.6.2 slot. On aarch64, **`bayan_u128_divmod` by a divisor below

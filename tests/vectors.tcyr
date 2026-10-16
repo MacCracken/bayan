@@ -14,6 +14,7 @@
 # Regenerate the vectors with:
 #   python3 scripts/gen-numeric-vectors.py tests/fixtures/numeric
 #   python3 scripts/gen-toml-vectors.py    tests/fixtures/toml
+#   python3 scripts/gen-csv-vectors.py     tests/fixtures/csv
 #
 # 1.5.3 adds a third set for the same reason the first two exist. src/toml.cyr
 # returned the RAW bytes between the quotes for six releases — escapes
@@ -35,6 +36,7 @@ include "lib/assert.cyr"
 include "src/u128.cyr"
 include "src/dtoa.cyr"
 include "src/toml.cyr"
+include "src/csv.cyr"
 
 alloc_init();
 
@@ -535,6 +537,107 @@ fn run_toml(): i64 {
 }
 
 
+# =============================================================================
+# csv against Python's csv module (1.7.0)
+# =============================================================================
+#
+# P <line> <n> <fields>: bayan_csv_parse_line. W <n> <fields> <line>:
+# bayan_csv_write_line. E <field> <escaped>: bayan_csv_escape. Hex fields, `-`
+# for an empty one (scripts/gen-csv-vectors.py). Until 1.7.0 the module dropped
+# a trailing empty field, wrote LF records, left a CR unquoted and split a field
+# at the text after its closing quote, and nothing in the suite compared it with
+# a CSV reader that is not bayan.
+
+var g_cv = 0;
+var g_cv_bad = 0;
+
+# t_hexfield, plus the `-` that marks an empty field.
+fn c_field(buf, p, len, dst, outn): i64 {
+    p = t_hexfield(buf, p, len, dst, outn);
+    if (load64(outn) == 0 && p < len && load8(buf + p) == 45) { p = p + 1; }
+    return p;
+}
+
+# A NUL-terminated copy of the next field, for the cstring API.
+fn c_cstr(buf, p, len, scratch, outp): i64 {
+    var nn[8];
+    p = c_field(buf, p, len, scratch, &nn);
+    var n = load64(&nn);
+    var c = alloc(n + 1);
+    memcpy(c, scratch, n);
+    store8(c + n, 0);
+    store64(outp, c);
+    return p + 1;
+}
+
+fn c_fail(idx, kind): i64 {
+    g_cv_bad = g_cv_bad + 1;
+    if (g_cv_bad <= 5) {
+        t_say("    csv vector "); t_num(idx); t_say(" kind ");
+        var kb[1]; store8(&kb, kind); print(&kb, 1); t_say(" disagrees with Python\n");
+    }
+    return 0;
+}
+
+fn run_csv(): i64 {
+    var cap = 1 << 20;
+    var buf = alloc(cap);
+    if (buf == 0) { t_say("cannot allocate the csv vector buffer\n"); return 1; }
+    var len = file_read_all("tests/fixtures/csv/csv.vec", buf, cap);
+    if (len <= 0) { t_say("cannot read tests/fixtures/csv/csv.vec\n"); return 1; }
+    var scratch = alloc(8192);
+    var nout[8];
+    var pos = 0;
+    while (pos < len) {
+        var kind = load8(buf + pos);
+        if (kind != 80 && kind != 87 && kind != 69) { break; }   # 'P' / 'W' / 'E'
+        pos = pos + 2;
+        var ok = 1;
+        if (kind == 80) {
+            var line = 0;
+            pos = c_cstr(buf, pos, len, scratch, &line);
+            pos = t_hexfield(buf, pos, len, scratch, &nout) + 1;
+            var n = load8(scratch);
+            var got = bayan_csv_parse_line(line);
+            if (vec_len(got) != n) { ok = 0; }
+            var k = 0;
+            while (k < n) {
+                var want = 0;
+                pos = c_cstr(buf, pos, len, scratch, &want);
+                if (ok == 1) { if (streq(vec_get(got, k), want) == 0) { ok = 0; } }
+                k = k + 1;
+            }
+        } elif (kind == 87) {
+            pos = t_hexfield(buf, pos, len, scratch, &nout) + 1;
+            var wn = load8(scratch);
+            var fields = vec_new();
+            var j = 0;
+            while (j < wn) {
+                var f = 0;
+                pos = c_cstr(buf, pos, len, scratch, &f);
+                vec_push(fields, f);
+                j = j + 1;
+            }
+            var wline = 0;
+            pos = c_cstr(buf, pos, len, scratch, &wline);
+            if (streq(bayan_csv_write_line(fields), wline) == 0) { ok = 0; }
+        } else {
+            var ef = 0;
+            pos = c_cstr(buf, pos, len, scratch, &ef);
+            var ee = 0;
+            pos = c_cstr(buf, pos, len, scratch, &ee);
+            if (streq(bayan_csv_escape(ef), ee) == 0) { ok = 0; }
+        }
+        # Each record ends in exactly one newline, which c_cstr has stepped past.
+        g_cv = g_cv + 1;
+        if (ok == 0) { c_fail(g_cv, kind); }
+    }
+    t_say("csv vectors: "); t_num(g_cv);
+    t_say("   wrong: "); t_num(g_cv_bad); t_say("\n");
+    if (g_cv_bad > 0) { return 1; }
+    return 42;
+}
+
 test_group("vectors: u128 against Python's arbitrary-precision integers");
 var uv = run_u128();
 assert_eq(uv, 42, "u128: the vector file loaded and every check ran");
@@ -559,5 +662,11 @@ var tv = run_toml();
 assert_eq(tv, 42, "toml: the vector file loaded and every check ran");
 assert_gt(g_tv, 1480, "toml: the expected number of vectors actually ran");
 assert_eq(g_tv_bad, 0, "toml: zero disagreements with the oracle");
+
+test_group("vectors: csv against Python's csv module (1.7.0)");
+var cvv = run_csv();
+assert_eq(cvv, 42, "csv: the vector file loaded and every check ran");
+assert_gt(g_cv, 4800, "csv: the expected number of vectors actually ran");
+assert_eq(g_cv_bad, 0, "csv: zero disagreements with the oracle");
 
 var r = assert_summary();

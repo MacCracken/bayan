@@ -6,7 +6,19 @@
 
 ## Version
 
-**1.6.2** — a patch, the roadmap's 1.6.2 slot whole; pin unchanged at **6.7.12**. On aarch64,
+**1.7.0** — a minor, the roadmap's 1.7.0 slot whole: four outputs that were silently wrong, each its
+own CHANGELOG entry, and what a consumer should re-check is in that entry's header. **csv** reads
+and writes what Python's `csv` module does: a trailing empty field, CRLF records, CR forcing quotes,
+text after a closing quote kept in its field (4,835 oracle vectors, regenerated in CI).
+**`bayan_json_build`** writes valid JSON with the parsed values: a flat pair records its kind
+(`JSON_K_*`, `bayan_json_pair_kind`, `bayan_json_pair_new_kind(_a)`; the pair is 24 bytes), and a
+22,000-document round trip through Python's `json` agreed with every one. **cyml** markers and `---`
+delimiters are whole lines wherever they fall: adjacent markers are two entries, and a `---` after a
+blank first line, right after or right before a marker, or as a last line with no newline is a
+delimiter. A line-by-line reference agreed on 1,960,742 prefixes (x86_64 and aarch64). Pin stays
+6.7.12, floor 6.7.9.
+
+Before it, **1.6.2** — a patch, the roadmap's 1.6.2 slot whole; pin unchanged at **6.7.12**. On aarch64,
 `bayan_u128_divmod` (and `_div`, `_mod`, `_diveq`, `_modeq`) by a divisor below 2^64 runs two-digit
 Algorithm D over `udiv` in one asm block, the routine 1.5.10's mulmod block uses, now keeping the
 quotient too. Until 1.6.2 it took 128 shift-subtract rounds: **644–707×** a plain 64-bit division under
@@ -273,20 +285,20 @@ Eight data/big-integer modules carved byte-identical from cyrius stdlib
 (public functions prefixed `bayan_`), plus two greenfield modules written
 in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
 `json.cyr` in bundle order) and `pdf` (1.5.0 — cross-dep-free, so its position
-is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.6.2):
+is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.7.0):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
 | `src/pdf.cyr`    | 9539 | 152 | `bayan_pdf_*` |
-| `src/json.cyr`   | 2162 | 71 | `bayan_json_*` |
+| `src/json.cyr`   | 2259 | 74 | `bayan_json_*` |
 | `src/toml.cyr`   | 1727 | 33 | `bayan_toml_*` |
 | `src/yaml.cyr`   | 899  | 12 | `bayan_yaml_*` |
 | `src/u128.cyr`   | 818  | 35 | `bayan_u128_*` / `bayan_u64_*` |
-| `src/cyml.cyr`   | 627  | 17 | `bayan_cyml_*` |
+| `src/cyml.cyr`   | 666  | 17 | `bayan_cyml_*` |
 | `src/dtoa.cyr`   | 463  | 3  | `bayan_f64_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
 | `src/base64.cyr` | 217  | 4  | `bayan_base64_*` |
-| `src/csv.cyr`    | 148  | 3  | `bayan_csv_*` |
+| `src/csv.cyr`    | 186  | 3  | `bayan_csv_*` |
 
 `toml` has gone 17 -> 21 -> **33** public functions across 1.5.3 and 1.5.4,
 and roughly tripled in size. 1.5.3 added the escape decoder, the literal-string
@@ -321,8 +333,8 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **17,272**-line bundle (17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
-  regenerated via `cyrius distlib --all` at 1.6.2 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
+- `dist/bayan.cyr` — **17,446**-line bundle (17,272 at 1.6.2, 17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
+  regenerated via `cyrius distlib --all` at 1.7.0 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
@@ -331,21 +343,21 @@ this is mutation-verified.
   sidecar. Canonical `bayan_*` names only. Every sidecar is complete:
   `scripts/consumer-check.sh` builds all 10 bundles from their declared leaves
   alone, and goes red when a needed one is deleted (checked at 1.5.7). Lines and
-  leaf counts below are measured at 1.6.2 (6.7.12's distlib; the sidecars are
+  leaf counts below are measured at 1.7.0 (6.7.12's distlib; the sidecars are
   unchanged since 1.5.14); the base bundle declares 11 (1.5.14 added `math` to it
   and to json / yaml).
 
   | Sublib | Lines | Stdlib leaves |
   |---|---|---|
   | `bayan-pdf`    | 9556 | 7 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
-  | `bayan-yaml`   | 3551 | 11 (carries `json.cyr` — shared value tree / parser state) |
-  | `bayan-json`   | 2649 | 11 |
+  | `bayan-yaml`   | 3648 | 11 (carries `json.cyr` — shared value tree / parser state) |
+  | `bayan-json`   | 2746 | 11 |
   | `bayan-toml`   | 1743 | 6 |
-  | `bayan-cyml`   | 643  | 6 |
+  | `bayan-cyml`   | 682  | 6 |
   | `bayan-u128`   | 829  | 1 |
   | `bayan-bigint` | 462  | 2 |
   | `bayan-base64` | 229  | 2 |
-  | `bayan-csv`    | 161  | 3 |
+  | `bayan-csv`    | 199  | 3 |
 
   `bayan-toml` and `bayan-cyml` stopped listing `fmt` at 1.5.7, and that is
   correct: cyrius 6.6.6's `lib/io.cyr` includes `fmt.cyr` itself, so the `io`
@@ -354,7 +366,7 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,553 asserts, green** @1.6.1 on x86_64 and aarch64 under qemu (1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **1,601 asserts, green** @1.7.0 on x86_64 and aarch64 under qemu (1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
@@ -432,7 +444,8 @@ this is mutation-verified.
   the reported input, so the test written for the filed repro passed with
   either one removed. A test that cannot fail is a test that has stopped being
   a test.
-- `tests/vectors.tcyr` — **oracle-driven, expected values from Python**:
+- `tests/vectors.tcyr` — **oracle-driven, expected values from Python**. **4,835 CSV vectors**
+  (1.7.0: 3,993 parse, 619 write, 223 escape) from Python's `csv` module, and:
   **13,843** u128 checks (12,651 before 1.6.2 added 298 divmod rows, four checks each: 86 aimed at
   each digit's one and two corrections, estimates of 2^32 or more and `rhat` exits, 32 constructed
   to exit at `rhat == 2^32` exactly, and 180 at the divisor and quotient boundaries; 12,334 before
@@ -536,7 +549,7 @@ parallel jobs** (it was one 32-step job), each installing the pin through
 | `static` | format · lint · include audit · nothing reaches the vendored fold (1.6.1) · pdf naming hazards · typed-lookup overload base · mulmod and divmod arch arms (divmod 1.6.2) |
 | `x86_64` | build · smoke 42 · suite · fuzz · bench · `coverage --min 100` · mulmod and divmod cost |
 | `aarch64` | cross-built, run under qemu: build + smoke · suite · all fuzz harnesses · bench · mulmod and divmod cost · pdf output byte-identical to x86_64's |
-| `oracles` | pdf writer through `pdfcheck.py` · fixture polarity · font metrics (+ regeneration where groff exists) · numeric and TOML vectors regenerate |
+| `oracles` | pdf writer through `pdfcheck.py` · fixture polarity · font metrics (+ regeneration where groff exists) · numeric, TOML and CSV (1.7.0) vectors regenerate |
 | `dist` | `distlib --check` · regeneration changes nothing · consumer-check (incl. the deprecation gate) |
 
 Only `toolchain` runs `cyrius deps`; the other jobs build the committed `lib/`,
@@ -734,10 +747,11 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
    173 lines above it. Recorded because the failure is the exact one this file
    keeps warning about.*
 
-10. **`src/csv.cyr` is an RFC 4180 subset**, not RFC 4180: a trailing empty
-   field is not emitted (`a,` parses to one field where the RFC has two, so a
-   round trip loses a column), records are LF-terminated where the RFC says
-   CRLF, and CR does not trigger quoting. Documented at 1.5.3, not fixed.
+10. ~~**`src/csv.cyr` is an RFC 4180 subset**~~ **Fixed in 1.7.0**: it reads and writes what
+   Python's `csv` module does, checked by 4,835 vectors from that module. To 1.6.2 a trailing empty
+   field was not emitted (`a,` parsed to one field), records were LF-terminated where the RFC says
+   CRLF and the parser kept a line's terminator in its last field, CR did not trigger quoting, and
+   the text after a closing quote began a new field (`"a"b,c` was a, b, c). Documented at 1.5.3.
 11. ~~**aarch64 `bayan_u128_div` / `_mod` / `_divmod` are still bit-serial** for a
    64-bit divisor~~ **Fixed in 1.6.2**: two-digit Algorithm D over `udiv`, 644–707× →
    7.3–7.9× a plain division under qemu, gated by `tests/mulmod_speed.cyr`'s new rows. (It was
@@ -760,15 +774,25 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
    Measured LOGICAL on 6.6.12 (x86_64, aarch64 and cx: `-16 >> 2` is
    `0x3ffffffffffffffc`), so powmod's ≥ 2^63 defect was the signed loop test
    alone. The comment was left as it was in 1.5.10.
-14. **`bayan_json_build` quotes every value and escapes nothing.** Pre-existing,
-   but more visible from 1.5.10: a nested value now comes back whole, so
-   `bayan_json_build(bayan_json_parse(doc))` on a document with nested values
-   emits invalid JSON (1.5.9 already did for `{"x":{"a":1}}`).
-15. **cyml: a `---` at the start of the searched region is not a delimiter** (pinned at 1.6.1,
-   roadmap 1.7.0). `"\n---\nbody\n"` has none: byte 0 is tested for the flush form only, so a
+14. ~~**`bayan_json_build` quotes every value and escapes nothing.**~~ **Fixed in 1.7.0**: a
+   flat pair records its value's kind, and the build writes each kind as it should be written;
+   `bayan_json_build(bayan_json_parse(doc))` loads in Python with doc's values for 22,000 random
+   documents (1.6.2: 12,624 were not JSON, 5,368 more had other values). Pre-existing, and more
+   visible from 1.5.10, when a nested value came back whole.
+15. ~~**cyml: a `---` at the start of the searched region is not a delimiter**~~ **Fixed in 1.7.0**,
+   with the rest of the line rule: markers and delimiters are whole lines wherever they fall
+   (adjacent markers, a `---` before the next marker or as the last line, a marker as the last
+   line). The history (pinned at 1.6.1, roadmap 1.7.0): `"\n---\nbody\n"` has none: byte 0 is tested for the flush form only, so a
    leading blank line makes the whole text header. And `"[[entries]]\n---\nA\n"` gives an entry
    whose header is `---\nA`, with no body: an entry's search starts past the marker's newline. Both
-   date from 1.0.0. Found while making the searches hop at 1.6.1; a fix changes output, so it waits.
+   date from 1.0.0. Found while making the searches hop at 1.6.1; a fix changed output, so it waited.
+16. **csv does not check its allocations** (found at 1.7.0; roadmap 1.7.1). `bayan_csv_escape`
+   stores through an unchecked `alloc`, `bayan_csv_parse_line` answers a refused copy with the
+   fields it has so far (a short row), and `bayan_csv_write_line` passes a refused escape's 0 to
+   `strlen`. The other modules return 0 on a refusal and prove it with a sweep.
+17. **cyml: a CR does not end a line** (found at 1.7.0; roadmap 1.8.0). `[[entries]]\r\n` and
+   `---\r\n` are text, so a `.cyml` saved with CRLF line endings parses to no entries and one block
+   of header text, with nothing reported.
 
 ## Scripts
 
@@ -797,6 +821,10 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
   same way (`div_aimed` and `div_rhat_exact`, each with its own `random.Random`,
   then the fixed `div_edges`), and splits the `divlu` model into `_divlu_core(u1, u0, m)`
   so that both callers aim with one model; every earlier line is unchanged.
+- `scripts/gen-csv-vectors.py` — **new at 1.7.0.** CSV vectors from Python's `csv` module (parse,
+  write and escape), each verified against the module before it is written. Lines Python would
+  split into two records at a mid-line break are left out: bayan's parser takes one record, and
+  `tests/bayan.tcyr` pins what it does with one.
 - `scripts/gen-toml-vectors.py` — **new at 1.5.3.** TOML string vectors from
   `tomllib`. Every line is verified with the oracle before it is written: a
   document Python rejects aborts generation rather than becoming a vector that
@@ -848,7 +876,7 @@ entries). CI verifies it before resolving.
 
 ## Next
 
-[`roadmap.md`](roadmap.md) holds the sequence. The 1.6.x patch slots are done. **1.7.0** comes
-next, the silently-wrong-output minor ( csv, `bayan_json_build`, cyml adjacent markers, and the
-cyml delimiter edge pinned at 1.6.1), yaml escapes (1.8.0, argued by ADR 0009), `bayan_markdown_*` (1.9.0), typed
-public names (1.10.0), TOML into the tagged tree (1.11.0), and the audit and frozen surface (1.12.0).
+[`roadmap.md`](roadmap.md) holds the sequence. **1.7.1** comes next, a patch: csv's allocation
+refusals (Known gap 16). Then yaml escapes and cyml CRLF lines (1.8.0; the first argued by ADR
+0009), `bayan_markdown_*` (1.9.0), typed public names (1.10.0), TOML into the tagged tree (1.11.0),
+and the audit and frozen surface (1.12.0).

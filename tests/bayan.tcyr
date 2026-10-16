@@ -1828,7 +1828,7 @@ assert_eq(streq(bayan_csv_escape("has\"quote"), "\"has\"\"quote\""), 1, "csv: a 
 var csv_row = vec_new();
 vec_push(csv_row, "x");
 vec_push(csv_row, "y,z");
-assert_eq(streq(bayan_csv_write_line(csv_row), "x,\"y,z\"\n"), 1, "csv: a row round-trips");
+assert_eq(streq(bayan_csv_write_line(csv_row), "x,\"y,z\"\r\n"), 1, "csv: a row is written (CRLF from 1.7.0)");
 # The writer used a fixed alloc(4096) and memcpy'd unbounded into it.
 var csv_wide = vec_new();
 var csv_cell = alloc(501);
@@ -1838,7 +1838,7 @@ store8(csv_cell + 500, 0);
 csv_i = 0;
 while (csv_i < 20) { vec_push(csv_wide, csv_cell); csv_i = csv_i + 1; }
 var csv_out = bayan_csv_write_line(csv_wide);
-assert_eq(strlen(csv_out), 20 * 500 + 19 + 1, "csv: a 10 KB row is written whole");
+assert_eq(strlen(csv_out), 20 * 500 + 19 + 2, "csv: a 10 KB row is written whole (CRLF from 1.7.0)");
 var csv_probe2 = alloc(16384);
 csv_stray = 0;
 csv_i = 0;
@@ -1847,6 +1847,50 @@ while (csv_i < 16384) {
     csv_i = csv_i + 1;
 }
 assert_eq(csv_stray, 0, "csv: nor past the writer's allocation");
+
+test_group("csv: RFC 4180 as Python's csv reads and writes it (1.7.0)");
+# tests/vectors.tcyr checks 4,835 lines against Python's csv module. These rows name each defect
+# 1.7.0 fixed, and pin what the oracle cannot see: a CR or LF outside quotes in the MIDDLE of a
+# line, where Python would start a second record, is kept as data by this one-record parser.
+var cr_a = bayan_csv_parse_line("a,");
+assert_eq(vec_len(cr_a), 2, "csv: a trailing comma ends in an empty field (was one field)");
+assert_eq(strlen(vec_get(cr_a, 1)), 0, "csv: (which is empty)");
+assert_eq(vec_len(bayan_csv_parse_line(",,")), 3, "csv: two commas are three fields (was two)");
+assert_eq(vec_len(bayan_csv_parse_line("")), 0, "csv: an empty line is a record of no fields");
+var cr_q = bayan_csv_parse_line("\"a\"b,c");
+assert_eq(vec_len(cr_q), 2, "csv: text after a closing quote stays in its field (was a third field)");
+assert_eq(streq(vec_get(cr_q, 0), "ab"), 1, "csv: (\"a\"b is ab, as Python reads it)");
+var cr_t = bayan_csv_parse_line("a,b\r\n");
+assert_eq(streq(vec_get(cr_t, 1), "b"), 1, "csv: a CRLF terminator is not data (was kept in the last field)");
+assert_eq(streq(vec_get(bayan_csv_parse_line("a,b\n"), 1), "b"), 1, "csv: nor an LF one");
+assert_eq(streq(vec_get(bayan_csv_parse_line("a,b\r"), 1), "b"), 1, "csv: nor a lone CR");
+assert_eq(streq(vec_get(bayan_csv_parse_line("\"x\r\n\""), 0), "x\r\n"), 1,
+  "csv: inside quotes CR and LF are data");
+var cr_m = bayan_csv_parse_line("a\nb,c");
+assert_eq(vec_len(cr_m), 2, "csv: an LF mid-line is data, not a second record");
+assert_eq(streq(vec_get(cr_m, 0), "a\nb"), 1, "csv: (kept in its field)");
+assert_eq(streq(vec_get(bayan_csv_parse_line("a\r\nb"), 0), "a\r\nb"), 1, "csv: and so is a CRLF mid-line");
+assert_eq(streq(vec_get(bayan_csv_parse_line("a\n\n"), 0), "a\n"), 1,
+  "csv: only the last line ending is the terminator");
+assert_eq(streq(bayan_csv_escape("a\rb"), "\"a\rb\""), 1, "csv: a CR forces quoting (it did not)");
+var cr_w = vec_new();
+vec_push(cr_w, "a");
+vec_push(cr_w, "");
+assert_eq(streq(bayan_csv_write_line(cr_w), "a,\r\n"), 1, "csv: records end in CRLF (was LF)");
+var cr_lone = vec_new();
+vec_push(cr_lone, "");
+assert_eq(streq(bayan_csv_write_line(cr_lone), "\"\"\r\n"), 1,
+  "csv: a row of one empty field is written as \"\" (bare, it reads back as no fields)");
+assert_eq(vec_len(bayan_csv_parse_line(bayan_csv_write_line(cr_lone))), 1, "csv: (and reads back as one)");
+assert_eq(streq(bayan_csv_write_line(vec_new()), "\r\n"), 1, "csv: a row of no fields is an empty record");
+var cr_rt = vec_new();
+vec_push(cr_rt, "x\ry");
+vec_push(cr_rt, "say \"hi\"");
+vec_push(cr_rt, "");
+var cr_back = bayan_csv_parse_line(bayan_csv_write_line(cr_rt));
+assert_eq(vec_len(cr_back), 3, "csv: a row round-trips through write and parse, trailing empty field included");
+assert_eq(streq(vec_get(cr_back, 0), "x\ry"), 1, "csv: (the CR survives)");
+assert_eq(streq(vec_get(cr_back, 1), "say \"hi\""), 1, "csv: (and the quotes)");
 
 test_group("bigint: u256 arithmetic (v1.5.1 — first tests in bayan)");
 var bi_z = bayan_u256_zero();
@@ -4107,11 +4151,13 @@ test_group("cyml: the marker scan hops line to line and finds what the per-byte 
 # which the reference says yes, or len. The parse results are pinned as well, with their 1.5.14
 # values (the 12 documents of the issue's repro and a 13th, adjacent markers past byte 0; a scratch
 # differential of 4.6M parses against the 1.5.14 parser agreed).
+# 1.7.0: the copy's own `pos + 13 > len` bound is gone. It is _cyml_marker_at's to say where a
+# marker may end, and from 1.7.0 one may end the input.
 fn _tm_is_entries_ref(data, len, pos): i64 {
     if (pos == 0) {
         if (_cyml_marker_at(data, len, 0) == 1) { return 1; }
     }
-    if (pos + 13 > len) { return 0; }
+    if (pos + 1 >= len) { return 0; }
     if (load8(data + pos) != 10) { return 0; }
     return _cyml_marker_at(data, len, pos + 1);
 }
@@ -4200,27 +4246,39 @@ assert_eq(bayan_cyml_doc_header(tm_d), 0, "cyml: with nothing left over for a fi
 tm_d = bayan_cyml_parse(TM_AT0, strlen(TM_AT0));
 assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: a marker at byte 0 is an entry");
 assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 0)), TM_AT0 + 12, "cyml: whose header follows it");
-# Two markers back to back are one entry whose header begins with the second marker: the skip past
-# the first lands on the second's `[`, past the newline a marker needs before it. Unchanged since
-# 1.5.1, and pinned so that a change to it is a decision (the issue's note), not a side effect.
+# Two markers back to back are TWO entries, the first one empty (1.7.0). From 1.5.1 to 1.6.2 they
+# were one entry whose header began with the second marker: the skip past the first landed on the
+# second's `[`, past the newline a marker needs before it. The scan now resumes on the marker's own
+# newline. 1.6.0 pinned the old answer so that changing it would be a decision; 1.7.0 decided.
 tm_d = bayan_cyml_parse(TM_ADJ, strlen(TM_ADJ));
-assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: adjacent markers are one entry (as in 1.5.1 - 1.5.14)");
-assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 0)), TM_ADJ + 12,
-  "cyml: whose header begins with the second marker");
-# Past byte 0 the skip is 13, not 12, and both passes must take the same one: a count pass that
-# skipped 12 would find two markers here and the fill pass one.
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 2, "cyml: adjacent markers are two entries (one entry to 1.6.2)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 0, "cyml: the first one empty");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(tm_d, 0)), 0, "cyml: (with no body)");
+assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 1)), TM_ADJ + 24,
+  "cyml: and the second's header is its own `id=2`");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(tm_d, 1)), 1, "cyml: (its body B)");
+# Past byte 0 the resume point is 12, the marker's own newline, and both passes must take the same
+# one: a count pass that resumed past the newline (13, as to 1.6.2) would count one marker here while
+# the fill pass finds two.
 tm_d = bayan_cyml_parse(TM_ADJ_MID, strlen(TM_ADJ_MID));
-assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: adjacent markers after the first line are one entry too");
-assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 0)), TM_ADJ_MID + 14,
-  "cyml: whose header begins with the second marker");
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 2, "cyml: adjacent markers after the first line are two entries too");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 0, "cyml: (the first empty)");
+assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(tm_d, 1)), TM_ADJ_MID + 26,
+  "cyml: and the second's header is `id=2`");
 tm_d = bayan_cyml_parse(TM_DELIM, strlen(TM_DELIM));
 assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: no marker and a --- is one entry");
 assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(tm_d, 0)), 4, "cyml: with the body below the ---");
 tm_d = bayan_cyml_parse(TM_NODELIM, strlen(TM_NODELIM));
 assert_eq(bayan_cyml_doc_entry_count(tm_d), 0, "cyml: no marker and no --- is no entries");
 assert_eq(bayan_cyml_doc_header_len(tm_d), strlen(TM_NODELIM), "cyml: the whole text is the header");
-assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_CUT, strlen(TM_CUT))), 0,
-  "cyml: a marker cut off by the end of input is not one");
+# A marker line that ends the input, with no newline after it, is a marker (1.7.0): an empty entry.
+# To 1.6.2 it was text, and the document a single entry whose header held it.
+tm_d = bayan_cyml_parse(TM_CUT, strlen(TM_CUT));
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: a marker that ends the input is one (was text)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 0, "cyml: (an empty entry)");
+assert_eq(bayan_cyml_doc_header_len(tm_d), 1, "cyml: (after the file header x)");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse("x\n[[entries]", 13)), 0,
+  "cyml: a marker cut off before its last byte is still not one");
 tm_d = bayan_cyml_parse(TM_CRLF, strlen(TM_CRLF));
 assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: a CRLF marker is not a marker: one entry, from the ---");
 assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 19, "cyml: whose header holds it as text");
@@ -4228,29 +4286,21 @@ assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_INDENT, strlen(TM_INDEN
   "cyml: nor is an indented one");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_AT0, 0)), 0, "cyml: empty input has no entries");
 
-test_group("cyml: the --- searches hop line to line and find what the per-byte test found (1.6.1)");
+test_group("cyml: the --- searches hop line to line and find every --- line (1.6.1; the rule is 1.7.0's)");
 # The single-entry search, each entry's search and bayan_cyml_split called _cyml_is_delim at every
 # byte, the shape 1.6.0 removed from the marker scan. _cyml_next_delim walks to the next newline and
-# compares the delimiter only there. _td_is_delim_ref is the 1.6.0 per-byte test, copied here: from
-# every offset i, the answer must be the first p >= i at which the reference says yes, or len. An
-# entry's search passes the entry's end as len, so checking every prefix covers that bound too. The
-# parse and split results are pinned with their 1.6.0 values (a scratch differential of 7.8M parses
-# and splits against the 1.6.0 module agreed).
-fn _td_is_delim_ref(data, len, pos): i64 {
-    if (pos == 0) {
-        if (pos + 4 <= len) {
-            if (load8(data) == 45 && load8(data+1) == 45 && load8(data+2) == 45 && load8(data+3) == 10) {
-                return 1;
-            }
-        }
-        return 0;
-    }
-    if (pos + 5 > len) { return 0; }
-    if (load8(data + pos) != 10) { return 0; }
-    if (load8(data + pos + 1) != 45) { return 0; }
-    if (load8(data + pos + 2) != 45) { return 0; }
-    if (load8(data + pos + 3) != 45) { return 0; }
-    if (load8(data + pos + 4) != 10) { return 0; }
+# compares the delimiter only there. _td_is_delim_ref is the per-byte test it must agree with: from
+# every offset i, the answer must be the first q >= i at which the reference says yes, or len. An
+# entry's search passes the entry's end as len, so checking every prefix covers that bound too.
+#
+# 1.7.0 changed the rule the reference states (1.6.1 copied 1.6.0's): a delimiter is a whole `---`
+# line, at byte 0 or after a `\n`, ending at a `\n` or at the region's end, and the position is the
+# line's start. Four answers moved with it, each pinned below with its old value in the label.
+fn _td_is_delim_ref(data, len, q): i64 {
+    if (q + 3 > len) { return 0; }
+    if (q > 0) { if (load8(data + q - 1) != 10) { return 0; } }
+    if (load8(data + q) != 45 || load8(data + q + 1) != 45 || load8(data + q + 2) != 45) { return 0; }
+    if (q + 3 < len) { if (load8(data + q + 3) != 10) { return 0; } }
     return 1;
 }
 var td_bad = 0;
@@ -4303,7 +4353,8 @@ td_bad = td_bad + _td_scan_agrees(str_data(TM_F95), str_len(TM_F95));
 assert_eq(td_offsets, 26461, "cyml: (the delimiter scan was asked from every offset of every document)");
 assert_eq(td_bad, 0, "cyml: _cyml_next_delim answers the per-byte test's first yes, from every offset");
 assert_eq(_cyml_delim_at(TD_FLUSH, 4, 0), 1, "cyml: `---\\n` is a delimiter where it fits");
-assert_eq(_cyml_delim_at(TD_FLUSH, 3, 0), 0, "cyml: and not where the input ends before its newline");
+assert_eq(_cyml_delim_at(TD_FLUSH, 3, 0), 1, "cyml: and so is a `---` that ends the region (1.7.0; was not)");
+assert_eq(_cyml_delim_at(TD_FLUSH, 2, 0), 0, "cyml: while `--` is not one");
 # The single-entry parse, and split, which shares its search.
 var td_d = bayan_cyml_parse(TD_FLUSH, strlen(TD_FLUSH));
 assert_eq(bayan_cyml_doc_entry_count(td_d), 1, "cyml: a --- at byte 0 is a delimiter");
@@ -4314,20 +4365,23 @@ assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 5, "cyml: 
 assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), TD_MID + 10, "cyml: and the body starts past it");
 td_d = bayan_cyml_parse(TD_TWO, strlen(TD_TWO));
 assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(td_d, 0)), 7, "cyml: the first --- wins; the second is body");
-assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_CUT, strlen(TD_CUT))), 0,
-  "cyml: a --- with no newline after it is not a delimiter");
+td_d = bayan_cyml_parse(TD_CUT, strlen(TD_CUT));
+assert_eq(bayan_cyml_doc_entry_count(td_d), 1, "cyml: a --- that is the last line is a delimiter (1.7.0; was not)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 5, "cyml: (the header is a = 1)");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (and the body empty)");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_CRLF, strlen(TD_CRLF))), 0, "cyml: nor is a CRLF one");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_NEAR, strlen(TD_NEAR))), 0,
   "cyml: nor ----, -- or `--- `");
-# A blank line before the --- hides it: byte 0 is tested for the flush form only, as in every
-# release since 1.0.0. The marker scan was fixed for this shape at 1.5.1; this is pinned so that
-# fixing it here (roadmap 1.7.0) is a decision, not a side effect.
+# A blank line before the --- no longer hides it (1.7.0). To 1.6.2 byte 0 was tested for the flush
+# form only, so the whole text was the header; the marker scan was fixed for this shape at 1.5.1.
 td_d = bayan_cyml_parse(TD_LEAD, strlen(TD_LEAD));
-assert_eq(bayan_cyml_doc_entry_count(td_d), 0, "cyml: a leading blank line hides the --- (as in 1.0.0 - 1.6.0)");
-assert_eq(bayan_cyml_doc_header_len(td_d), 10, "cyml: and the whole text is the header");
+assert_eq(bayan_cyml_doc_entry_count(td_d), 1, "cyml: a --- after a leading blank line is a delimiter (was not)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (an empty header above it)");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), TD_LEAD + 5, "cyml: (and the body after it)");
 var td_hp = 0; var td_hl = 0; var td_bp = 0; var td_bl = 0;
-assert_eq(bayan_cyml_split(TD_LEAD, strlen(TD_LEAD), &td_hp, &td_hl, &td_bp, &td_bl), 0,
-  "cyml: split agrees: no delimiter");
+assert_eq(bayan_cyml_split(TD_LEAD, strlen(TD_LEAD), &td_hp, &td_hl, &td_bp, &td_bl), 1,
+  "cyml: split agrees (it found no delimiter to 1.6.2)");
+assert_eq(td_bp, TD_LEAD + 5, "cyml: (the body is the text after the --- line)");
 assert_eq(bayan_cyml_split(TD_FLUSH, strlen(TD_FLUSH), &td_hp, &td_hl, &td_bp, &td_bl), 1,
   "cyml: split finds a --- at byte 0");
 assert_eq(td_hl, 0, "cyml: (an empty header)");
@@ -4339,18 +4393,21 @@ td_d = bayan_cyml_parse(TD_ENTRY, strlen(TD_ENTRY));
 assert_eq(bayan_cyml_doc_entry_count(td_d), 2, "cyml: two entries, each with its own ---");
 assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 1)), 4, "cyml: the second entry's header is id=2");
 assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 1)), TD_ENTRY + 44, "cyml: and its body is B");
-# An entry's search ends at the next marker's newline, so a --- whose newline IS that newline is
-# header text, and the entry has no body.
+# An entry's search ends at the next marker's newline, and a --- line whose newline IS that newline
+# ends the region: a delimiter, with an empty body (1.7.0). To 1.6.2 it was header text (`id=1\n---`)
+# and the entry had no body.
 td_d = bayan_cyml_parse(TD_E_EDGE, strlen(TD_E_EDGE));
-assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 8, "cyml: a --- just before a marker is header");
-assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (that entry has no body)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 4,
+  "cyml: a --- just before a marker is the delimiter (the header was id=1 and the ---)");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (the body is empty)");
+assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), TD_E_EDGE + 20, "cyml: (and ends at the marker)");
 assert_eq(bayan_cyml_entry_header(bayan_cyml_doc_entry(td_d, 1)), TD_E_EDGE + 33, "cyml: and the next entry is whole");
-# The search starts at the header, past the marker's newline, so a --- flush against the marker is
-# header text too (as in 1.0.0 - 1.6.0; roadmap 1.7.0).
+# The search starts at the header, just past the marker's newline, so a --- flush against the
+# marker begins a line there: a delimiter with an empty header (1.7.0). To 1.6.2 it was header text.
 td_d = bayan_cyml_parse(TD_E_FLUSH, strlen(TD_E_FLUSH));
-assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 5,
-  "cyml: a --- flush against its marker is header (as in 1.0.0 - 1.6.0)");
-assert_eq(bayan_cyml_entry_body(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (and the entry has no body)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 0,
+  "cyml: a --- flush against its marker is the delimiter (the header was ---, A)");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(td_d, 0)), 1, "cyml: (and the body is A)");
 
 test_group("cyml: bayan_cyml_parse returns 0, and the loader an Err, on every refusal (1.6.1)");
 # The doc, the single-entry array, each entry and the multi-entry array were used unchecked, so a
@@ -4422,5 +4479,41 @@ assert_eq(is_err_result(tr_ok_tag), 0, "cyml: the loader reads the refusal fixtu
 assert_eq(bayan_cyml_doc_entry_count(tr_ok), 3, "cyml: (to 3 entries)");
 assert_eq(tr_ln, 12, "cyml: (a load: the chunk, the builder, a chunk Str, a grow, the result and its Str, the parse's 6)");
 assert_eq(tr_not_err, 0, "cyml: parse_file_r, each allocation point refused alone, is an Err (was a fault, an exit or Ok(0))");
+
+test_group("json: bayan_json_build writes valid JSON with the parsed values (1.7.0)");
+# It quoted every value and escaped nothing: a number came back as a string, a nested value as a
+# quoted span (not JSON), and a `"` or `\` in a hand-built value broke the document. A pair records
+# its value's kind now, and the build writes each kind as it should be written. A scratch round trip
+# of 22,000 documents through Python's json module agreed with every one; 1.6.2 failed 17,992.
+var jb_doc = str_from("{\"n\":42,\"s\":\"x\\\"y\",\"o\":{\"a\":[1,2]},\"l\":[true],\"b\":false,\"z\":null}");
+var jb_pairs = bayan_json_parse(jb_doc);
+assert_eq(bayan_json_pair_kind(vec_get(jb_pairs, 0)), JSON_K_BARE, "json: a number is a bare value");
+assert_eq(bayan_json_pair_kind(vec_get(jb_pairs, 1)), JSON_K_STRING, "json: a string is a string");
+assert_eq(bayan_json_pair_kind(vec_get(jb_pairs, 2)), JSON_K_OBJECT, "json: an object is an object");
+assert_eq(bayan_json_pair_kind(vec_get(jb_pairs, 3)), JSON_K_ARRAY, "json: an array is an array");
+assert_eq(bayan_json_pair_kind(vec_get(jb_pairs, 5)), JSON_K_BARE, "json: null is a bare value");
+var jb_want = "{\"n\": 42, \"s\": \"x\\\"y\", \"o\": {\"a\":[1,2]}, \"l\": [true], \"b\": false, \"z\": null}";
+assert_eq(str_eq_cstr(bayan_json_build(jb_pairs), jb_want), 1,
+  "json: the build writes each value as it was read (was every value quoted)");
+# A raw control byte, which JSON forbids in a string and the flat parser takes, comes out escaped.
+var jb_raw = bayan_json_parse(str_from("{\"k\":\"a\nb\"}"));
+assert_eq(str_eq_cstr(bayan_json_build(jb_raw), "{\"k\": \"a\\u000ab\"}"), 1,
+  "json: a raw LF inside a parsed string is written as \\u000a");
+# Hand-built pairs are text: the key and value are escaped, and the value is a string.
+var jb_hand = vec_new();
+vec_push(jb_hand, bayan_json_pair_new(str_from("k\"1"), str_from("say \"hi\"\\\n")));
+assert_eq(bayan_json_pair_kind(vec_get(jb_hand, 0)), JSON_K_TEXT, "json: a hand-built pair is text");
+assert_eq(str_eq_cstr(bayan_json_build(jb_hand), "{\"k\\\"1\": \"say \\\"hi\\\"\\\\\\n\"}"), 1,
+  "json: and its key and value are escaped (a quote or backslash broke the document)");
+vec_push(jb_hand, bayan_json_pair_new(str_from("n"), str_from("42")));
+assert_eq(str_contains_cstr(bayan_json_build(jb_hand), "\"n\": \"42\""), 1,
+  "json: a hand-built \"42\" is still the string it always was");
+var jb_kind = vec_new();
+vec_push(jb_kind, bayan_json_pair_new_kind(str_from("n"), str_from("42"), JSON_K_BARE));
+vec_push(jb_kind, bayan_json_pair_new_kind_a(default_alloc(), str_from("o"), str_from("{}"), JSON_K_OBJECT));
+assert_eq(str_eq_cstr(bayan_json_build(jb_kind), "{\"n\": 42, \"o\": {}}"), 1,
+  "json: pair_new_kind writes a raw value where the caller says it is one");
+assert_eq(JSON_PAIR_SIZE, 24, "json: a pair is 24 bytes as of 1.7.0 (it was 16)");
+assert_eq(str_eq_cstr(bayan_json_build(bayan_json_parse(str_from("{}"))), "{}"), 1, "json: an empty object builds as {}");
 
 var r = assert_summary();
