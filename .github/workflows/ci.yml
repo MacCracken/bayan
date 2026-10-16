@@ -28,7 +28,8 @@ defaults:
 #   static     format, lint, include audit, and the source-level naming checks
 #   x86_64     build, smoke, suite, fuzz, bench, coverage, mulmod + divmod cost
 #   aarch64    the same program cross-built for aarch64 and run under qemu
-#   oracles    independent oracles: the PDF validator, font metrics, vectors (u128, f64, toml, csv, yaml)
+#   oracles    independent oracles: the PDF validator, font metrics, vectors (u128, f64, toml, csv, yaml,
+#              markdown), the markdown entity table
 #   dist       the bundles, their regeneration, and the consumer/deprecation gate
 #
 # The committed lib/ is what every job builds against; only `toolchain` runs
@@ -303,6 +304,17 @@ jobs:
           ./scripts/no-warnings.sh cyrius build tests/mulmod_speed.cyr build/mulmod-speed
           ./build/mulmod-speed
 
+      # The same kind of check for markdown (1.9.0): its cost on cmark's
+      # pathological inputs must grow with the input, not its square. Every
+      # answer stays right on a quadratic path, so only a cost check sees one;
+      # 1.9.0's mutation pass found two such regressions that nothing else
+      # caught. The method is in tests/markdown_scaling.cyr's header.
+      - name: markdown cost grows linearly on pathological inputs
+        run: |
+          set -euo pipefail
+          ./scripts/no-warnings.sh cyrius build tests/markdown_scaling.cyr build/md-scaling
+          ./build/md-scaling
+
   # --- aarch64: the same program, cross-built and run under qemu -----------
   #
   # Until 1.5.10 no bayan gate ran aarch64. From 1.0.2 to 1.5.9 its
@@ -382,6 +394,13 @@ jobs:
           set -euo pipefail
           ./scripts/no-warnings.sh cyrius build --aarch64 tests/mulmod_speed.cyr build/mulmod-speed-a64
           qemu-aarch64 build/mulmod-speed-a64
+
+      # The aarch64 half of the x86 job's markdown cost check.
+      - name: markdown cost grows linearly on pathological inputs
+        run: |
+          set -euo pipefail
+          ./scripts/no-warnings.sh cyrius build --aarch64 tests/markdown_scaling.cyr build/md-scaling-a64
+          qemu-aarch64 build/md-scaling-a64
 
       # One input, two targets, one answer: the PDF writer's output must be the
       # same BYTES on aarch64 as on x86_64 (it is, measured at 1.5.10: 3,331
@@ -533,6 +552,31 @@ jobs:
           python3 -W error scripts/gen-yaml-vectors.py "${RUNNER_TEMP}/yv"
           diff "${RUNNER_TEMP}/yv/strings.vec" tests/fixtures/yaml/strings.vec \
             || { echo "::error::yaml vectors differ from scripts/gen-yaml-vectors.py output"; exit 1; }
+
+      # The markdown vectors (1.9.0) are the upstream suites' own examples: the
+      # CommonMark 0.31.2 and GFM 0.29 specs, cmark's and cmark-gfm's test files,
+      # committed verbatim under tests/fixtures/markdown/upstream/. The generator
+      # refuses a file whose SHA-256 is not the pinned one, and refuses an
+      # exclusion whose reason (raw HTML, footnotes) the example does not bear
+      # out, so neither the expected HTML nor the cut-off can drift unseen.
+      - name: Markdown vectors regenerate identically
+        run: |
+          set -euo pipefail
+          python3 -W error scripts/gen-markdown-vectors.py "${RUNNER_TEMP}/mv"
+          for f in tests/fixtures/markdown/*.vec; do
+            diff "${RUNNER_TEMP}/mv/$(basename "$f")" "$f" \
+              || { echo "::error file=$f::markdown vectors differ from scripts/gen-markdown-vectors.py output"; exit 1; }
+          done
+
+      # The HTML5 entity table src/markdown_entities.cyr is generated from
+      # Python's html.entities.html5, the WHATWG list CommonMark names (stdlib,
+      # nothing to install).
+      - name: Markdown entity table regenerates identically
+        run: |
+          set -euo pipefail
+          python3 -W error scripts/gen-md-entities.py "${RUNNER_TEMP}/ent.cyr"
+          diff "${RUNNER_TEMP}/ent.cyr" src/markdown_entities.cyr \
+            || { echo "::error::src/markdown_entities.cyr differs from scripts/gen-md-entities.py output"; exit 1; }
 
   # --- distribution: bayan's actual product is dist/, not build/ -----------
   dist:

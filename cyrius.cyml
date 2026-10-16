@@ -18,10 +18,18 @@ output = "bayan"
 # stdlib auto-prepend list — consumers of lib/bayan.cyr must include it.
 # `math` (1.5.14): bayan_f64_parse delegates to its f64_parse_n, so a
 # consumer's hand-written include list needs lib/math.cyr before bayan.
+# `unicode` (1.9.0): markdown's emphasis rules need the general category of
+# the characters around a delimiter (unicode_category) and its link labels
+# match under full case folding (unicode_fold), so lib/unicode/categories.cyr
+# and lib/unicode/casefold.cyr (with their _decode and data files) come before
+# bayan too. Without them a program that never reaches markdown still builds,
+# with three undefined-function warnings; one that calls it is refused.
 [deps]
 stdlib = [
     "string", "fmt", "alloc", "io", "vec", "str", "syscalls",
     "assert", "bench", "result", "fnptr", "tagged", "atomic", "math",
+    "unicode/_decode", "unicode/categories", "unicode/_categories_data",
+    "unicode/casefold", "unicode/_casefold_data",
 ]
 
 # `cyrius coverage` reads tests/**/*.tcyr plus these programs, as text. The
@@ -40,7 +48,9 @@ programs = ["tests/deprecated_lookup.cyr"]
 # carries its own bayan_pdf_obj_* object graph (PDF has name / indirect-ref /
 # stream types the json tree has none of) and its own decimal number emitter
 # (PDF reals have no exponent form, so bayan_f64_to_json is unusable), so it
-# depends on neither json.cyr nor dtoa.cyr; `_compat.cyr` (back-compat aliases
+# depends on neither json.cyr nor dtoa.cyr; `markdown.cyr` (1.9.0) needs only
+# `markdown_entities.cyr`, its generated HTML5 entity table, before it, and
+# builds its own node tree (docs/adr/0010); `_compat.cyr` (back-compat aliases
 # forwarding the legacy json_*/u256_* names to the canonical bayan_* API)
 # MUST be last — its aliases reference every bayan_* symbol.
 [lib]
@@ -55,6 +65,8 @@ modules = [
     "src/json.cyr",
     "src/yaml.cyr",
     "src/pdf.cyr",
+    "src/markdown_entities.cyr",
+    "src/markdown.cyr",
     "src/_compat.cyr",
 ]
 
@@ -121,6 +133,15 @@ modules = [
 [lib.bigint]
 modules = [
     "src/bigint.cyr",
+]
+
+# markdown — CommonMark 0.31.2 to a node tree and HTML, with GFM's tables,
+# task lists, strikethrough and autolinks, and wiki links, behind flags.
+# Carries its generated entity table first (single-pass order).
+[lib.markdown]
+modules = [
+    "src/markdown_entities.cyr",
+    "src/markdown.cyr",
 ]
 
 # pdf — PDF writer + reader (text extraction). A single-module closure: pdf

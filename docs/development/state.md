@@ -6,7 +6,16 @@
 
 ## Version
 
-**1.8.0** — a minor, the roadmap's 1.8.0 slot whole; pin unchanged at **6.7.12**. **yaml decodes its
+**1.9.0** — a minor, the roadmap's 1.9.0 slot whole; pin unchanged at **6.7.12**.
+**`bayan_markdown_*`**: CommonMark 0.31.2 to a node tree of its own (ADR 0010) and the tree to
+HTML, with GFM's tables, task lists, strikethrough and autolinks, and `[[wiki links]]`, each behind
+a flag (`MD_EXT_*`). Raw HTML is text and a `javascript:`-class URL is dropped from the HTML (ADR
+0011); nesting is capped at 128; every refused allocation returns 0. 665 vectors from the
+CommonMark and GFM specs and cmark's and cmark-gfm's tests (every spec example but the 72 that pass
+raw HTML through), regenerated in CI; 94,584 documents agree with commonmark.js 0.31.2. ⚠ bayan now
+needs the stdlib's `unicode` modules (the bundles' `# Requires` blocks carry them). Floor 6.7.9.
+
+Before it, **1.8.0** — a minor, the roadmap's 1.8.0 slot whole; pin unchanged at **6.7.12**. **yaml decodes its
 quoted scalars in the parser** (ADR 0009's reasoning): double quotes take YAML 1.2's escapes,
 single quotes `''`, in values, keys and flow elements, and every quote scan agrees on where a
 quoted region ends (`_yp_qend`). Until now bodies were verbatim, `"x\" # y"` lost ` # y"` to the
@@ -300,23 +309,27 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 ## Source
 
 Eight data/big-integer modules carved byte-identical from cyrius stdlib
-(public functions prefixed `bayan_`), plus two greenfield modules written
+(public functions prefixed `bayan_`), plus three greenfield modules written
 in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
-`json.cyr` in bundle order) and `pdf` (1.5.0 — cross-dep-free, so its position
-is convention rather than necessity). Re-measured from the tree 2026-10-15 (1.8.0):
+`json.cyr` in bundle order), `pdf` (1.5.0 — cross-dep-free, so its position
+is convention rather than necessity) and `markdown` (1.9.0 — its own tree; it
+needs only its generated entity table, `markdown_entities.cyr`, before it, and
+the stdlib's `unicode` modules). Re-measured from the tree 2026-10-15 (1.9.0):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
 | `src/pdf.cyr`    | 9539 | 152 | `bayan_pdf_*` |
+| `src/markdown.cyr` | 3347 | 27 | `bayan_markdown_*` |
 | `src/json.cyr`   | 2259 | 74 | `bayan_json_*` |
 | `src/toml.cyr`   | 1727 | 33 | `bayan_toml_*` |
-| `src/yaml.cyr`   | 1072 | 12 | `bayan_yaml_*` |
+| `src/yaml.cyr`   | 1073 | 12 | `bayan_yaml_*` |
 | `src/u128.cyr`   | 818  | 35 | `bayan_u128_*` / `bayan_u64_*` |
 | `src/cyml.cyr`   | 698  | 17 | `bayan_cyml_*` |
 | `src/dtoa.cyr`   | 463  | 3  | `bayan_f64_*` |
 | `src/bigint.cyr` | 450  | 20 | `bayan_u256_*` |
 | `src/base64.cyr` | 217  | 4  | `bayan_base64_*` |
 | `src/csv.cyr`    | 199  | 3  | `bayan_csv_*` |
+| `src/markdown_entities.cyr` | 51 | 0 | generated (`scripts/gen-md-entities.py`): the 2,125 HTML5 entities |
 
 `toml` has gone 17 -> 21 -> **33** public functions across 1.5.3 and 1.5.4,
 and roughly tripled in size. 1.5.3 added the escape decoder, the literal-string
@@ -341,8 +354,9 @@ and `bayan_json_v_obj_get_by_cstr` (the bare `bayan_json_v_obj_get` is now a
 deprecated forwarder). `u128` grew 567 -> **688**: the aarch64 asm block and the
 proof in its comment.
 
-**Allocator-threaded surface: 52 public `_a` functions** across the bundle —
-pdf 26, json 16, toml 7, cyml 2, yaml 1. (Measured. The "21" this file carried
+**Allocator-threaded surface: 56 public `_a` functions** across the bundle —
+pdf 26, json 17, toml 7, markdown 3, cyml 2, yaml 1 (measured at 1.9.0; the 52
+this file gave at 1.8.0 missed 1.7.0's `bayan_json_pair_new_kind_a`). (Measured. The "21" this file carried
 from 1.4.0 predated pdf's entire `_a` surface and was stale for three releases;
 that is the hazard of writing a count into a file nobody re-measures.) The JSON
 value API is complete end to end — construct, mutate, parse and serialize. A consumer can run a whole parse → mutate → serialize cycle on an
@@ -351,24 +365,26 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **17,664**-line bundle (17,459 at 1.7.1, 17,446 at 1.7.0, 17,272 at 1.6.2, 17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
-  regenerated via `cyrius distlib --all` at 1.8.0 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
+- `dist/bayan.cyr` — **21,076**-line bundle (17,664 at 1.8.0, 17,459 at 1.7.1, 17,446 at 1.7.0, 17,272 at 1.6.2, 17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
+  regenerated via `cyrius distlib --all` at 1.9.0 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
 - `dist/bayan-<format>.cyr` — per-format sublibs, each `cyrius distlib <name>`-
   generated and compile-verified self-contained, with a `.deps` stdlib-leaf
   sidecar. Canonical `bayan_*` names only. Every sidecar is complete:
-  `scripts/consumer-check.sh` builds all 10 bundles from their declared leaves
+  `scripts/consumer-check.sh` builds all 11 bundles from their declared leaves
   alone, and goes red when a needed one is deleted (checked at 1.5.7). Lines and
-  leaf counts below are measured at 1.8.0 (6.7.12's distlib; the sidecars are
-  unchanged since 1.5.14); the base bundle declares 11 (1.5.14 added `math` to it
-  and to json / yaml).
+  leaf counts below are measured at 1.9.0 (6.7.12's distlib); the base bundle
+  declares 12 (1.5.14 added `math` to it and to json / yaml, 1.9.0 `unicode` to it
+  and to markdown). `unicode` is a family leaf, a directory: distlib's `# Requires`
+  block includes all seven of its files, and consumer-check does the same (1.9.0).
 
   | Sublib | Lines | Stdlib leaves |
   |---|---|---|
   | `bayan-pdf`    | 9556 | 7 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
-  | `bayan-yaml`   | 3821 | 11 (carries `json.cyr` — shared value tree / parser state) |
+  | `bayan-yaml`   | 3822 | 11 (carries `json.cyr` — shared value tree / parser state) |
+  | `bayan-markdown` | 3423 | 6 (carries `markdown_entities.cyr`; `unicode` among the six) |
   | `bayan-json`   | 2746 | 11 |
   | `bayan-toml`   | 1743 | 6 |
   | `bayan-cyml`   | 714  | 6 |
@@ -384,13 +400,21 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,656 asserts, green** @1.8.0 on x86_64 and aarch64 under qemu (1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **1,781 asserts, green** @1.9.0 on x86_64 and aarch64 under qemu (1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
 
-  **1.6.1 adds** (+39), two cyml groups. (1) The `---` searches (+29): a copy of 1.6.0's per-byte
+  **1.9.0 adds** (+125), seven markdown groups: the tree and every accessor (on the right kind,
+  the wrong one and 0); pinned HTML (escaping, percent-encoding, entities and near-miss names, the
+  `language-` class, BOM, NUL, CR / CR LF, the first of five definitions winning, nested links, the
+  two list-looseness defects the commonmark.js differential found); raw HTML as text and each
+  dangerous URL; each GFM flag alone and together; wiki links; both sides of the 128 cap in blocks
+  and in emphasis; and the refusal sweep, each of a parse's 222 allocations and a render's 5 refused
+  alone. Part of a 29-mutant pass (28 caught, 1 equivalent).
+
+  **1.6.1 added** (+39), two cyml groups. (1) The `---` searches (+29): a copy of 1.6.0's per-byte
   `_cyml_is_delim` is the reference, and from every offset of every prefix of 10 documents (and two
   fonts) `_cyml_next_delim` must return its first yes, or `len`: 26,461 offsets. Parse and split
   results are pinned with 1.6.0's values (the group passes on the 1.6.0 module), including the two
@@ -462,7 +486,11 @@ this is mutation-verified.
   the reported input, so the test written for the filed repro passed with
   either one removed. A test that cannot fail is a test that has stopped being
   a test.
-- `tests/vectors.tcyr` — **oracle-driven, expected values from Python**. **3,429 YAML vectors**
+- `tests/vectors.tcyr` — **oracle-driven, expected values from Python** and, for markdown, from the
+  upstream suites. **665 markdown vectors** (1.9.0: 580 CommonMark 0.31.2 spec examples, 23 GFM 0.29
+  extension examples, 25 of cmark-gfm's extension tests, 22 of cmark's regression tests and 15 of
+  cmark-gfm's, from `tests/fixtures/markdown/upstream/`, verbatim and SHA-256-pinned), the 597
+  CommonMark rows without `[[` run again with wiki links on. **3,429 YAML vectors**
   (1.8.0: 1,991 values, 676 keys, 681 flow elements, 81 refused documents) from PyYAML. **4,835 CSV vectors**
   (1.7.0: 3,993 parse, 619 write, 223 escape) from Python's `csv` module, and:
   **13,843** u128 checks (12,651 before 1.6.2 added 298 divmod rows, four checks each: 86 aimed at
@@ -536,15 +564,26 @@ this is mutation-verified.
   edge documents, is also parsed flush against a PROT_NONE page, so a one-byte
   read past the end faults — six over-read mutants passed both suites without it.
   ~2.5 s.
+- `tests/markdown.fcyr` — **new at 1.9.0**: 25,028 parses a run of generated, edited, edge
+  (every prefix of 16), deep (120–135 levels) and pathological documents, each from a page whose
+  next page is PROT_NONE; the HTML must be well formed (every `<` one of the renderer's tags,
+  nesting), a second parse from another address must agree, and one in eight is reparsed with an
+  allocation refused. 4 s on x86_64, 44 s under qemu-aarch64.
+- `tests/markdown_scaling.cyr` — **new at 1.9.0**, run by its own CI step on x86_64 and under
+  qemu-aarch64, as `tests/mulmod_speed.cyr` is: six of cmark's pathological families timed at two
+  sizes, failing when the time ratio over the input ratio passes 3 (0.5–1.1 measured; the emphasis
+  bound and the backtick memo removed, 5.8–7.9).
 - `tests/bayan.bcyr` — real benchmarks, including one f64-parse row per tier
-  (1.5.7) and two cyml rows: a 95-entry font (1.6.0) and one entry with a 200-line
-  header (1.6.1), which is nearly all `---` search. Results in [`benchmarks.md`](../benchmarks.md).
+  (1.5.7), two cyml rows: a 95-entry font (1.6.0) and one entry with a 200-line
+  header (1.6.1), which is nearly all `---` search, and three markdown rows (1.9.0:
+  a 5.4 KB note with GFM, parse ~0.6 ms and render ~0.13 ms on x86_64, through an
+  arena reset between documents). Results in [`benchmarks.md`](../benchmarks.md).
 - `src/main.cyr` — full-bundle compile smoke (exits 42).
 
 ### Coverage
 
-`cyrius coverage` — **503/503 fns (100%)**, 11/11 files, gated at `--min 100`
-(re-measured at 1.6.1 on 6.7.12, where the private delimiter helpers come and go uncounted; at 1.6.0 on 6.7.11, and at 1.5.14 on 6.7.9 — removing the private `_d_*` parser fns changes nothing here, the
+`cyrius coverage` — **533/533 fns (100%)**, 12/12 files, gated at `--min 100`
+(re-measured at 1.9.0 on 6.7.12, which adds markdown's 27; at 1.6.1 on 6.7.12, where the private delimiter helpers come and go uncounted; at 1.6.0 on 6.7.11, and at 1.5.14 on 6.7.9 — removing the private `_d_*` parser fns changes nothing here, the
 counter counts public fns; at 1.5.10 on 6.6.12, whose counter matches whole references and
 excludes `main`; 1.5.10 adds `bayan_json_parse_a` and
 `bayan_json_v_obj_get_by_cstr`).
@@ -566,9 +605,9 @@ parallel jobs** (it was one 32-step job), each installing the pin through
 |---|---|
 | `toolchain` | version consistency · `cyrius.lock` verifies · `cyrius deps` changes nothing · `lib/` == the pinned snapshot |
 | `static` | format · lint · include audit · nothing reaches the vendored fold (1.6.1) · pdf naming hazards · typed-lookup overload base · mulmod and divmod arch arms (divmod 1.6.2) |
-| `x86_64` | build · smoke 42 · suite · fuzz · bench · `coverage --min 100` · mulmod and divmod cost |
-| `aarch64` | cross-built, run under qemu: build + smoke · suite · all fuzz harnesses · bench · mulmod and divmod cost · pdf output byte-identical to x86_64's |
-| `oracles` | pdf writer through `pdfcheck.py` · fixture polarity · font metrics (+ regeneration where groff exists) · numeric, TOML, CSV (1.7.0) and YAML (1.8.0) vectors regenerate |
+| `x86_64` | build · smoke 42 · suite · fuzz · bench · `coverage --min 100` · mulmod and divmod cost · markdown cost (1.9.0) |
+| `aarch64` | cross-built, run under qemu: build + smoke · suite · all fuzz harnesses · bench · mulmod and divmod cost · markdown cost (1.9.0) · pdf output byte-identical to x86_64's |
+| `oracles` | pdf writer through `pdfcheck.py` · fixture polarity · font metrics (+ regeneration where groff exists) · numeric, TOML, CSV (1.7.0), YAML (1.8.0) and markdown (1.9.0) vectors regenerate · the markdown entity table regenerates (1.9.0) |
 | `dist` | `distlib --check` · regeneration changes nothing · consumer-check (incl. the deprecation gate) |
 
 Only `toolchain` runs `cyrius deps`; the other jobs build the committed `lib/`,
@@ -820,6 +859,15 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
 - `scripts/consumer-check.sh` — compiles a throwaway consumer against every
   `dist/` bundle from exactly the leaves its `.deps` sidecar declares. Since
   1.5.10 it is also the deprecation gate (the DEPRECATED and TYPED_CSTR blocks).
+  From 1.9.0 a family leaf (`unicode`, a directory) brings its files, in the order
+  distlib's `# Requires` block lists them.
+- `scripts/gen-markdown-vectors.py` — **new at 1.9.0.** The markdown vectors from the upstream
+  suites in `tests/fixtures/markdown/upstream/` (each pinned by SHA-256; licences in its README).
+  Every exclusion carries its reason (raw HTML, footnotes, the GFM spec's 0.29 core) and is refused
+  when the example does not bear it out. One transform: cmark-gfm's task-item `<input>` attribute
+  order.
+- `scripts/gen-md-entities.py` — **new at 1.9.0.** `src/markdown_entities.cyr` from Python's
+  `html.entities.html5`, the names that end in `;`.
 - `scripts/vendored-fold-guard.sh` — **new at 1.6.1.** Fails when bayan's own build can reach
   the vendored fold `lib/bayan.cyr`: an include from `src/`, `tests/` or `scripts/` (comment lines
   excepted), `bayan` in `[deps].stdlib` or a `[deps.bayan]` table, or a `bayan` leaf in a
@@ -863,7 +911,10 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
 Direct (declared in `cyrius.cyml [deps].stdlib`): string, fmt, alloc, io,
 vec, str, syscalls, assert, bench, result, fnptr, tagged, atomic (1.5.11, for
 `dtoa.cyr`'s one-time table build; `alloc.cyr` already includes it), math (1.5.14:
-`bayan_f64_parse` delegates to its `f64_parse_n`; `lib/math.cyr` includes nothing). From 1.5.12 (cyrius
+`bayan_f64_parse` delegates to its `f64_parse_n`; `lib/math.cyr` includes nothing), and from 1.9.0
+`unicode/_decode`, `unicode/categories`, `unicode/_categories_data`, `unicode/casefold`,
+`unicode/_casefold_data` (markdown's flanking rules and label folding; a sidecar names the family,
+`unicode`). From 1.5.12 (cyrius
 6.6.18's distlib) every dist bundle opens with a compile-verified `# Requires` include block
 naming exactly its sidecar's leaves, so a consumer includes the bundle alone; `assert`,
 `bench` and `tagged` are bayan's own, not a consumer's (the base sidecar no longer lists them).
@@ -902,6 +953,6 @@ entries). CI verifies it before resolving.
 
 ## Next
 
-[`roadmap.md`](roadmap.md) holds the sequence. **1.9.0** comes next, a minor: `bayan_markdown_*`,
-the parser mneme still hand-rolls. Then typed public names (1.10.0), TOML into the tagged tree
-(1.11.0), and the audit and frozen surface (1.12.0).
+[`roadmap.md`](roadmap.md) holds the sequence. **1.10.0** comes next, a minor: typed public names
+(the `const` migration, which now includes markdown's 31 `MD_*` names, and `: bool` predicates).
+Then TOML into the tagged tree (1.11.0), and the audit and frozen surface (1.12.0).

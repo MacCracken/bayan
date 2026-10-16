@@ -194,6 +194,28 @@ because a batch yields a single sample.
 - **A divisor of 2^64 or more is still bit-serial on every target.** Nothing in bayan divides by
   one; the u64 helpers and the vectors' 64-bit-divisor rows are what the fast paths serve.
 
+## Markdown — `bayan_markdown_*` (1.9.0)
+
+- **Toolchain**: cyrius 6.7.12 · **bayan**: 1.9.0 · `tests/bayan.bcyr`, two runs each. The document
+  is note-shaped: 12 sections of a heading, a paragraph with emphasis, a code span, an inline and a
+  reference link and an entity, a tight list, a fenced block, a block quote and a GFM table, then
+  the 12 definitions; 5,370 bytes. Each document gets a fresh arena (`reset_via`).
+
+| Row | x86_64 | aarch64 (qemu) |
+|---|---:|---:|
+| `markdown_parse (12-section note, GFM, 5.4KB)` | 556–657 µs | 4.60 ms |
+| `markdown_to_html (the same note's tree)` | 124–141 µs | 1.03 ms |
+| `markdown parse + render (the same note)` | 683–767 µs | 5.51 ms |
+
+### Reading these
+
+- **8 to 10 MB/s to parse, on x86_64.** A first release, written for the spec's algorithm as the
+  reference implementations lay it out, not yet profiled. Rendering costs about a fifth of parsing.
+- **The cost grows with the input, on cmark's pathological inputs too.** `tests/markdown_scaling.cyr`
+  times six of them at two sizes; the time ratio over the input ratio is 0.5–1.1 on both targets
+  (a quadratic path measures about the input ratio, 8). The paths it guards, and what each cost
+  before its fix, are in the CHANGELOG [1.9.0] entry.
+
 ### Not yet measured
 
 Compression (the Flate hooks), multi-page documents at scale, and the

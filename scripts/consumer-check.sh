@@ -108,9 +108,19 @@ for bundle in dist/bayan.cyr dist/bayan-*.cyr; do
         done
         # Any declared leaf this script has no canonical position for still
         # gets included — better a wrong-order compile error than a silent skip.
+        # A family leaf (1.9.0: `unicode`, for markdown) names a directory, not
+        # a file: its files go in, in the C-locale order distlib's own Requires
+        # block lists them.
         while read -r m; do
             case "$m" in ''|'#'*) continue ;; esac
-            echo " $ORDER " | grep -q " $m " || echo "include \"lib/${m}.cyr\"" >> "$src"
+            echo " $ORDER " | grep -q " $m " && continue
+            if [ ! -e "lib/${m}.cyr" ] && [ -d "lib/${m}" ]; then
+                for f in $(ls lib/"${m}"/*.cyr | LC_ALL=C sort); do
+                    echo "include \"${f}\"" >> "$src"
+                done
+            else
+                echo "include \"lib/${m}.cyr\"" >> "$src"
+            fi
         done < "$deps"
     fi
     echo "include \"${bundle}\"" >> "$src"

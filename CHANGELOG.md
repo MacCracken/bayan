@@ -2,6 +2,194 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.0] — 2026-10-15
+
+Minor release, the roadmap's 1.9.0 slot. **`bayan_markdown_*`: CommonMark 0.31.2 to a node tree
+and the tree to HTML**, with GitHub's tables, task lists, strikethrough and autolinks, and
+`[[wiki links]]`, each behind a flag. It passes every example of the CommonMark spec but the 72
+that pass raw HTML through, which bayan writes as text (ADR 0011), and the in-scope examples of the
+GFM spec and of cmark's and cmark-gfm's own test files: 665 vectors, regenerated in CI from the
+upstream files. A differential against commonmark.js 0.31.2, the spec's reference implementation,
+agreed on all 94,584 documents it could compare. Public API: 27 functions and the `MD_*` names,
+all new; nothing else changed. The pin stays 6.7.12, and the floor 6.7.9 (checked there).
+
+> ### ⚠ What to re-check
+>
+> - **bayan now needs the stdlib's `unicode` modules.** Markdown's emphasis rules need the general
+>   category of the characters around a delimiter, and its link labels match under full case
+>   folding. A consumer with a hand-written include list adds `lib/unicode/categories.cyr` and
+>   `lib/unicode/casefold.cyr` before `lib/bayan.cyr`. Without them, a program that never calls
+>   markdown still builds, with three undefined-function warnings; one that calls it is refused.
+>   The `# Requires` block of `dist/bayan.cyr` and `dist/bayan-markdown.cyr` and their `.deps`
+>   sidecars carry the `unicode` leaf. distlib takes it as the whole family, so those two bundles
+>   now include all seven files of `lib/unicode/` (about 350 KB of source, `normalize` and its
+>   table among them, though markdown uses neither). A consumer that wants no Unicode tables uses a
+>   sublib other than `bayan-markdown`.
+> - **Nothing else changes.** No existing function, name or answer moved. The other nine sublibs
+>   differ only in their version header.
+
+### Added — `bayan_markdown_*`
+
+- **The parser.** `bayan_markdown_parse(src)` reads a `Str` as CommonMark 0.31.2;
+  `bayan_markdown_parse_ext(src, flags)` adds extensions; `bayan_markdown_parse_a(a, src, flags)`
+  and `bayan_markdown_parse_buf_a(a, data, len, flags)` take an allocator, and a byte span.
+  Each returns the document node, or 0 with the reason in `bayan_markdown_last_error()`.
+- **The tree** (ADR 0010): a 128-byte node with kind, parent, first and last child and both
+  siblings. Block kinds `MD_K_DOCUMENT`, `BLOCKQUOTE`, `LIST`, `ITEM`, `PARAGRAPH`, `HEADING`,
+  `THEMATIC_BREAK`, `CODE_BLOCK`, `TABLE`, `TABLE_ROW`, `TABLE_CELL`; inline kinds `MD_K_TEXT`,
+  `SOFTBREAK`, `LINEBREAK`, `CODE`, `EMPH`, `STRONG`, `STRIKETHROUGH`, `LINK`, `IMAGE`, `WIKILINK`.
+  Accessors: `bayan_markdown_kind`, `_parent`, `_first_child`, `_last_child`, `_next`, `_prev`,
+  `_child_count`, `_child(n, i)`, and one per field: `_text`, `_level`, `_url`, `_title`, `_info`,
+  `_fenced`, `_list_ordered`, `_list_start`, `_list_tight`, `_task`, `_align`, `_row_header`. Each
+  returns 0 for a node of another kind and for 0 (`_task` returns -1), never another kind's field.
+- **The renderer.** `bayan_markdown_to_html(tree)` and `_to_html_a(a, tree)` write HTML as cmark
+  does, byte for byte on every vector.
+- **Extensions**, by flag: `MD_EXT_TABLES`, `MD_EXT_TASKLISTS`, `MD_EXT_STRIKETHROUGH`,
+  `MD_EXT_AUTOLINKS` (`MD_EXT_GFM` is all four), and `MD_EXT_WIKILINKS`: `[[target]]` and
+  `[[target|label]]`, a `WIKILINK` node whose url is the target, rendered
+  `<a href="target" class="wikilink">label</a>`. Table alignment is `MD_ALIGN_NONE`, `LEFT`,
+  `CENTER`, `RIGHT`. The GFM extensions follow the code of cmark-gfm, the reference implementation,
+  for its row scanner, delimiter-row grammar, autolink matching and strikethrough pairing (flanking
+  for `~` uses CommonMark 0.31.2's punctuation, as `*` and `_` do). Task items follow the GFM spec
+  instead, which defines them on the item's first paragraph, so `> - [ ] x` and `- - [ ] x` are
+  tasks here. cmark-gfm's `tasklist.c` scans the line from its first byte, which misses both.
+- **Entities**: all 2,125 HTML5 named references that end in `;`, in the new generated
+  `src/markdown_entities.cyr` (from Python's `html.entities.html5`, the WHATWG list CommonMark names;
+  `scripts/gen-md-entities.py`). The lookup is a binary search.
+- **`[lib.markdown]`, the `bayan-markdown` sublib**: `markdown_entities.cyr` then `markdown.cyr`, in
+  `[lib]` too, before `_compat.cyr`. Neither depends on another bayan module.
+
+### Design — what each choice answers
+
+- **Raw HTML is text** (ADR 0011). HTML blocks and inline tags are not recognised; `<div>` is
+  written `&lt;div&gt;`. A renderer that passes HTML through, as the spec does, turns every document
+  it did not write into a way to put script into a page. **A dangerous URL is dropped** from the
+  HTML: a link or image to `javascript:`, `vbscript:`, `file:` or `data:` (but `data:image/png`,
+  `gif`, `jpeg`, `webp`) gets an empty `href` or `src`, in any case, checked after decoding, as
+  cmark's default does. The tree keeps the URL.
+- **Nesting is capped at 128 levels**, blocks and inlines together, and a deeper document is refused
+  with "nesting too deep", as json and yaml cap theirs. The block cap acts while containers open, so
+  200,000 `>` are refused at once. Inline nesting is checked before any pass that recurses into it.
+- **Per-call state, and every allocation through the allocator given**: a refused one makes the
+  parse or the render return 0, never a partial tree or HTML.
+- **The pathological inputs are bounded.** Running cmark's suite (`test/pathological_tests.py`)
+  on the first draft found three slow paths, each fixed:
+  - backtick runs of every length 1..2499 ran past its 5 s limit: a memo now keeps the last run of
+    each length up to 1,000 (a longer run opens no code span, cmark's bound);
+  - emphasis kept its openers' lower bound as a pointer to a delimiter that could be removed, and
+    cmark's issue #389 took 1.6 s: the bound is a position, as cmark keeps it, and it takes 0.16 s;
+  - a named entity was looked up by scanning the 2,125-entry table, so 200,000 references took
+    3.6 s: a binary search, 0.5 s.
+  Reading the draft against the suite's list had already fixed three more before it ran:
+  - link openers were deactivated by walking the bracket stack after each link, which `![[]()`
+    repeated makes quadratic, since images are never deactivated and so never stop the walk. An
+    epoch replaces it: an opener is inactive once a link was made after it was pushed. cmark's
+    `no_link_openers` flag was not copied: in its code any new `[` clears the flag, so after
+    `[a [b](c) [d] e]` the outer opener would be live again and its link would hold another;
+  - definitions were found by a linear scan, now a binary search over a stable sort (the first
+    definition of a label wins);
+  - adjacent text was merged a pair at a time, quadratic in a run of separately allocated nodes
+    (a paragraph of entity references is one); a run is now merged in one copy.
+  A table's short rows are filled out with empty cells only up to cmark-gfm's bound of 524,288.
+
+### Tests
+
+- **`tests/vectors.tcyr`: 665 markdown vectors, 0 wrong.** All from the upstream suites, in
+  `tests/fixtures/markdown/upstream/` verbatim with their licences (CC BY-SA 4.0 for the two specs,
+  BSD 2-Clause for cmark's and cmark-gfm's tests; its `README.md`), each pinned by SHA-256 in the
+  new `scripts/gen-markdown-vectors.py`:
+  - CommonMark 0.31.2: 580 of 652. The 72 left out pass raw HTML through: 57 of the 64 in the HTML
+    sections (the other 7 check that a malformed tag stays text, which bayan does, and run) and 15
+    elsewhere.
+  - GFM 0.29: its 23 extension examples but the tag filter (raw HTML). Its CommonMark sections are
+    0.29's, checked at 0.31.2 instead.
+  - cmark-gfm's extension tests: 25 of 30 (2 raw HTML, 3 footnotes, which bayan does not have). One
+    is a crash test with no expected output, run as one. Its task items are written
+    `<input type="checkbox" disabled="" />`, the GFM spec's (and bayan's) `<input disabled=""
+    type="checkbox">` with its attributes in another order; that is the generator's one transform.
+  - cmark's regression tests: 22 of 32; cmark-gfm's: 15 of 26 (the rest raw HTML or footnotes).
+  The generator refuses an exclusion whose example does not bear out its reason (a source tag in the
+  expected HTML, or a `[^`), and CI regenerates the files and requires no change. The 597
+  CommonMark rows with no `[[` are parsed again with `MD_EXT_WIKILINKS`, which must change nothing.
+  These suites found, in the first draft: a table row that opens another block must end the table;
+  autolinks must be matched on merged text; cmark-gfm's `mailto:` and `xmpp:` links, links in
+  quotes, hosts without a dot and its trailing-character rules; a leading byte order mark; an info
+  string already starting `language-` getting it twice; and an empty `<p></p>` where a paragraph was
+  only definitions.
+- **A differential against commonmark.js 0.31.2** (the spec's reference implementation; it matches
+  all 652 spec examples), in scratch: 100,000 documents generated from tokens that start every
+  block and inline construct, across tabs, CRLF and non-ASCII. 5,416 were skipped, those
+  commonmark.js reads as raw HTML or that pass bayan's cap, and the other 94,584 agree byte for byte.
+  It found two defects in bayan:
+  - an indented code block's dropped trailing blank lines hid a list's looseness
+    (`-     code`, a blank line, `- b` was tight);
+  - a paragraph that was only definitions left the tree before the list was judged (`- a`, a blank
+    line, `  [r]: /u` was tight; a definition is a block, and the spec makes such a list loose). It
+    stays in the tree, marked, until block parsing ends.
+  The fuzzer normalises four ways commonmark.js parts from cmark and the spec, where bayan
+  follows those two: it trims with JavaScript's `trim()`, which also strips NBSP and U+3000 at block
+  edges and in an info string; it takes only spaces after a definition's colon or destination,
+  where the spec allows tabs; it leaves `'` in an `href` unescaped; and it leaves an empty `<p></p>`
+  when a setext underline follows a paragraph of only definitions, a case cmark's regression suite
+  pins the other way.
+- **`tests/bayan.tcyr` 1,656 → 1,781** (+125): the tree and every accessor, on the right kind, the
+  wrong one and 0; pinned HTML for references, escaping, percent-encoding, the `language-` class,
+  the byte order mark, NUL, CR and CR LF, hard breaks, near-miss entity names, five definitions of
+  one label, nested links, the two looseness defects; raw HTML as text and each dangerous URL; each
+  extension flag alone and together, task-item edges, a table ended by a block, a lone pipe, the
+  header that is not retried; wiki links; both sides of the cap in blocks and in emphasis; and a
+  refusal sweep: each of the parse's 222 allocations and the render's 5, refused alone, returns 0
+  with "out of memory", and the `_a` forms make the same requests through the allocator they get.
+- **New `tests/markdown.fcyr`**: 25,028 parses a run, of generated documents (each also edited at
+  random), every prefix of 16 edge documents, nesting from 120 to 135 levels, and the pathological
+  inputs at full size, plus the filled-cell bound at 513 body rows. Every document is parsed from
+  the end of a page whose next page is PROT_NONE. The HTML must be well formed: since bayan writes
+  every `<` of its input as `&lt;`, each `<` in the output opens one of the renderer's tags, and they
+  must nest. A second parse from another address must write the same bytes. One document in eight is
+  parsed again with one allocation refused at random, and must return 0. 4 s on x86_64, 44 s on
+  aarch64 under qemu.
+- **New `tests/markdown_scaling.cyr`**, run by its own CI step on x86_64 and aarch64, as
+  `tests/mulmod_speed.cyr` is: six of the pathological families timed at two sizes (the fastest of
+  five runs each), failing when the time ratio over the input ratio passes 3. All six measure 0.5 to
+  1.1 on both targets.
+- **Mutation-checked: 29 mutants of `src/markdown.cyr`, 28 caught.** The first pass left four
+  uncaught: near-miss entity names, the first definition of a label winning (with two duplicates the
+  search found the first by luck), and the emphasis bound and the backtick memo. Every answer stays
+  right on a quadratic path, so only cost shows those two, which is why the scaling check exists:
+  it puts them at 5.8 to 7.9 against the limit of 3. A third complexity mutant, a linear definition
+  lookup, fails it too. The fuzz harness missed a one-byte over-read in the table cell scanner until
+  two edge documents ending a row with a backslash were added. The survivor is equivalent: the
+  label scanner's stop at 999 bytes repeats a check made when the `]` is found.
+- **`scripts/consumer-check.sh` builds a consumer from a family leaf**: `unicode` names a directory,
+  not a file, so its files go in, in the order distlib's `# Requires` block lists them. Until now
+  the check had no family leaf to meet, and it failed on `lib/unicode.cyr`.
+- **`tests/bayan_raw_include.tcyr`** parses and renders through `dist/bayan.cyr` alone (+1).
+  **`tests/bayan.bcyr`** gains three rows: a 5.4 KB note with GFM parses in 556–657 µs and renders
+  in 124–141 µs on x86_64, 4.6 ms and 1.0 ms on aarch64 under qemu.
+- **The floor stays 6.7.9.** On the signature-verified 6.7.9 release, in an isolated home and a
+  scratch copy with its `lib/`: the build and every test, fuzz and scaling program are
+  warning-free and pass, the smoke entry exits 42, and 6.7.9's `distlib --all --check` accepts the
+  bundles 6.7.12 generated. 6.7.9's `lib/unicode` has every function markdown calls.
+- Gates, all green on the 6.7.12 pin. x86_64: build, smoke, `cyrius test` (6/6), the deprecated
+  lookups, fuzz (4 harnesses), bench, coverage 533/533, both cost gates. aarch64 under qemu: build,
+  smoke, test, the deprecated lookups, fuzz, bench, both cost gates, the PDF writer byte-identical
+  across targets. Also: format, lint (0/0 across `src/`), `vet`, the arch-arm check, the
+  vendored-fold guard, every vector and the entity table regenerated with no change,
+  `distlib --all --check`, regeneration with no change, `scripts/consumer-check.sh` (11 bundles)
+  and the raw-include build. Then the CI mirror: every `ci.yml` job, each in its own fresh copy of the
+  tree, on the 6.7.12 release, all six green, the three new steps included.
+- **`dist/` regenerated** (`cyrius distlib --all`). `bayan.cyr` gains the two modules (17,664 →
+  21,076 lines) and `bayan.deps` the `unicode` leaf; `bayan-markdown.cyr` (3,423 lines) and its
+  `.deps` (6 leaves) are new; the other nine change only their version header.
+
+### Docs
+
+- ADR [0010](docs/adr/0010-markdown-parses-into-a-tree-of-its-own.md): markdown parses into a tree
+  of its own, not the json value tree. ADR [0011](docs/adr/0011-markdown-raw-html-is-text.md): raw
+  HTML is text, and dangerous URLs are dropped.
+- [`docs/development/roadmap.md`](docs/development/roadmap.md): the 1.9.0 section is gone; 1.10.0's
+  `const` migration now lists the `MD_*` names. `state.md` refreshed.
+
 ## [1.8.0] — 2026-10-15
 
 Minor release, the roadmap's 1.8.0 slot. **yaml decodes its quoted scalars in the parser**, the

@@ -20,4 +20,9 @@ var enc = bayan_base64_encode("hello", 5);
 assert_eq(enc != 0, 1, "raw include: bayan_base64_encode returned a buffer");
 assert_eq(streq(enc, "aGVsbG8="), 1, "raw include: bayan_base64_encode(\"hello\") is aGVsbG8=");
 
+# 1.9.0: the bundle's markdown reaches the stdlib unicode tables, which its requires block brings.
+var md = bayan_markdown_to_html(bayan_markdown_parse(str_from("*\xe1\xba\x9e* [x][\xe1\xba\x9e]\n\n[ss]: /u")));
+assert_eq(str_eq_cstr(md, "<p><em>\xe1\xba\x9e</em> <a href=\"/u\">x</a></p>\n"), 1,
+  "raw include: bayan_markdown parses and renders, folding the label");
+
 var r = assert_summary();

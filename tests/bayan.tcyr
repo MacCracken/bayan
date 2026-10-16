@@ -16,6 +16,8 @@ include "lib/tagged.cyr"
 include "lib/result.cyr"
 include "lib/fnptr.cyr"
 include "lib/assert.cyr"
+include "lib/unicode/categories.cyr"
+include "lib/unicode/casefold.cyr"
 
 include "src/base64.cyr"
 include "src/csv.cyr"
@@ -27,6 +29,8 @@ include "src/dtoa.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
 include "src/pdf.cyr"
+include "src/markdown_entities.cyr"
+include "src/markdown.cyr"
 include "src/_compat.cyr"
 
 alloc_init();
@@ -4684,5 +4688,287 @@ assert_eq(_yqp("\"a\"b\": 1"), 0, "yaml: a key that opens a quote must be one qu
 var YQ_SRC = "k: \"plain text\"";
 var yq_v = bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse_buf(YQ_SRC, strlen(YQ_SRC)), "k"));
 assert_eq(str_data(yq_v), YQ_SRC + 4, "yaml: an undecoded body points into the source, as before");
+
+test_group("markdown: the node tree and its accessors (1.9.0)");
+# One document with every CommonMark block and inline kind, walked through the public accessors.
+fn _mdp(src): i64 { return bayan_markdown_parse(str_from(src)); }
+fn _mdpx(src, flags): i64 { return bayan_markdown_parse_ext(str_from(src), flags); }
+# The HTML of a C string parsed with `flags`, compared with `want`.
+fn _mdh(src, flags, want): i64 {
+    var d = _mdpx(src, flags);
+    if (d == 0) { return 0; }
+    return str_eq_cstr(bayan_markdown_to_html(d), want);
+}
+var MD_T = _mdp("# Title\n\nPara *em* **st** `c` [l](/u \"t\") ![i](/p)\n\n> q\n\n3. one\n4. two\n\n- a\n\n- b\n\n```py x\ncode\n```\n\n    ind\n\n---\n");
+assert_eq(bayan_markdown_kind(MD_T), MD_K_DOCUMENT, "markdown: the parse returns the document");
+assert_eq(bayan_markdown_child_count(MD_T), 8, "markdown: (with its 8 blocks)");
+var md_h = bayan_markdown_child(MD_T, 0);
+assert_eq(bayan_markdown_kind(md_h), MD_K_HEADING, "markdown: an ATX heading");
+assert_eq(bayan_markdown_level(md_h), 1, "markdown: (level 1)");
+assert_eq(str_eq_cstr(bayan_markdown_text(bayan_markdown_first_child(md_h)), "Title"), 1, "markdown: (its text)");
+assert_eq(bayan_markdown_parent(md_h), MD_T, "markdown: parent");
+assert_eq(bayan_markdown_prev(md_h), 0, "markdown: the first child has no prev");
+var md_p = bayan_markdown_next(md_h);
+assert_eq(bayan_markdown_kind(md_p), MD_K_PARAGRAPH, "markdown: next is the paragraph");
+assert_eq(bayan_markdown_prev(md_p), md_h, "markdown: (and its prev the heading)");
+var md_k = bayan_markdown_first_child(md_p);
+assert_eq(str_eq_cstr(bayan_markdown_text(md_k), "Para "), 1, "markdown: inline text");
+md_k = bayan_markdown_next(md_k);
+assert_eq(bayan_markdown_kind(md_k), MD_K_EMPH, "markdown: *em* is EMPH");
+md_k = bayan_markdown_next(bayan_markdown_next(md_k));
+assert_eq(bayan_markdown_kind(md_k), MD_K_STRONG, "markdown: **st** is STRONG");
+md_k = bayan_markdown_next(bayan_markdown_next(md_k));
+assert_eq(bayan_markdown_kind(md_k), MD_K_CODE, "markdown: a code span");
+assert_eq(str_eq_cstr(bayan_markdown_text(md_k), "c"), 1, "markdown: (its literal)");
+md_k = bayan_markdown_next(bayan_markdown_next(md_k));
+assert_eq(bayan_markdown_kind(md_k), MD_K_LINK, "markdown: an inline link");
+assert_eq(str_eq_cstr(bayan_markdown_url(md_k), "/u"), 1, "markdown: (its url)");
+assert_eq(str_eq_cstr(bayan_markdown_title(md_k), "t"), 1, "markdown: (its title)");
+md_k = bayan_markdown_next(bayan_markdown_next(md_k));
+assert_eq(bayan_markdown_kind(md_k), MD_K_IMAGE, "markdown: an image");
+assert_eq(str_eq_cstr(bayan_markdown_url(md_k), "/p"), 1, "markdown: (its url)");
+assert_eq(bayan_markdown_title(md_k), 0, "markdown: (and no title)");
+assert_eq(bayan_markdown_last_child(md_p), md_k, "markdown: the image is the paragraph's last child");
+var md_q = bayan_markdown_child(MD_T, 2);
+assert_eq(bayan_markdown_kind(md_q), MD_K_BLOCKQUOTE, "markdown: a block quote");
+assert_eq(bayan_markdown_kind(bayan_markdown_first_child(md_q)), MD_K_PARAGRAPH, "markdown: (holding a paragraph)");
+var md_ol = bayan_markdown_child(MD_T, 3);
+assert_eq(bayan_markdown_kind(md_ol), MD_K_LIST, "markdown: an ordered list");
+assert_eq(bayan_markdown_list_ordered(md_ol), 1, "markdown: (ordered)");
+assert_eq(bayan_markdown_list_start(md_ol), 3, "markdown: (starting at 3)");
+assert_eq(bayan_markdown_list_tight(md_ol), 1, "markdown: (tight)");
+assert_eq(bayan_markdown_child_count(md_ol), 2, "markdown: (two items)");
+assert_eq(bayan_markdown_kind(bayan_markdown_first_child(md_ol)), MD_K_ITEM, "markdown: a list item");
+assert_eq(bayan_markdown_task(bayan_markdown_first_child(md_ol)), 0 - 1, "markdown: (not a task)");
+var md_ul = bayan_markdown_child(MD_T, 4);
+assert_eq(bayan_markdown_list_ordered(md_ul), 0, "markdown: a bullet list");
+assert_eq(bayan_markdown_list_tight(md_ul), 0, "markdown: (loose: a blank line between its items)");
+var md_cb = bayan_markdown_child(MD_T, 5);
+assert_eq(bayan_markdown_kind(md_cb), MD_K_CODE_BLOCK, "markdown: a fenced code block");
+assert_eq(bayan_markdown_fenced(md_cb), 1, "markdown: (fenced)");
+assert_eq(str_eq_cstr(bayan_markdown_info(md_cb), "py x"), 1, "markdown: (its info string)");
+assert_eq(str_eq_cstr(bayan_markdown_text(md_cb), "code\n"), 1, "markdown: (its literal)");
+var md_ic = bayan_markdown_child(MD_T, 6);
+assert_eq(bayan_markdown_fenced(md_ic), 0, "markdown: an indented code block");
+assert_eq(bayan_markdown_info(md_ic), 0, "markdown: (has no info string)");
+assert_eq(str_eq_cstr(bayan_markdown_text(md_ic), "ind\n"), 1, "markdown: (its literal)");
+assert_eq(bayan_markdown_kind(bayan_markdown_child(MD_T, 7)), MD_K_THEMATIC_BREAK, "markdown: a thematic break");
+assert_eq(bayan_markdown_child(MD_T, 8), 0, "markdown: child past the end is 0");
+assert_eq(bayan_markdown_child(MD_T, 0 - 1), 0, "markdown: (and before the start)");
+# Accessors on the wrong kind, or on 0, return 0 (task: -1), never a field of another kind.
+assert_eq(bayan_markdown_level(md_p), 0, "markdown: level of a paragraph is 0");
+assert_eq(bayan_markdown_url(md_h), 0, "markdown: url of a heading is 0");
+assert_eq(bayan_markdown_title(md_cb), 0, "markdown: title of a code block is 0");
+assert_eq(bayan_markdown_info(md_h), 0, "markdown: info of a heading is 0");
+assert_eq(bayan_markdown_fenced(md_h), 0, "markdown: fenced of a heading is 0");
+assert_eq(bayan_markdown_list_ordered(md_cb), 0, "markdown: list_ordered of a code block is 0");
+assert_eq(bayan_markdown_list_start(md_h) + bayan_markdown_list_tight(md_h), 0, "markdown: (and list_start, list_tight)");
+assert_eq(bayan_markdown_task(md_ol), 0 - 1, "markdown: task of a list is -1");
+assert_eq(bayan_markdown_align(md_p) + bayan_markdown_row_header(md_p), 0, "markdown: align and row_header of a paragraph are 0");
+assert_eq(bayan_markdown_kind(0) + bayan_markdown_parent(0) + bayan_markdown_first_child(0) + bayan_markdown_last_child(0), 0,
+  "markdown: the accessors take 0");
+assert_eq(bayan_markdown_next(0) + bayan_markdown_prev(0) + bayan_markdown_child_count(0) + bayan_markdown_child(0, 0), 0,
+  "markdown: (all of them)");
+assert_eq(bayan_markdown_text(0) + bayan_markdown_level(0) + bayan_markdown_url(0), 0, "markdown: (every one)");
+assert_eq(bayan_markdown_task(0), 0 - 1, "markdown: (task too, as -1)");
+
+test_group("markdown: HTML (1.9.0)");
+assert_eq(str_eq_cstr(bayan_markdown_to_html(MD_T), "<h1>Title</h1>\n<p>Para <em>em</em> <strong>st</strong> <code>c</code> <a href=\"/u\" title=\"t\">l</a> <img src=\"/p\" alt=\"i\" /></p>\n<blockquote>\n<p>q</p>\n</blockquote>\n<ol start=\"3\">\n<li>one</li>\n<li>two</li>\n</ol>\n<ul>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n</ul>\n<pre><code class=\"language-py\">code\n</code></pre>\n<pre><code>ind\n</code></pre>\n<hr />\n"), 1,
+  "markdown: the document renders as cmark renders it");
+assert_eq(_mdh("&amp; &copy; &#35; &#x1F600; &#0; &bogus; &#xD800;", 0, "<p>&amp; \xc2\xa9 # \xf0\x9f\x98\x80 \xef\xbf\xbd &amp;bogus; \xef\xbf\xbd</p>\n"), 1,
+  "markdown: entity and numeric references (0 and a surrogate are U+FFFD; an unknown name is text)");
+assert_eq(_mdh("[a\"<>](/u?a=1&b=2 \"t\\\"q\")", 0, "<p><a href=\"/u?a=1&amp;b=2\" title=\"t&quot;q\">a&quot;&lt;&gt;</a></p>\n"), 1,
+  "markdown: text and attributes are escaped");
+assert_eq(_mdh("[x](</\xc3\xa4 b%20[]>)", 0, "<p><a href=\"/%C3%A4%20b%20%5B%5D\">x</a></p>\n"), 1,
+  "markdown: an href is percent-encoded, and an existing %XX kept");
+assert_eq(_mdh("```language-r\nx\n```\n", 0, "<pre><code class=\"language-r\">x\n</code></pre>\n"), 1,
+  "markdown: an info string that starts language- is not given the prefix twice");
+assert_eq(_mdh("\xef\xbb\xbf# Hi", 0, "<h1>Hi</h1>\n"), 1, "markdown: a byte order mark at the start is not text");
+assert_eq(_mdh("a\r\nb\rc", 0, "<p>a\nb\nc</p>\n"), 1, "markdown: CR LF and CR end lines");
+assert_eq(_mdh("a  \nb\\\nc", 0, "<p>a<br />\nb<br />\nc</p>\n"), 1, "markdown: hard line breaks");
+assert_eq(_mdh("&nbs; &am; &copyx; &Copy;", 0, "<p>&amp;nbs; &amp;am; &amp;copyx; &amp;Copy;</p>\n"), 1,
+  "markdown: a name that only starts an entity's, or differs in case, is not one");
+assert_eq(_mdh("[a]: /1\n[a]: /2\n[A]: /3\n[a]: /4\n[ a ]: /5\n\n[a]", 0, "<p><a href=\"/1\">a</a></p>\n"), 1,
+  "markdown: of five definitions of one label, the first wins");
+assert_eq(_mdh("[a [b](c) d](e)", 0, "<p>[a <a href=\"c\">b</a> d](e)</p>\n"), 1,
+  "markdown: links do not nest: the outer one is text");
+assert_eq(_mdh("[foo]: /url\n---\n[FOO]\n", 0, "<hr />\n<p><a href=\"/url\">FOO</a></p>\n"), 1,
+  "markdown: a paragraph that was only definitions is no paragraph (cmark's regression)");
+assert_eq(_mdh("[\xe1\xba\x9e]\n\n[SS]: /ss\n", 0, "<p><a href=\"/ss\">\xe1\xba\x9e</a></p>\n"), 1,
+  "markdown: labels match under full case folding");
+assert_eq(_mdh("-     code\n\n- b\n", 0, "<ul>\n<li>\n<pre><code>code\n</code></pre>\n</li>\n<li>\n<p>b</p>\n</li>\n</ul>\n"), 1,
+  "markdown: the blank lines an indented code block drops still make the list loose");
+assert_eq(_mdh("- a\n\n  [r]: /u\n", 0, "<ul>\n<li>\n<p>a</p>\n</li>\n</ul>\n"), 1,
+  "markdown: a definition is a block: after a blank line in an item, the list is loose");
+var md_nul[8];
+store8(&md_nul, 97);
+store8(&md_nul + 1, 0);
+store8(&md_nul + 2, 98);
+assert_eq(str_eq_cstr(bayan_markdown_to_html(bayan_markdown_parse_buf_a(default_alloc(), &md_nul, 3, 0)), "<p>a\xef\xbf\xbdb</p>\n"), 1,
+  "markdown: NUL becomes U+FFFD");
+
+test_group("markdown: raw HTML is text, and a dangerous URL is dropped (1.9.0)");
+assert_eq(_mdh("<div>\n*hi*\n</div>", 0, "<p>&lt;div&gt;\n<em>hi</em>\n&lt;/div&gt;</p>\n"), 1,
+  "markdown: an HTML block is a paragraph of text");
+assert_eq(_mdh("a <script>alert(1)</script> <!-- c -->", 0, "<p>a &lt;script&gt;alert(1)&lt;/script&gt; &lt;!-- c --&gt;</p>\n"), 1,
+  "markdown: inline tags and comments are text");
+assert_eq(_mdh("<http://a.b/c> <me@x.y>", 0, "<p><a href=\"http://a.b/c\">http://a.b/c</a> <a href=\"mailto:me@x.y\">me@x.y</a></p>\n"), 1,
+  "markdown: autolinks are still links");
+assert_eq(_mdh("[x](javascript:alert(1)) [y](JaVaScRiPt:z) [v](vbscript:z) [f](file:///etc)", 0,
+    "<p><a href=\"\">x</a> <a href=\"\">y</a> <a href=\"\">v</a> <a href=\"\">f</a></p>\n"), 1,
+  "markdown: a javascript:, vbscript: or file: link gets an empty href, in any case");
+assert_eq(_mdh("[b](&#106;avascript:y) <javascript:z>", 0, "<p><a href=\"\">b</a> <a href=\"\">javascript:z</a></p>\n"), 1,
+  "markdown: (the URL is checked decoded, and an autolink too)");
+assert_eq(_mdh("![i](data:image/png;base64,AA) ![j](data:text/html,x)", 0,
+    "<p><img src=\"data:image/png;base64,AA\" alt=\"i\" /> <img src=\"\" alt=\"j\" /></p>\n"), 1,
+  "markdown: a data: image is kept, and another data: URL dropped");
+var md_js = bayan_markdown_first_child(bayan_markdown_first_child(_mdp("[x](javascript:alert(1))")));
+assert_eq(str_eq_cstr(bayan_markdown_url(md_js), "javascript:alert(1)"), 1, "markdown: the tree keeps the URL");
+
+test_group("markdown: GFM extensions, each behind its flag (1.9.0)");
+var MD_G = "| a | b |\n|:-|-:|\n| 1 | 2 |\n\n- [ ] todo\n- [X] done\n\n~~gone~~ www.x.org\n";
+assert_eq(_mdh(MD_G, 0, "<p>| a | b |\n|:-|-:|\n| 1 | 2 |</p>\n<ul>\n<li>[ ] todo</li>\n<li>[X] done</li>\n</ul>\n<p>~~gone~~ www.x.org</p>\n"), 1,
+  "markdown: without flags, CommonMark only");
+assert_eq(_mdh(MD_G, MD_EXT_GFM, "<table>\n<thead>\n<tr>\n<th align=\"left\">a</th>\n<th align=\"right\">b</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td align=\"left\">1</td>\n<td align=\"right\">2</td>\n</tr>\n</tbody>\n</table>\n<ul>\n<li><input disabled=\"\" type=\"checkbox\"> todo</li>\n<li><input checked=\"\" disabled=\"\" type=\"checkbox\"> done</li>\n</ul>\n<p><del>gone</del> <a href=\"http://www.x.org\">www.x.org</a></p>\n"), 1,
+  "markdown: MD_EXT_GFM turns on all four");
+assert_eq(_mdh("|a|\n|-|\n\n~~x~~", MD_EXT_TABLES, "<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n</table>\n<p>~~x~~</p>\n"), 1,
+  "markdown: MD_EXT_TABLES alone");
+assert_eq(_mdh("~~x~~ ~y~ ~~~z~~~", MD_EXT_STRIKETHROUGH, "<p><del>x</del> <del>y</del> ~~~z~~~</p>\n"), 1,
+  "markdown: MD_EXT_STRIKETHROUGH alone (one or two tildes; three are text)");
+assert_eq(_mdh("http://a.b/c). a@b.co mailto:x@y.z", MD_EXT_AUTOLINKS,
+    "<p><a href=\"http://a.b/c\">http://a.b/c</a>). <a href=\"mailto:a@b.co\">a@b.co</a> <a href=\"mailto:x@y.z\">mailto:x@y.z</a></p>\n"), 1,
+  "markdown: MD_EXT_AUTOLINKS alone (trailing punctuation is not the link's)");
+var md_gt = _mdpx(MD_G, MD_EXT_GFM);
+var md_tb = bayan_markdown_first_child(md_gt);
+assert_eq(bayan_markdown_kind(md_tb), MD_K_TABLE, "markdown: a table");
+var md_hr = bayan_markdown_first_child(md_tb);
+assert_eq(bayan_markdown_kind(md_hr), MD_K_TABLE_ROW, "markdown: (its rows)");
+assert_eq(bayan_markdown_row_header(md_hr), 1, "markdown: (the first is the header)");
+assert_eq(bayan_markdown_row_header(bayan_markdown_next(md_hr)), 0, "markdown: (the next is not)");
+assert_eq(bayan_markdown_kind(bayan_markdown_first_child(md_hr)), MD_K_TABLE_CELL, "markdown: (and its cells)");
+assert_eq(bayan_markdown_align(bayan_markdown_first_child(md_hr)), MD_ALIGN_LEFT, "markdown: (aligned left)");
+assert_eq(bayan_markdown_align(bayan_markdown_last_child(md_hr)), MD_ALIGN_RIGHT, "markdown: (and right)");
+var md_tl = bayan_markdown_next(md_tb);
+assert_eq(bayan_markdown_task(bayan_markdown_first_child(md_tl)), 0, "markdown: an unchecked task");
+assert_eq(bayan_markdown_task(bayan_markdown_last_child(md_tl)), 1, "markdown: a checked one ([X] too)");
+assert_eq(_mdh("- [ ]\n- [x]y\n", MD_EXT_TASKLISTS, "<ul>\n<li>[ ]</li>\n<li>[x]y</li>\n</ul>\n"), 1,
+  "markdown: a marker needs a space or tab after it");
+assert_eq(_mdh("> - [x] q", MD_EXT_TASKLISTS, "<blockquote>\n<ul>\n<li><input checked=\"\" disabled=\"\" type=\"checkbox\"> q</li>\n</ul>\n</blockquote>\n"), 1,
+  "markdown: a task item inside a block quote (the GFM spec's rule: the item's first paragraph)");
+assert_eq(_mdh("| a |\n| - |\n> b", MD_EXT_TABLES, "<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n</table>\n<blockquote>\n<p>b</p>\n</blockquote>\n"), 1,
+  "markdown: a line that opens another block ends the table");
+assert_eq(_mdh("| a |\n| - |\n|", MD_EXT_TABLES, "<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n</table>\n<p>|</p>\n"), 1,
+  "markdown: a lone pipe is not a row");
+assert_eq(_mdh("| a | b |\n| - |\n| x |\n| - |", MD_EXT_TABLES, "<p>| a | b |\n| - |\n| x |\n| - |</p>\n"), 1,
+  "markdown: a paragraph whose header did not match is not tried again (cmark-gfm)");
+
+test_group("markdown: wiki links (1.9.0)");
+var md_w = _mdpx("see [[Page One]] and [[p2|the label]]", MD_EXT_WIKILINKS);
+var md_wl = bayan_markdown_next(bayan_markdown_first_child(bayan_markdown_first_child(md_w)));
+assert_eq(bayan_markdown_kind(md_wl), MD_K_WIKILINK, "markdown: [[target]] is a WIKILINK");
+assert_eq(str_eq_cstr(bayan_markdown_url(md_wl), "Page One"), 1, "markdown: (its target is the url)");
+assert_eq(str_eq_cstr(bayan_markdown_text(bayan_markdown_first_child(md_wl)), "Page One"), 1, "markdown: (and its text)");
+assert_eq(str_eq_cstr(bayan_markdown_to_html(md_w), "<p>see <a href=\"Page%20One\" class=\"wikilink\">Page One</a> and <a href=\"p2\" class=\"wikilink\">the label</a></p>\n"), 1,
+  "markdown: [[target|label]] shows its label");
+assert_eq(_mdh("[[Page]]", 0, "<p>[[Page]]</p>\n"), 1, "markdown: without MD_EXT_WIKILINKS, text");
+assert_eq(_mdh("[[]] [[ ]] [[a\nb]] [[a[b]]", MD_EXT_WIKILINKS, "<p>[[]] [[ ]] [[a\nb]] [[a[b]]</p>\n"), 1,
+  "markdown: an empty target, a line ending or a bracket inside is no wiki link");
+assert_eq(_mdh("[x [[a]] y](/u)", MD_EXT_WIKILINKS, "<p>[x <a href=\"a\" class=\"wikilink\">a</a> y](/u)</p>\n"), 1,
+  "markdown: links do not nest: a wiki link inside one leaves it text");
+assert_eq(_mdh("[[javascript:alert(1)]]", MD_EXT_WIKILINKS, "<p><a href=\"\" class=\"wikilink\">javascript:alert(1)</a></p>\n"), 1,
+  "markdown: (a dangerous target is dropped too)");
+
+test_group("markdown: nesting past 128 levels is refused (1.9.0)");
+# Blocks and inlines count together; the document is level 1. 125 block quotes put the text at 128.
+fn _md_rep(s, k): i64 {
+    var sb = str_builder_new();
+    var i = 0;
+    while (i < k) { str_builder_add_cstr(sb, s); i = i + 1; }
+    return sb;
+}
+var md_sb = _md_rep(">", 125);
+str_builder_add_cstr(md_sb, " a");
+assert_neq(bayan_markdown_parse(str_builder_build(md_sb)), 0, "markdown: 125 block quotes and a paragraph parse");
+md_sb = _md_rep(">", 126);
+str_builder_add_cstr(md_sb, " a");
+assert_eq(bayan_markdown_parse(str_builder_build(md_sb)), 0, "markdown: 126 do not");
+assert_eq(str_eq_cstr(str_from(bayan_markdown_last_error()), "nesting too deep"), 1, "markdown: (nesting too deep)");
+md_sb = _md_rep(">", 200000);
+assert_eq(bayan_markdown_parse(str_builder_build(md_sb)), 0, "markdown: nor do 200,000, refused while the blocks open");
+md_sb = _md_rep("*a ", 125);
+str_builder_add_cstr(md_sb, "b");
+var md_i = 0;
+while (md_i < 125) { str_builder_add_cstr(md_sb, " a*"); md_i = md_i + 1; }
+assert_neq(bayan_markdown_parse(str_builder_build(md_sb)), 0, "markdown: emphasis 125 deep parses");
+md_sb = _md_rep("*a ", 126);
+str_builder_add_cstr(md_sb, "b");
+md_i = 0;
+while (md_i < 126) { str_builder_add_cstr(md_sb, " a*"); md_i = md_i + 1; }
+assert_eq(bayan_markdown_parse(str_builder_build(md_sb)), 0, "markdown: 126 deep does not");
+assert_eq(_mdh("ok", 0, "<p>ok</p>\n"), 1, "markdown: the next parse is unaffected");
+assert_eq(bayan_markdown_parse_a(default_alloc(), 0, 0), 0, "markdown: a 0 source is refused");
+assert_eq(str_eq_cstr(str_from(bayan_markdown_last_error()), "null source"), 1, "markdown: (null source)");
+assert_eq(bayan_markdown_to_html(0), 0, "markdown: and to_html(0) is 0");
+
+test_group("markdown: every refused allocation returns 0 (1.9.0)");
+# The lever is the default allocator's alloc slot, swapped for one that refuses the k-th request
+# alone, for every k of one parse and then one render. The document reaches every allocating arm:
+# a reference definition, entities, NUL, a code span, emphasis, links, an image, an autolink, a
+# setext heading, a fence, a table, tasks, strikethrough, extended autolinks and a wiki link.
+var MD_R = "\xef\xbb\xbfT&amp;\nx\n===\n\n[r]: /u 't'\n\n*a* **b** `c` [d][r] ![e](/f) <http://g.h> &#35;\n\n```z\nk\n```\n\n| a | b |\n| - | - |\n| 1 |\n\n- [ ] t\n- [x] u\n\n~~s~~ www.w.org i@j.kl [[w|x]] \\* [x](<y z>)\n";
+var MD_RS = str_from(MD_R);
+var md_nth = 0 - 1;
+var md_calls = 0;
+fn _md_refuse_nth(state, size): i64 {
+    md_calls = md_calls + 1;
+    if (md_calls == md_nth) { return 0; }
+    return alloc(size);
+}
+var MD_FLAGS = MD_EXT_GFM | MD_EXT_WIKILINKS;
+var md_dv = default_alloc();
+var md_saved = load64(md_dv);
+store64(md_dv, &_md_refuse_nth);
+var md_full = bayan_markdown_parse_ext(MD_RS, MD_FLAGS);
+var md_n = md_calls;
+var md_kk = 1;
+var md_partial = 0;
+var md_errs = 0;
+while (md_kk <= md_n) {
+    md_nth = md_kk;
+    md_calls = 0;
+    if (bayan_markdown_parse_ext(MD_RS, MD_FLAGS) != 0) { md_partial = md_partial + 1; }
+    elif (str_eq_cstr(str_from(bayan_markdown_last_error()), "out of memory") == 1) { md_errs = md_errs + 1; }
+    md_kk = md_kk + 1;
+}
+md_nth = 0 - 1;
+md_calls = 0;
+var md_html = bayan_markdown_to_html(md_full);
+var md_hn = md_calls;
+md_kk = 1;
+var md_hpartial = 0;
+while (md_kk <= md_hn) {
+    md_nth = md_kk;
+    md_calls = 0;
+    if (bayan_markdown_to_html(md_full) != 0) { md_hpartial = md_hpartial + 1; }
+    md_kk = md_kk + 1;
+}
+md_nth = 0 - 1;
+store64(md_dv, md_saved);
+assert_neq(md_full, 0, "markdown: the refusal document parses");
+assert_eq(str_eq_cstr(md_html, "<h1>T&amp;\nx</h1>\n<p><em>a</em> <strong>b</strong> <code>c</code> <a href=\"/u\" title=\"t\">d</a> <img src=\"/f\" alt=\"e\" /> <a href=\"http://g.h\">http://g.h</a> #</p>\n<pre><code class=\"language-z\">k\n</code></pre>\n<table>\n<thead>\n<tr>\n<th>a</th>\n<th>b</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>1</td>\n<td></td>\n</tr>\n</tbody>\n</table>\n<ul>\n<li><input disabled=\"\" type=\"checkbox\"> t</li>\n<li><input checked=\"\" disabled=\"\" type=\"checkbox\"> u</li>\n</ul>\n<p><del>s</del> <a href=\"http://www.w.org\">www.w.org</a> <a href=\"mailto:i@j.kl\">i@j.kl</a> <a href=\"w\" class=\"wikilink\">x</a> * <a href=\"y%20z\">x</a></p>\n"), 1,
+  "markdown: (to the HTML it should)");
+assert_gt(md_n, 100, "markdown: (the parse makes over a hundred allocations)");
+assert_eq(md_partial, 0, "markdown: the parse, each allocation refused alone, returns 0");
+assert_eq(md_errs, md_n, "markdown: (with out of memory as the error, every time)");
+assert_gt(md_hn, 0, "markdown: (rendering allocates)");
+assert_eq(md_hpartial, 0, "markdown: and the render, each refused alone, returns 0");
+# The _a form makes every request through the allocator it is handed.
+var MD_ONE = allocator_new(&_md_refuse_nth, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
+md_calls = 0;
+var md_viaa = bayan_markdown_parse_a(MD_ONE, MD_RS, MD_FLAGS);
+assert_eq(md_calls, md_n, "markdown: bayan_markdown_parse_a makes the same requests, through its allocator");
+md_calls = 0;
+assert_eq(str_eq(bayan_markdown_to_html_a(MD_ONE, md_viaa), md_html), 1, "markdown: (and renders the same HTML)");
+assert_eq(md_calls, md_hn, "markdown: (to_html_a through its allocator too)");
 
 var r = assert_summary();

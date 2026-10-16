@@ -30,6 +30,8 @@ Decisions about bayan — what we chose, the context, and the consequences we ac
 | [0007](0007-per-format-sublibs-beside-the-full-bundle.md) | Each format also ships as its own sublib, beside the full bundle | Accepted |
 | [0008](0008-yaml-parses-into-the-json-value-tree.md) | YAML parses into the JSON value tree | Accepted |
 | [0009](0009-toml-strings-are-decoded-in-the-parser.md) | TOML strings are decoded in the parser, not by an accessor | Accepted |
+| [0010](0010-markdown-parses-into-a-tree-of-its-own.md) | Markdown parses into a tree of its own | Accepted |
+| [0011](0011-markdown-raw-html-is-text.md) | Markdown's raw HTML is text, and its dangerous URLs are dropped | Accepted |
 
 0001 and 0002 were written at 1.5.0, alongside `bayan_pdf_*`. They record the
 two decisions in that module a future reader is most likely to try to
@@ -46,3 +48,9 @@ proposed would silently break every caller passing a non-literal C string.
 json tree (0008) and decoding TOML strings in the parser (0009). Each gives the
 release that made the decision and marks any alternative the record does not
 mention. 0009's reasoning is what 1.8.0 applied to yaml's quoted scalars.
+
+0010 and 0011 were written at 1.9.0, with `bayan_markdown_*`. 0010 is the third
+answer to the question 0002 and 0008 answered, whether a new format reuses the
+json value tree, and says why markdown does not. 0011 records the cut-off the
+roadmap asked to have documented: the part of CommonMark bayan does not
+implement, and the safety reason for it.

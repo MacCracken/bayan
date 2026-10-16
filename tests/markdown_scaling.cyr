@@ -1,0 +1,148 @@
+# tests/markdown_scaling.cyr — bayan_markdown's cost must grow with its input, not with its square
+# (1.9.0).
+#
+# Several of the parser's paths were quadratic, or worse, on inputs cmark's pathological suite
+# (test/pathological_tests.py) is made of, and every answer they gave was right: a suite that checks
+# answers cannot see them. The CHANGELOG [1.9.0] entry has each one; their fixes are a bound on
+# where emphasis looks for an opener, kept by position (cmark's issue #389), a memo of backtick-run
+# lengths, an epoch for link openers in place of a walk down the bracket stack (`![[]()` repeated),
+# definitions sorted for a binary search, and runs of text merged in one copy. The mutation pass
+# that 1.9.0 ran on its suites found the first two uncaught by anything but time.
+#
+# Each row times parse and render of one family at two sizes, in the same process: the FASTEST of
+# several runs at each, since load can slow a run down but never speed one up. The row's figure is
+# the time ratio over the input ratio: about 1 for a linear path (a little more for n log n and a
+# larger working set), about the input ratio (8) for a quadratic one, about its square root (4)
+# for the backtick family's n^1.5 over its 64x input. A row fails above 3, three attempts running.
+#
+#   cyrius build tests/markdown_scaling.cyr build/md-scaling && ./build/md-scaling
+#   cyrius build --aarch64 tests/markdown_scaling.cyr build/md-scaling-a64
+#   qemu-aarch64 build/md-scaling-a64
+#
+# Exit code = the number of rows over the limit.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/mmap.cyr"
+include "lib/chrono.cyr"
+include "lib/unicode/categories.cyr"
+include "lib/unicode/casefold.cyr"
+
+include "src/markdown_entities.cyr"
+include "src/markdown.cyr"
+
+var LIMIT10 = 30;       # the limit, x10: 3.0
+var ROUNDS = 5;
+const CAP = 8388608;
+var g_buf = 0;
+
+fn say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+
+fn put(at, s): i64 {
+    var n = strlen(s);
+    memcpy(g_buf + at, s, n);
+    return at + n;
+}
+
+fn put_int(at, v): i64 {
+    var b[24];
+    var l = fmt_int_buf(v, &b);
+    memcpy(g_buf + at, &b, l);
+    return at + l;
+}
+
+# Family f at size k into g_buf; its length.
+fn build(f, k): i64 {
+    var n = 0;
+    var i = 0;
+    if (f == 0) {                       # cmark issue #389
+        while (i < k) { n = put(n, "*a "); i = i + 1; }
+        i = 0;
+        while (i < k) { n = put(n, "_a*_ "); i = i + 1; }
+    } elif (f == 1) {                   # backtick runs of every length 1..k, none closed
+        var r = 1;
+        while (r <= k) {
+            n = put(n, "e");
+            var t = 0;
+            while (t < r) { n = put(n, "`"); t = t + 1; }
+            r = r + 1;
+        }
+    } elif (f == 2) {                   # cmark's ![[]() pattern
+        while (i < k) { n = put(n, "![[]()"); i = i + 1; }
+    } elif (f == 3) {                   # k definitions, each referenced once
+        while (i < k) { n = put(n, "[d"); n = put_int(n, i); n = put(n, "]: /u\n"); i = i + 1; }
+        i = 0;
+        while (i < k) { n = put(n, "[d"); n = put_int(n, i); n = put(n, "] "); i = i + 1; }
+    } elif (f == 4) {                   # a paragraph of entity references
+        while (i < k) { n = put(n, "&amp;"); i = i + 1; }
+    } else {                            # mismatched openers and closers
+        while (i < k) { n = put(n, "*a_ "); i = i + 1; }
+    }
+    return n;
+}
+
+# The fastest of ROUNDS parse-and-render runs of g_buf[0..n), in ns.
+fn best(n): i64 {
+    var b = 0;
+    var r = 0;
+    while (r < ROUNDS) {
+        alloc_reset();
+        var t0 = clock_now_ns();
+        var d = bayan_markdown_parse_buf_a(default_alloc(), g_buf, n, 0);
+        if (d != 0) { bayan_markdown_to_html(d); }
+        var dt = clock_now_ns() - t0;
+        if (r == 0 || dt < b) { b = dt; }
+        r = r + 1;
+    }
+    if (b < 1) { b = 1; }
+    return b;
+}
+
+# One measurement of family f: 1 when over the limit.
+fn attempt(f, label: cstring, k1, k2): i64 {
+    var n1 = build(f, k1);
+    var t1 = best(n1);
+    var n2 = build(f, k2);
+    var t2 = best(n2);
+    var x10 = (t2 * 10 * n1) / (t1 * n2);       # (t2 / t1) / (n2 / n1), one decimal
+    var over = 0;
+    if (x10 > LIMIT10) { over = 1; }
+    if (over == 1) { say("  SLOW  "); } else { say("  ok    "); }
+    say(label);
+    fmt_int(x10 / 10); say("."); fmt_int(x10 % 10); say(" (");
+    fmt_int(n1); say(" bytes in "); fmt_int(t1 / 1000); say(" us, ");
+    fmt_int(n2); say(" in "); fmt_int(t2 / 1000); say(" us), limit 3.0\n");
+    return over;
+}
+
+fn row(f, label: cstring, k1, k2): i64 {
+    var a = 0;
+    while (a < 3) {
+        if (attempt(f, label, k1, k2) == 0) { return 0; }
+        a = a + 1;
+    }
+    return 1;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_buf = mmap_anon(CAP);
+    if (g_buf == 0) { say("markdown scaling: mmap failed\n"); return 99; }
+    say("bayan_markdown: time ratio over input ratio, between two sizes of each input\n");
+    var slow = 0;
+    slow = slow + row(0, "emphasis, cmark #389       ", 2000, 16000);
+    slow = slow + row(1, "backtick runs 1..k         ", 150, 1200);
+    slow = slow + row(2, "![[]() repeated            ", 4000, 32000);
+    slow = slow + row(3, "definitions and references ", 2000, 16000);
+    slow = slow + row(4, "entity references          ", 10000, 80000);
+    slow = slow + row(5, "mismatched *a_             ", 5000, 40000);
+    return slow;
+}
+
+var r = main();
+syscall(SYS_EXIT, r);

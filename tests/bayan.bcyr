@@ -8,7 +8,9 @@
 # tier, because making it correctly rounded moved cost onto the hard inputs.
 # 1.6.0 adds the cyml parse, after a consumer found it twice as slow as it
 # had been since 1.5.1, a change no row here could have shown. 1.6.1 adds a
-# single-entry cyml document with a long header, for the --- search.
+# single-entry cyml document with a long header, for the --- search. 1.9.0 adds
+# markdown parse and render, through an arena reset between documents, the
+# pattern a consumer rendering notes one after another uses.
 #
 # Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop ->
 # bench_report. For sub-microsecond operations use a batch of >= 1000 to
@@ -30,10 +32,14 @@ include "lib/tagged.cyr"
 include "lib/result.cyr"
 include "lib/fnptr.cyr"
 include "lib/bench.cyr"
+include "lib/unicode/categories.cyr"
+include "lib/unicode/casefold.cyr"
 
 include "src/pdf.cyr"
 include "src/dtoa.cyr"
 include "src/cyml.cyr"
+include "src/markdown_entities.cyr"
+include "src/markdown.cyr"
 
 var B_DICT = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Contents 5 0 R/Resources<</Font<</F1 3 0 R>>>>>>";
 var B_PROSE = "The quick brown fox jumps over the lazy dog and keeps on running well past the right edge of any column you care to name";
@@ -195,6 +201,68 @@ fn main(): i64 {
     while (i < 1000) { bayan_cyml_parse(str_data(cds), str_len(cds)); i = i + 1; }
     bench_batch_stop(b13, 1000);
     bench_report(b13);
+
+    # --- markdown -------------------------------------------------------------
+    # A note-shaped document: 12 sections of a heading, a paragraph with emphasis,
+    # a code span, an inline and a reference link, a tight list, a fenced block,
+    # a block quote and a GFM table, then the definitions. Each document gets a
+    # fresh arena (reset_via), so the heap does not grow with the batch.
+    var mdb = str_builder_new();
+    i = 0;
+    while (i < 12) {
+        str_builder_add_cstr(mdb, "## Section ");
+        str_builder_add_int(mdb, i);
+        str_builder_add_cstr(mdb, "\n\nSome *emphasised* and **strong** prose with `code`, a [link](https://example.org/a?b=c) and a [reference][r");
+        str_builder_add_int(mdb, i);
+        str_builder_add_cstr(mdb, "], running on for a line or two so the inline scan has text to cross &amp; entities to decode.\n\n");
+        str_builder_add_cstr(mdb, "- first item\n- second item with _underscores_\n- third ~~item~~\n\n```cyr\nfn f(): i64 { return 1; }\n```\n\n");
+        str_builder_add_cstr(mdb, "> quoted line one\n> quoted line two\n\n| key | value |\n| --- | ---: |\n| a | 1 |\n| b | 2 |\n\n");
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 12) {
+        str_builder_add_cstr(mdb, "[r");
+        str_builder_add_int(mdb, i);
+        str_builder_add_cstr(mdb, "]: https://example.org/ref \"Title\"\n");
+        i = i + 1;
+    }
+    var mds = str_builder_build(mdb);
+    var mar = arena_allocator(4194304);
+    var b14 = bench_new("markdown_parse (12-section note, GFM, 5.4KB)");
+    bench_batch_start(b14);
+    i = 0;
+    while (i < 200) {
+        reset_via(mar);
+        bayan_markdown_parse_a(mar, mds, MD_EXT_GFM);
+        i = i + 1;
+    }
+    bench_batch_stop(b14, 200);
+    bench_report(b14);
+
+    reset_via(mar);
+    var mtree = bayan_markdown_parse_a(mar, mds, MD_EXT_GFM);
+    var mhar = arena_allocator(1048576);
+    var b15 = bench_new("markdown_to_html (the same note's tree)");
+    bench_batch_start(b15);
+    i = 0;
+    while (i < 200) {
+        reset_via(mhar);
+        bayan_markdown_to_html_a(mhar, mtree);
+        i = i + 1;
+    }
+    bench_batch_stop(b15, 200);
+    bench_report(b15);
+
+    var b16 = bench_new("markdown parse + render (the same note)");
+    bench_batch_start(b16);
+    i = 0;
+    while (i < 200) {
+        reset_via(mar);
+        bayan_markdown_to_html_a(mar, bayan_markdown_parse_a(mar, mds, MD_EXT_GFM));
+        i = i + 1;
+    }
+    bench_batch_stop(b16, 200);
+    bench_report(b16);
 
     return 0;
 }

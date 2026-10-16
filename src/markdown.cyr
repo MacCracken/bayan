@@ -1,0 +1,3347 @@
+# markdown.cyr — CommonMark (and GFM extensions) to a node tree, and the tree to HTML (1.9.0).
+# Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-markdown.cyr" (sublib).
+# Requires: alloc.cyr, vec.cyr, str.cyr, string.cyr, fmt.cyr, unicode/categories.cyr,
+#           unicode/casefold.cyr, and src/markdown_entities.cyr before this module.
+#
+# bayan_markdown_parse(src) reads a Markdown document into a tree of bayan_markdown nodes, and
+# bayan_markdown_to_html(tree) writes it as HTML. The grammar is CommonMark 0.31.2, and
+# tests/vectors.tcyr checks the spec's own examples against it (scripts/gen-markdown-vectors.py
+# says which are in and which are out, and why). bayan_markdown_parse_ext(src, flags) adds GitHub's
+# extensions (MD_EXT_TABLES, MD_EXT_TASKLISTS, MD_EXT_STRIKETHROUGH, MD_EXT_AUTOLINKS, or
+# MD_EXT_GFM for all four, checked against the GFM 0.29 spec's examples and cmark-gfm's tests, and
+# following cmark-gfm's code, task items aside) and wiki links (MD_EXT_WIKILINKS: `[[target]]` and
+# `[[target|label]]`).
+#
+# WHAT IS NOT CommonMark HERE, on purpose:
+#   - RAW HTML IS TEXT. HTML blocks and inline tags are not recognized: `<div>` comes out as
+#     `&lt;div&gt;`. A document rendered for a reader, or for a PDF, has no use for markup that
+#     would pass through unchecked, and passing it through is how Markdown carries script into a
+#     page. The spec's examples that pass raw HTML through are not among the vectors for that
+#     reason (docs/adr/0011); the ones that check a malformed tag stays text are.
+#   - A DANGEROUS URL IS DROPPED from the HTML: a link or image to `javascript:`, `vbscript:`,
+#     `file:` or `data:` (but `data:image/png`, `gif`, `jpeg` and `webp`) gets an empty href or
+#     src, as cmark's default does. The tree keeps it (bayan_markdown_url), for a caller that
+#     renders for itself.
+#   - NESTING IS CAPPED at _MD_MAX_DEPTH (128) levels, counting blocks and inlines together, as
+#     the json and yaml parsers cap theirs. Past it the parse returns 0, with "nesting too deep" in
+#     bayan_markdown_last_error(), rather than recursing without a bound.
+#   - A BACKTICK RUN OF MORE THAN 1,000 opens no code span (_MD_MAX_TICKS, cmark's bound), so that
+#     a line of unmatched runs costs one scan.
+#   - A REFUSED ALLOCATION returns 0, with "out of memory" as the error. Every allocation goes
+#     through the allocator the _a functions are given (default_alloc() otherwise).
+#
+# The block parser follows the spec's appendix, "A parsing strategy": each line is matched against
+# the open container blocks, new blocks are opened, and the rest of the line goes to the open leaf.
+# Inlines are parsed afterwards, per leaf, with the delimiter-stack algorithm the spec gives for
+# emphasis and links. The structure follows the CommonMark reference implementations
+# (commonmark.js, cmark); the code is bayan's.
+#
+# Reentrant: all parse state is per call. bayan_markdown_last_error() is a mirror of the last
+# failure's message, written after the parse, for callers that want it.
+
+# --- Public kinds --------------------------------------------------------------------------------
+var MD_K_DOCUMENT       = 1;
+var MD_K_BLOCKQUOTE     = 2;
+var MD_K_LIST           = 3;    # ordered or not: bayan_markdown_list_ordered
+var MD_K_ITEM           = 4;
+var MD_K_PARAGRAPH      = 5;
+var MD_K_HEADING        = 6;    # level 1..6: bayan_markdown_level
+var MD_K_THEMATIC_BREAK = 7;
+var MD_K_CODE_BLOCK     = 8;    # literal: bayan_markdown_text; info string: bayan_markdown_info
+var MD_K_TABLE          = 9;    # MD_EXT_TABLES
+var MD_K_TABLE_ROW      = 10;   # the header row: bayan_markdown_row_header
+var MD_K_TABLE_CELL     = 11;   # alignment: bayan_markdown_align
+var MD_K_TEXT           = 20;
+var MD_K_SOFTBREAK      = 21;
+var MD_K_LINEBREAK      = 22;
+var MD_K_CODE           = 23;
+var MD_K_EMPH           = 24;
+var MD_K_STRONG         = 25;
+var MD_K_STRIKETHROUGH  = 26;   # MD_EXT_STRIKETHROUGH
+var MD_K_LINK           = 27;   # bayan_markdown_url, bayan_markdown_title
+var MD_K_IMAGE          = 28;
+var MD_K_WIKILINK       = 29;   # MD_EXT_WIKILINKS: the target is bayan_markdown_url
+
+# --- Extension flags -----------------------------------------------------------------------------
+var MD_EXT_TABLES        = 1;
+var MD_EXT_TASKLISTS     = 2;
+var MD_EXT_STRIKETHROUGH = 4;
+var MD_EXT_AUTOLINKS     = 8;
+var MD_EXT_GFM           = 15;
+var MD_EXT_WIKILINKS     = 16;
+
+# --- Table cell alignment ------------------------------------------------------------------------
+var MD_ALIGN_NONE   = 0;
+var MD_ALIGN_LEFT   = 1;
+var MD_ALIGN_CENTER = 2;
+var MD_ALIGN_RIGHT  = 3;
+
+const _MD_MAX_DEPTH = 128;
+
+# A backtick run longer than this opens no code span (cmark's MAXBACKTICKS): the memo that keeps
+# unmatched runs from costing a scan each has a slot per length.
+const _MD_MAX_TICKS = 1000;
+
+# A short table row is filled out with empty cells, so a wide header and many one-cell rows would
+# make output quadratic in the input. Past this many filled cells (cmark-gfm's bound), lines stop
+# being rows of that table.
+const _MD_MAX_FILLED_CELLS = 524288;
+
+# --- Nodes ---------------------------------------------------------------------------------------
+# One 128-byte cell per node, children as a doubly linked list.
+const _MN_KIND   = 0;
+const _MN_PARENT = 8;
+const _MN_FIRST  = 16;
+const _MN_LAST   = 24;
+const _MN_PREV   = 32;
+const _MN_NEXT   = 40;
+const _MN_TEXT   = 48;    # Str: a TEXT or CODE literal, a code block's literal
+const _MN_N1     = 56;    # heading level; list ordered; item marker offset; cell align; row header
+const _MN_N2     = 64;    # list start; item padding; code block fenced
+const _MN_N3     = 72;    # list delimiter or bullet; code fence char; item task state
+const _MN_N4     = 80;    # list tight; code fence length
+const _MN_S1     = 88;    # Str: link/image/wikilink url; code block info
+const _MN_S2     = 96;    # Str: link/image title
+const _MN_FLAGS  = 104;   # bit 0 open
+const _MN_BUF    = 112;   # block content while parsing (a _mb buffer)
+const _MN_LINES  = 120;   # start line << 32 | end line, for list tightness
+const _MN_SIZE   = 128;
+
+var _md_last_err = "";
+
+# 0 for none: what the last failed bayan_markdown_parse said.
+fn bayan_markdown_last_error(): i64 { return _md_last_err; }
+
+# --- Growable byte buffers -----------------------------------------------------------------------
+# { ptr, len, cap }. Grows through the allocator by doubling; the bump allocator keeps the
+# outgrown block, which is the cost of not threading a free.
+fn _mb_new(a, cap): i64 {
+    var b = alloc_via(a, 24);
+    if (b == 0) { return 0; }
+    var p = alloc_via(a, cap);
+    if (p == 0) { return 0; }
+    store64(b, p);
+    store64(b + 8, 0);
+    store64(b + 16, cap);
+    return b;
+}
+
+fn _mb_reserve(a, b, n): i64 {
+    var len = load64(b + 8);
+    var cap = load64(b + 16);
+    if (len + n <= cap) { return 0; }
+    var nc = cap * 2;
+    while (nc < len + n) { nc = nc * 2; }
+    var np = alloc_via(a, nc);
+    if (np == 0) { return 0 - 1; }
+    memcpy(np, load64(b), len);
+    store64(b, np);
+    store64(b + 16, nc);
+    return 0;
+}
+
+fn _mb_put(a, b, c): i64 {
+    if (_mb_reserve(a, b, 1) < 0) { return 0 - 1; }
+    var len = load64(b + 8);
+    store8(load64(b) + len, c);
+    store64(b + 8, len + 1);
+    return 0;
+}
+
+fn _mb_add(a, b, p, n): i64 {
+    if (n <= 0) { return 0; }
+    if (_mb_reserve(a, b, n) < 0) { return 0 - 1; }
+    var len = load64(b + 8);
+    memcpy(load64(b) + len, p, n);
+    store64(b + 8, len + n);
+    return 0;
+}
+
+fn _mb_cstr(a, b, s): i64 { return _mb_add(a, b, s, strlen(s)); }
+
+fn _mb_len(b): i64 { return load64(b + 8); }
+fn _mb_ptr(b): i64 { return load64(b); }
+
+# The buffer's bytes as a Str, sharing them.
+fn _mb_str(a, b): i64 { return str_new_a(a, load64(b), load64(b + 8)); }
+
+# --- Parse state ---------------------------------------------------------------------------------
+const _MP_A        = 0;
+const _MP_FLAGS    = 8;
+const _MP_DOC      = 16;
+const _MP_TIP      = 24;
+const _MP_OLDTIP   = 32;
+const _MP_LMC      = 40;    # last matched container
+const _MP_ALLCLOSED = 48;
+const _MP_LINE     = 56;    # current line ptr
+const _MP_LLEN     = 64;    # current line length
+const _MP_OFFSET   = 72;
+const _MP_COLUMN   = 80;
+const _MP_NNS      = 88;    # next nonspace offset
+const _MP_NNSCOL   = 96;
+const _MP_INDENT   = 104;
+const _MP_BLANK    = 112;
+const _MP_INDENTED = 120;
+const _MP_PCTAB    = 128;   # partially consumed tab
+const _MP_LINENO   = 136;
+const _MP_REFS     = 144;   # vec of [label Str, url Str, title Str] triples
+const _MP_ERR      = 152;   # cstring, 0 while fine
+const _MP_DEPTH    = 160;   # open container depth
+const _MP_DELIMS   = 168;   # inline: top of the delimiter stack
+const _MP_BRACKETS = 176;   # inline: top of the bracket stack
+const _MP_SUBJ     = 184;   # inline: subject ptr
+const _MP_SLEN     = 192;
+const _MP_POS      = 200;
+const _MP_TICKS    = 208;   # inline: backtick-run memo (_MD_MAX_TICKS + 1 slots, i64)
+const _MP_TICKSCAN = 216;   # inline: memo filled for this subject
+const _MP_LINKS    = 224;   # inline: links made so far (a link opener pushed before the last is inactive)
+const _MP_REFIDX   = 232;   # the definitions sorted by label, first of each label only
+const _MP_REFN     = 240;
+const _MP_SIZE     = 248;
+
+fn _mp_a(p): i64 { return load64(p + _MP_A); }
+
+fn _md_fail(p, msg): i64 {
+    if (load64(p + _MP_ERR) == 0) { store64(p + _MP_ERR, msg); }
+    return 0;
+}
+
+fn _md_oom(p): i64 { return _md_fail(p, "out of memory"); }
+
+fn _md_new_node(p, kind): i64 {
+    var n = alloc_via(_mp_a(p), _MN_SIZE);
+    if (n == 0) { return _md_oom(p); }
+    memset(n, 0, _MN_SIZE);
+    store64(n + _MN_KIND, kind);
+    return n;
+}
+
+fn _mn_append(parent, child): i64 {
+    store64(child + _MN_PARENT, parent);
+    var last = load64(parent + _MN_LAST);
+    store64(child + _MN_PREV, last);
+    store64(child + _MN_NEXT, 0);
+    if (last == 0) { store64(parent + _MN_FIRST, child); }
+    else { store64(last + _MN_NEXT, child); }
+    store64(parent + _MN_LAST, child);
+    return 0;
+}
+
+fn _mn_unlink(n): i64 {
+    var parent = load64(n + _MN_PARENT);
+    var prev = load64(n + _MN_PREV);
+    var next = load64(n + _MN_NEXT);
+    if (prev != 0) { store64(prev + _MN_NEXT, next); }
+    elif (parent != 0) { store64(parent + _MN_FIRST, next); }
+    if (next != 0) { store64(next + _MN_PREV, prev); }
+    elif (parent != 0) { store64(parent + _MN_LAST, prev); }
+    store64(n + _MN_PARENT, 0);
+    store64(n + _MN_PREV, 0);
+    store64(n + _MN_NEXT, 0);
+    return 0;
+}
+
+# Insert `n` after `at`, in at's parent.
+fn _mn_insert_after(at, n): i64 {
+    var parent = load64(at + _MN_PARENT);
+    var next = load64(at + _MN_NEXT);
+    store64(n + _MN_PARENT, parent);
+    store64(n + _MN_PREV, at);
+    store64(n + _MN_NEXT, next);
+    store64(at + _MN_NEXT, n);
+    if (next != 0) { store64(next + _MN_PREV, n); }
+    elif (parent != 0) { store64(parent + _MN_LAST, n); }
+    return 0;
+}
+
+fn _mn_is_open(n): i64 { return load64(n + _MN_FLAGS) & 1; }
+
+# --- Byte classes --------------------------------------------------------------------------------
+fn _md_is_sp(c): i64 { if (c == 32 || c == 9) { return 1; } return 0; }
+
+# Space, tab, LF, VT, FF, CR: the bytes `trim` and blank-line tests treat as space.
+fn _md_is_ws(c): i64 {
+    if (c == 32 || c == 9 || c == 10 || c == 11 || c == 12 || c == 13) { return 1; }
+    return 0;
+}
+
+fn _md_is_digit(c): i64 { if (c >= 48 && c <= 57) { return 1; } return 0; }
+
+fn _md_is_alpha(c): i64 {
+    if (c >= 65 && c <= 90) { return 1; }
+    if (c >= 97 && c <= 122) { return 1; }
+    return 0;
+}
+
+fn _md_is_alnum(c): i64 {
+    if (_md_is_alpha(c) == 1 || _md_is_digit(c) == 1) { return 1; }
+    return 0;
+}
+
+fn _md_is_hex(c): i64 {
+    if (_md_is_digit(c) == 1) { return 1; }
+    if (c >= 97 && c <= 102) { return 1; }
+    if (c >= 65 && c <= 70) { return 1; }
+    return 0;
+}
+
+fn _md_hexv(c): i64 {
+    if (c <= 57) { return c - 48; }
+    if (c >= 97) { return c - 87; }
+    return c - 55;
+}
+
+# ASCII punctuation: the characters a backslash can escape.
+fn _md_is_apunct(c): i64 {
+    if (c >= 33 && c <= 47) { return 1; }
+    if (c >= 58 && c <= 64) { return 1; }
+    if (c >= 91 && c <= 96) { return 1; }
+    if (c >= 123 && c <= 126) { return 1; }
+    return 0;
+}
+
+# The spec's "Unicode whitespace": Zs, tab, LF, FF, CR.
+fn _md_cp_is_ws(cp): i64 {
+    if (cp == 32 || cp == 9 || cp == 10 || cp == 12 || cp == 13) { return 1; }
+    if (cp < 128) { return 0; }
+    if (unicode_category(cp) == 22) { return 1; }      # GC_ZS
+    return 0;
+}
+
+# The spec's "Unicode punctuation" (0.31.2): the P and S general categories.
+fn _md_cp_is_punct(cp): i64 {
+    if (cp < 128) { return _md_is_apunct(cp); }
+    var gc = unicode_category(cp);
+    if (gc >= 11 && gc <= 21) { return 1; }             # Pc .. So
+    return 0;
+}
+
+# The code point that ends just before s[i] (s[0..i)), or 10 (a newline) at the start.
+fn _md_cp_before(s, i): i64 {
+    if (i <= 0) { return 10; }
+    var j = i - 1;
+    var k = 0;
+    while (j > 0 && k < 3 && (load8(s + j) & 192) == 128) { j = j - 1; k = k + 1; }
+    var cp[8];
+    _uc_decode_utf8(s, j, i, &cp);
+    return load64(&cp);
+}
+
+# The code point at s[i], or 10 at the end.
+fn _md_cp_at(s, n, i): i64 {
+    if (i >= n) { return 10; }
+    var cp[8];
+    _uc_decode_utf8(s, i, n, &cp);
+    return load64(&cp);
+}
+
+# --- Entities ------------------------------------------------------------------------------------
+# Compare name[0..n) with the name of the entity record at r (it ends at `:`): <0, 0 or >0.
+fn _md_ent_cmp(name, n, r): i64 {
+    var i = 0;
+    loop {
+        var rc = load8(r + i);
+        if (i == n) {
+            if (rc == 58) { return 0; }
+            return 0 - 1;
+        }
+        if (rc == 58) { return 1; }
+        var d = load8(name + i) - rc;
+        if (d != 0) { return d; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The code points of the named reference name[0..n) (no `&`, no `;`), written to out (two i64
+# slots); returns how many, or 0 when the name is not in the table. The table is sorted: a binary
+# search picks the piece by its first record, then one inside it over byte offsets, stepping back
+# to the start of the record an offset falls in.
+fn _md_entity(name, n, out): i64 {
+    var lo = 0;
+    var hi = _MD_ENT_PIECES - 1;
+    var pk = 0 - 1;
+    while (lo <= hi) {
+        var mid = (lo + hi) / 2;
+        if (_md_ent_cmp(name, n, _md_ent_piece(mid)) >= 0) { pk = mid; lo = mid + 1; }
+        else { hi = mid - 1; }
+    }
+    if (pk < 0) { return 0; }
+    var piece = _md_ent_piece(pk);
+    var blo = 0;
+    var bhi = strlen(piece);
+    while (blo < bhi) {
+        var bm = (blo + bhi) / 2;
+        var rs = bm;
+        while (rs > blo && load8(piece + rs - 1) != 10) { rs = rs - 1; }
+        var c = _md_ent_cmp(name, n, piece + rs);
+        var colon = rs + n;
+        var eol = rs;
+        while (load8(piece + eol) != 10) { eol = eol + 1; }
+        if (c == 0) {
+            var cnt = (eol - colon - 1) / 6;
+            var k = 0;
+            while (k < cnt) {
+                var v = 0;
+                var d = 0;
+                while (d < 6) {
+                    v = (v << 4) | _md_hexv(load8(piece + colon + 1 + k * 6 + d));
+                    d = d + 1;
+                }
+                store64(out + k * 8, v);
+                k = k + 1;
+            }
+            return cnt;
+        }
+        if (c < 0) { bhi = rs; }
+        else { blo = eol + 1; }
+    }
+    return 0;
+}
+
+# UTF-8 for code point cp into dst; returns the byte count. A surrogate or a value past U+10FFFF
+# is written as U+FFFD, as the spec says for numeric references.
+fn _md_utf8(dst, cp): i64 {
+    if (cp <= 0 || cp > 1114111 || (cp >= 55296 && cp <= 57343)) { cp = 65533; }
+    if (cp < 128) { store8(dst, cp); return 1; }
+    if (cp < 2048) {
+        store8(dst, 192 | (cp >> 6));
+        store8(dst + 1, 128 | (cp & 63));
+        return 2;
+    }
+    if (cp < 65536) {
+        store8(dst, 224 | (cp >> 12));
+        store8(dst + 1, 128 | ((cp >> 6) & 63));
+        store8(dst + 2, 128 | (cp & 63));
+        return 3;
+    }
+    store8(dst, 240 | (cp >> 18));
+    store8(dst + 1, 128 | ((cp >> 12) & 63));
+    store8(dst + 2, 128 | ((cp >> 6) & 63));
+    store8(dst + 3, 128 | (cp & 63));
+    return 4;
+}
+
+# The length of the entity or numeric reference at s[i] (which is `&`), or 0 when there is none.
+# Its decoded bytes go to out (up to 8), their count to *outn.
+fn _md_scan_entity(s, n, i, out, outn): i64 {
+    if (i + 2 >= n) { return 0; }
+    var j = i + 1;
+    if (load8(s + j) == 35) {                          # &#
+        j = j + 1;
+        var hex = 0;
+        if (j < n && (load8(s + j) == 120 || load8(s + j) == 88)) { hex = 1; j = j + 1; }
+        var start = j;
+        var v = 0;
+        var maxd = 7;
+        if (hex == 1) { maxd = 6; }
+        while (j < n && j - start < maxd + 1) {
+            var c = load8(s + j);
+            if (hex == 1 && _md_is_hex(c) == 1) { v = v * 16 + _md_hexv(c); j = j + 1; }
+            elif (hex == 0 && _md_is_digit(c) == 1) { v = v * 10 + c - 48; j = j + 1; }
+            else { break; }
+        }
+        var nd = j - start;
+        if (nd < 1 || nd > maxd) { return 0; }
+        if (j >= n || load8(s + j) != 59) { return 0; }
+        store64(outn, _md_utf8(out, v));
+        return j + 1 - i;
+    }
+    var start2 = j;
+    while (j < n && _md_is_alnum(load8(s + j)) == 1 && j - start2 < 33) { j = j + 1; }
+    var len = j - start2;
+    if (len < 2 || len > 32) { return 0; }
+    if (_md_is_alpha(load8(s + start2)) == 0) { return 0; }
+    if (j >= n || load8(s + j) != 59) { return 0; }
+    var cps[16];
+    var cnt = _md_entity(s + start2, len, &cps);
+    if (cnt == 0) { return 0; }
+    var o = _md_utf8(out, load64(&cps));
+    if (cnt == 2) { o = o + _md_utf8(out + o, load64(&cps + 8)); }
+    store64(outn, o);
+    return j + 1 - i;
+}
+
+# s[0..n) with backslash escapes and entity references resolved, as a new Str. 0 on refusal.
+fn _md_unescape(p, s, n): i64 {
+    var a = _mp_a(p);
+    var b = _mb_new(a, n + 8);
+    if (b == 0) { return _md_oom(p); }
+    var i = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if (c == 92 && i + 1 < n && _md_is_apunct(load8(s + i + 1)) == 1) {
+            if (_mb_put(a, b, load8(s + i + 1)) < 0) { return _md_oom(p); }
+            i = i + 2;
+        } elif (c == 38) {
+            var dec[16];
+            var dn[8];
+            var el = _md_scan_entity(s, n, i, &dec, &dn);
+            if (el > 0) {
+                if (_mb_add(a, b, &dec, load64(&dn)) < 0) { return _md_oom(p); }
+                i = i + el;
+            } else {
+                if (_mb_put(a, b, c) < 0) { return _md_oom(p); }
+                i = i + 1;
+            }
+        } else {
+            if (_mb_put(a, b, c) < 0) { return _md_oom(p); }
+            i = i + 1;
+        }
+    }
+    var r = _mb_str(a, b);
+    if (r == 0) { return _md_oom(p); }
+    return r;
+}
+
+# --- Link reference labels ----------------------------------------------------------------------
+# The normalized form of a label: whitespace runs collapsed to one space, trimmed, and every code
+# point case-folded (full Unicode folding: ẞ and SS match). 0 on refusal.
+fn _md_norm_label(p, s, n): i64 {
+    var a = _mp_a(p);
+    var b = _mb_new(a, n + 8);
+    if (b == 0) { return _md_oom(p); }
+    var i = 0;
+    var pend = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if (_md_is_ws(c) == 1) {
+            if (_mb_len(b) > 0) { pend = 1; }
+            i = i + 1;
+        } else {
+            if (pend == 1) {
+                if (_mb_put(a, b, 32) < 0) { return _md_oom(p); }
+                pend = 0;
+            }
+            var cp[8];
+            var used = _uc_decode_utf8(s, i, n, &cp);
+            var fold[32];
+            var fc = unicode_fold(load64(&cp), &fold, 3);
+            var f = 0;
+            while (f < fc) {
+                var u8[8];
+                var ul = _md_utf8(&u8, load64(&fold + f * 8));
+                if (_mb_add(a, b, &u8, ul) < 0) { return _md_oom(p); }
+                f = f + 1;
+            }
+            i = i + used;
+        }
+    }
+    var r = _mb_str(a, b);
+    if (r == 0) { return _md_oom(p); }
+    return r;
+}
+
+# Order two normalized labels (Strs) by their bytes: <0, 0 or >0.
+fn _md_label_cmp(x, y): i64 {
+    var xn = str_len(x);
+    var yn = str_len(y);
+    var m = xn;
+    if (yn < m) { m = yn; }
+    var xd = str_data(x);
+    var yd = str_data(y);
+    var i = 0;
+    while (i < m) {
+        var d = load8(xd + i) - load8(yd + i);
+        if (d != 0) { return d; }
+        i = i + 1;
+    }
+    return xn - yn;
+}
+
+# Sort the definitions by label (a stable merge sort, so the first definition of a label stays
+# first) and keep the first of each label: the index the lookups binary-search. A linear scan per
+# lookup would make a document of many definitions and many references quadratic. -1 on a refusal.
+fn _md_ref_index(p): i64 {
+    var a = _mp_a(p);
+    var refs = load64(p + _MP_REFS);
+    var n = vec_len(refs);
+    store64(p + _MP_REFN, 0);
+    if (n == 0) { return 0; }
+    var src = alloc_via(a, n * 8);
+    var tmp = alloc_via(a, n * 8);
+    if (src == 0 || tmp == 0) { _md_oom(p); return 0 - 1; }
+    var i = 0;
+    while (i < n) { store64(src + i * 8, vec_get(refs, i)); i = i + 1; }
+    var width = 1;
+    while (width < n) {
+        var lo = 0;
+        while (lo < n) {
+            var mid = lo + width;
+            if (mid > n) { mid = n; }
+            var hi = lo + width * 2;
+            if (hi > n) { hi = n; }
+            var l = lo;
+            var r = mid;
+            var o = lo;
+            while (o < hi) {
+                var takel = 0;
+                if (r >= hi) { takel = 1; }
+                elif (l < mid) {
+                    if (_md_label_cmp(load64(load64(src + l * 8)), load64(load64(src + r * 8))) <= 0) { takel = 1; }
+                }
+                if (takel == 1) { store64(tmp + o * 8, load64(src + l * 8)); l = l + 1; }
+                else { store64(tmp + o * 8, load64(src + r * 8)); r = r + 1; }
+                o = o + 1;
+            }
+            lo = hi;
+        }
+        var sw = src;
+        src = tmp;
+        tmp = sw;
+        width = width * 2;
+    }
+    var k = 0;
+    i = 0;
+    while (i < n) {
+        var t = load64(src + i * 8);
+        if (k == 0 || _md_label_cmp(load64(load64(src + (k - 1) * 8)), load64(t)) != 0) {
+            store64(src + k * 8, t);
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    store64(p + _MP_REFIDX, src);
+    store64(p + _MP_REFN, k);
+    return 0;
+}
+
+# The definition for a normalized label, as its [label, url, title] triple, or 0.
+fn _md_ref_find(p, label): i64 {
+    var idx = load64(p + _MP_REFIDX);
+    var lo = 0;
+    var hi = load64(p + _MP_REFN) - 1;
+    while (lo <= hi) {
+        var mid = (lo + hi) / 2;
+        var t = load64(idx + mid * 8);
+        var c = _md_label_cmp(label, load64(t));
+        if (c == 0) { return t; }
+        if (c < 0) { hi = mid - 1; } else { lo = mid + 1; }
+    }
+    return 0;
+}
+
+# --- Link destinations, titles and labels (shared by references and inline links) -------------
+# Each scanner reads s[i..n) and returns the index just past what it read, or -1. The span it
+# read goes to out (start, length), excluding the angle brackets, quotes or parentheses.
+
+# A link label `[...]` at s[i]: at most 999 characters inside, no unescaped bracket, not blank.
+fn _md_scan_label(s, n, i, out): i64 {
+    if (i >= n || load8(s + i) != 91) { return 0 - 1; }
+    var j = i + 1;
+    var nonblank = 0;
+    while (j < n) {
+        if (j - i - 1 > 999) { return 0 - 1; }
+        var c = load8(s + j);
+        if (c == 92 && j + 1 < n) {
+            nonblank = 1;
+            j = j + 2;
+        } elif (c == 91) {
+            return 0 - 1;
+        } elif (c == 93) {
+            if (j - i - 1 > 999) { return 0 - 1; }
+            store64(out, i + 1);
+            store64(out + 8, j - i - 1);
+            if (nonblank == 0) { return 0 - 1; }
+            return j + 1;
+        } else {
+            if (_md_is_ws(c) == 0) { nonblank = 1; }
+            j = j + 1;
+        }
+    }
+    return 0 - 1;
+}
+
+# A link destination at s[i]: `<...>` with no line ending or unescaped `<`/`>`, or a run with no
+# space or control character whose parentheses balance (at most 32 deep).
+fn _md_scan_dest(s, n, i, out): i64 {
+    if (i < n && load8(s + i) == 60) {
+        var j = i + 1;
+        while (j < n) {
+            var c = load8(s + j);
+            if (c == 92 && j + 1 < n && _md_is_apunct(load8(s + j + 1)) == 1) { j = j + 2; }
+            elif (c == 10 || c == 13 || c == 60) { return 0 - 1; }
+            elif (c == 62) {
+                store64(out, i + 1);
+                store64(out + 8, j - i - 1);
+                return j + 1;
+            }
+            else { j = j + 1; }
+        }
+        return 0 - 1;
+    }
+    var k = i;
+    var depth = 0;
+    while (k < n) {
+        var c2 = load8(s + k);
+        if (c2 == 92 && k + 1 < n && _md_is_apunct(load8(s + k + 1)) == 1) { k = k + 2; }
+        elif (c2 == 40) {
+            depth = depth + 1;
+            if (depth > 32) { return 0 - 1; }
+            k = k + 1;
+        } elif (c2 == 41) {
+            if (depth == 0) { break; }
+            depth = depth - 1;
+            k = k + 1;
+        } elif (c2 <= 32 || c2 == 127) {
+            break;
+        } else {
+            k = k + 1;
+        }
+    }
+    if (depth != 0) { return 0 - 1; }
+    if (k == i) { return 0 - 1; }
+    store64(out, i);
+    store64(out + 8, k - i);
+    return k;
+}
+
+# A link title at s[i]: "...", '...' or (...), with backslash escapes, and no blank line inside.
+fn _md_scan_title(s, n, i, out): i64 {
+    if (i >= n) { return 0 - 1; }
+    var open = load8(s + i);
+    var close = open;
+    if (open == 40) { close = 41; }
+    elif (open != 34 && open != 39) { return 0 - 1; }
+    var j = i + 1;
+    while (j < n) {
+        var c = load8(s + j);
+        if (c == 92 && j + 1 < n && _md_is_apunct(load8(s + j + 1)) == 1) { j = j + 2; }
+        elif (c == close) {
+            store64(out, i + 1);
+            store64(out + 8, j - i - 1);
+            return j + 1;
+        }
+        elif (open == 40 && c == 40) { return 0 - 1; }
+        elif (c == 10 && _md_blank_line_after(s, n, j) == 1) { return 0 - 1; }
+        else { j = j + 1; }
+    }
+    return 0 - 1;
+}
+
+# 1 when the line starting after s[j] (a newline) is blank.
+fn _md_blank_line_after(s, n, j): i64 {
+    var k = j + 1;
+    while (k < n && _md_is_sp(load8(s + k)) == 1) { k = k + 1; }
+    if (k >= n || load8(s + k) == 10) { return 1; }
+    return 0;
+}
+
+# Skip spaces, tabs and at most one line ending.
+fn _md_spnl(s, n, i): i64 {
+    while (i < n && _md_is_sp(load8(s + i)) == 1) { i = i + 1; }
+    if (i < n && load8(s + i) == 10) {
+        i = i + 1;
+        while (i < n && _md_is_sp(load8(s + i)) == 1) { i = i + 1; }
+    }
+    return i;
+}
+
+# Read link reference definitions from the start of a paragraph's content s[0..n). Each one goes
+# into the parser's map (the first definition of a label wins). Returns how many bytes they used,
+# 0 when there is none, -1 on a refusal.
+fn _md_parse_refs(p, s, n): i64 {
+    var used = 0;
+    loop {
+        var i = used;
+        while (i < n && _md_is_sp(load8(s + i)) == 1 && i - used < 3) { i = i + 1; }
+        var lab[16];
+        var j = _md_scan_label(s, n, i, &lab);
+        if (j < 0 || j >= n || load8(s + j) != 58) { break; }
+        j = _md_spnl(s, n, j + 1);
+        var dst[16];
+        var k = _md_scan_dest(s, n, j, &dst);
+        if (k < 0) {
+            # `<>` is an empty destination: _md_scan_dest takes it, but a bare one may not be empty.
+            break;
+        }
+        var beforetitle = k;
+        var t = _md_spnl(s, n, k);
+        var ttl[16];
+        store64(&ttl, 0);
+        store64(&ttl + 8, 0);
+        var hastitle = 0;
+        var tend = 0 - 1;
+        if (t != k) { tend = _md_scan_title(s, n, t, &ttl); }
+        var endpos = 0 - 1;
+        if (tend >= 0) {
+            # The title must end its line.
+            var e = tend;
+            while (e < n && _md_is_sp(load8(s + e)) == 1) { e = e + 1; }
+            if (e >= n || load8(s + e) == 10) {
+                hastitle = 1;
+                endpos = e;
+            }
+        }
+        if (endpos < 0) {
+            # No title, or one followed by more text: the destination must end its line.
+            var e2 = beforetitle;
+            while (e2 < n && _md_is_sp(load8(s + e2)) == 1) { e2 = e2 + 1; }
+            if (e2 < n && load8(s + e2) != 10) { break; }
+            endpos = e2;
+        }
+        if (endpos < n) { endpos = endpos + 1; }      # the line ending
+        var label = _md_norm_label(p, s + load64(&lab), load64(&lab + 8));
+        if (label == 0) { return 0 - 1; }
+        if (str_len(label) > 0) {
+            var url = _md_unescape(p, s + load64(&dst), load64(&dst + 8));
+            if (url == 0) { return 0 - 1; }
+            var title = 0;
+            if (hastitle == 1) {
+                title = _md_unescape(p, s + load64(&ttl), load64(&ttl + 8));
+                if (title == 0) { return 0 - 1; }
+            }
+            var a = _mp_a(p);
+            var trip = alloc_via(a, 24);
+            if (trip == 0) { _md_oom(p); return 0 - 1; }
+            store64(trip, label);
+            store64(trip + 8, url);
+            store64(trip + 16, title);
+            if (vec_push_a(a, load64(p + _MP_REFS), trip) < 0) { _md_oom(p); return 0 - 1; }
+        }
+        used = endpos;
+    }
+    return used;
+}
+
+# --- Block parser: lines -------------------------------------------------------------------------
+fn _mp_peek(p, i): i64 {
+    if (i < 0 || i >= load64(p + _MP_LLEN)) { return 0 - 1; }
+    return load8(load64(p + _MP_LINE) + i);
+}
+
+fn _mp_find_next_nonspace(p): i64 {
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    var i = load64(p + _MP_OFFSET);
+    var cols = load64(p + _MP_COLUMN);
+    while (i < len) {
+        var c = load8(line + i);
+        if (c == 32) { i = i + 1; cols = cols + 1; }
+        elif (c == 9) { i = i + 1; cols = cols + 4 - (cols % 4); }
+        else { break; }
+    }
+    store64(p + _MP_BLANK, 0);
+    if (i >= len) { store64(p + _MP_BLANK, 1); }
+    store64(p + _MP_NNS, i);
+    store64(p + _MP_NNSCOL, cols);
+    var indent = cols - load64(p + _MP_COLUMN);
+    store64(p + _MP_INDENT, indent);
+    store64(p + _MP_INDENTED, 0);
+    if (indent >= 4) { store64(p + _MP_INDENTED, 1); }
+    return 0;
+}
+
+fn _mp_advance_nns(p): i64 {
+    store64(p + _MP_OFFSET, load64(p + _MP_NNS));
+    store64(p + _MP_COLUMN, load64(p + _MP_NNSCOL));
+    store64(p + _MP_PCTAB, 0);
+    return 0;
+}
+
+# Advance by `count` characters, or by `count` columns when `columns` is 1, consuming part of a
+# tab when the count ends inside one.
+fn _mp_advance(p, count, columns): i64 {
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    while (count > 0 && load64(p + _MP_OFFSET) < len) {
+        var off = load64(p + _MP_OFFSET);
+        var col = load64(p + _MP_COLUMN);
+        var c = load8(line + off);
+        if (c == 9) {
+            var tocol = 4 - (col % 4);
+            if (columns == 1) {
+                var partial = 0;
+                if (tocol > count) { partial = 1; }
+                store64(p + _MP_PCTAB, partial);
+                var adv = tocol;
+                if (count < adv) { adv = count; }
+                store64(p + _MP_COLUMN, col + adv);
+                if (partial == 0) { store64(p + _MP_OFFSET, off + 1); }
+                count = count - adv;
+            } else {
+                store64(p + _MP_PCTAB, 0);
+                store64(p + _MP_COLUMN, col + tocol);
+                store64(p + _MP_OFFSET, off + 1);
+                count = count - 1;
+            }
+        } else {
+            store64(p + _MP_PCTAB, 0);
+            store64(p + _MP_OFFSET, off + 1);
+            store64(p + _MP_COLUMN, col + 1);
+            count = count - 1;
+        }
+    }
+    return 0;
+}
+
+# The rest of the current line goes to the tip's content, with a newline.
+fn _mp_add_line(p): i64 {
+    var a = _mp_a(p);
+    var tip = load64(p + _MP_TIP);
+    var b = load64(tip + _MN_BUF);
+    if (load64(p + _MP_PCTAB) == 1) {
+        store64(p + _MP_OFFSET, load64(p + _MP_OFFSET) + 1);
+        var tocol = 4 - (load64(p + _MP_COLUMN) % 4);
+        var k = 0;
+        while (k < tocol) {
+            if (_mb_put(a, b, 32) < 0) { return _md_oom(p); }
+            k = k + 1;
+        }
+    }
+    var off = load64(p + _MP_OFFSET);
+    var len = load64(p + _MP_LLEN);
+    if (off < len) {
+        if (_mb_add(a, b, load64(p + _MP_LINE) + off, len - off) < 0) { return _md_oom(p); }
+    }
+    if (_mb_put(a, b, 10) < 0) { return _md_oom(p); }
+    return 1;
+}
+
+# --- Block parser: structure ---------------------------------------------------------------------
+fn _md_is_container(kind): i64 {
+    if (kind == MD_K_DOCUMENT || kind == MD_K_BLOCKQUOTE || kind == MD_K_LIST || kind == MD_K_ITEM) {
+        return 1;
+    }
+    return 0;
+}
+
+fn _md_can_contain(parent, kind): i64 {
+    var pk = load64(parent + _MN_KIND);
+    if (pk == MD_K_DOCUMENT || pk == MD_K_BLOCKQUOTE || pk == MD_K_ITEM) {
+        if (kind == MD_K_ITEM) { return 0; }
+        return 1;
+    }
+    if (pk == MD_K_LIST) {
+        if (kind == MD_K_ITEM) { return 1; }
+        return 0;
+    }
+    if (pk == MD_K_TABLE) {
+        if (kind == MD_K_TABLE_ROW) { return 1; }
+        return 0;
+    }
+    return 0;
+}
+
+fn _md_accepts_lines(kind): i64 {
+    if (kind == MD_K_PARAGRAPH || kind == MD_K_CODE_BLOCK) { return 1; }
+    return 0;
+}
+
+fn _mn_set_lines(n, start, end): i64 {
+    store64(n + _MN_LINES, (start << 32) | (end & 0xFFFFFFFF));
+    return 0;
+}
+fn _mn_start_line(n): i64 { return load64(n + _MN_LINES) >> 32; }
+fn _mn_end_line(n): i64 { return load64(n + _MN_LINES) & 0xFFFFFFFF; }
+
+# Open a new block of `kind` under the tip, closing blocks that cannot contain it.
+fn _mp_add_child(p, kind): i64 {
+    while (_md_can_contain(load64(p + _MP_TIP), kind) == 0) {
+        if (_mp_finalize(p, load64(p + _MP_TIP), load64(p + _MP_LINENO) - 1) < 0) { return 0; }
+    }
+    var n = _md_new_node(p, kind);
+    if (n == 0) { return 0; }
+    var b = _mb_new(_mp_a(p), 32);
+    if (b == 0) { return _md_oom(p); }
+    store64(n + _MN_BUF, b);
+    store64(n + _MN_FLAGS, 1);
+    _mn_set_lines(n, load64(p + _MP_LINENO), load64(p + _MP_LINENO));
+    _mn_append(load64(p + _MP_TIP), n);
+    store64(p + _MP_TIP, n);
+    if (_md_is_container(kind) == 1) {
+        var d = 0;
+        var up = n;
+        while (up != 0) { d = d + 1; up = load64(up + _MN_PARENT); }
+        if (d > _MD_MAX_DEPTH) { return _md_fail(p, "nesting too deep"); }
+    }
+    return n;
+}
+
+fn _mp_close_unmatched(p): i64 {
+    if (load64(p + _MP_ALLCLOSED) == 0) {
+        while (load64(p + _MP_OLDTIP) != load64(p + _MP_LMC)) {
+            var parent = load64(load64(p + _MP_OLDTIP) + _MN_PARENT);
+            if (_mp_finalize(p, load64(p + _MP_OLDTIP), load64(p + _MP_LINENO) - 1) < 0) { return 0 - 1; }
+            store64(p + _MP_OLDTIP, parent);
+        }
+        store64(p + _MP_ALLCLOSED, 1);
+    }
+    return 0;
+}
+
+# 1 when the block's content is only whitespace.
+fn _md_buf_blank(b): i64 {
+    var s = _mb_ptr(b);
+    var n = _mb_len(b);
+    var i = 0;
+    while (i < n) {
+        if (_md_is_ws(load8(s + i)) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Close a block: it stops accepting lines, and its content is settled. -1 on a refusal.
+fn _mp_finalize(p, n, lineno): i64 {
+    var above = load64(n + _MN_PARENT);
+    store64(n + _MN_FLAGS, load64(n + _MN_FLAGS) & (0 - 2));
+    _mn_set_lines(n, _mn_start_line(n), lineno);
+    var kind = load64(n + _MN_KIND);
+    var a = _mp_a(p);
+    if (kind == MD_K_PARAGRAPH) {
+        var b = load64(n + _MN_BUF);
+        if (_mb_len(b) > 0 && load8(_mb_ptr(b)) == 91) {
+            var used = _md_parse_refs(p, _mb_ptr(b), _mb_len(b));
+            if (used < 0) { return 0 - 1; }
+            if (used > 0) {
+                var rest = _mb_new(a, _mb_len(b) - used + 8);
+                if (rest == 0) { _md_oom(p); return 0 - 1; }
+                if (_mb_add(a, rest, _mb_ptr(b) + used, _mb_len(b) - used) < 0) { _md_oom(p); return 0 - 1; }
+                store64(n + _MN_BUF, rest);
+            }
+        }
+        # Nothing left but reference definitions (here, or when a setext underline took them out
+        # first): no paragraph. It stays in the tree, marked (flag bit 2), until block parsing is
+        # done: a definition is a block, and a list with one after a blank line inside an item
+        # is loose (the spec's rule, and commonmark.js's).
+        if (_md_buf_blank(load64(n + _MN_BUF)) == 1) {
+            store64(n + _MN_FLAGS, load64(n + _MN_FLAGS) | 4);
+        }
+    } elif (kind == MD_K_CODE_BLOCK) {
+        var cb = load64(n + _MN_BUF);
+        var cs = _mb_ptr(cb);
+        var cn = _mb_len(cb);
+        if (load64(n + _MN_N2) == 1) {
+            var nl = 0;
+            while (nl < cn && load8(cs + nl) != 10) { nl = nl + 1; }
+            var is = 0;
+            var ie = nl;
+            while (is < ie && _md_is_ws(load8(cs + is)) == 1) { is = is + 1; }
+            while (ie > is && _md_is_ws(load8(cs + ie - 1)) == 1) { ie = ie - 1; }
+            var info = _md_unescape(p, cs + is, ie - is);
+            if (info == 0) { return 0 - 1; }
+            store64(n + _MN_S1, info);
+            var rs = nl + 1;
+            if (rs > cn) { rs = cn; }
+            var lit = str_new_a(a, cs + rs, cn - rs);
+            if (lit == 0) { _md_oom(p); return 0 - 1; }
+            store64(n + _MN_TEXT, lit);
+        } else {
+            # Trailing blank lines are not part of an indented code block.
+            var e = cn;
+            loop {
+                if (e == 0) { break; }
+                var ls = e - 1;
+                while (ls > 0 && load8(cs + ls - 1) != 10) { ls = ls - 1; }
+                var k = ls;
+                var allsp = 1;
+                while (k < e - 1) {
+                    if (load8(cs + k) != 32 && load8(cs + k) != 9) { allsp = 0; }
+                    k = k + 1;
+                }
+                if (allsp == 1) { e = ls; } else { break; }
+            }
+            var lit2 = str_new_a(a, cs, e);
+            if (lit2 == 0) { _md_oom(p); return 0 - 1; }
+            store64(n + _MN_TEXT, lit2);
+            # The block ends at its last line that is kept: the blank lines it took in and dropped
+            # are the blank lines a list's looseness is judged by.
+            var kept = 0;
+            var q = 0;
+            while (q < e) {
+                if (load8(cs + q) == 10) { kept = kept + 1; }
+                q = q + 1;
+            }
+            if (kept > 0) { _mn_set_lines(n, _mn_start_line(n), _mn_start_line(n) + kept - 1); }
+        }
+    } elif (kind == MD_K_LIST) {
+        var tight = 1;
+        var item = load64(n + _MN_FIRST);
+        while (item != 0 && tight == 1) {
+            if (load64(item + _MN_NEXT) != 0 && _md_ends_blank(item) == 1) { tight = 0; }
+            var sub = load64(item + _MN_FIRST);
+            while (sub != 0 && tight == 1) {
+                if (load64(sub + _MN_NEXT) != 0 && _md_ends_blank(sub) == 1) { tight = 0; }
+                sub = load64(sub + _MN_NEXT);
+            }
+            item = load64(item + _MN_NEXT);
+        }
+        store64(n + _MN_N4, tight);
+        var lastc = load64(n + _MN_LAST);
+        if (lastc != 0) { _mn_set_lines(n, _mn_start_line(n), _mn_end_line(lastc)); }
+    } elif (kind == MD_K_ITEM) {
+        var lastc2 = load64(n + _MN_LAST);
+        if (lastc2 != 0) { _mn_set_lines(n, _mn_start_line(n), _mn_end_line(lastc2)); }
+        else { _mn_set_lines(n, _mn_start_line(n), _mn_start_line(n)); }
+    } elif (kind == MD_K_BLOCKQUOTE) {
+        var lastc3 = load64(n + _MN_LAST);
+        if (lastc3 == 0) { _mn_set_lines(n, _mn_start_line(n), _mn_start_line(n)); }
+    }
+    store64(p + _MP_TIP, above);
+    return 0;
+}
+
+# 1 when a blank line separates the block from its next sibling.
+fn _md_ends_blank(n): i64 {
+    var next = load64(n + _MN_NEXT);
+    if (next == 0) { return 0; }
+    if (_mn_end_line(n) != _mn_start_line(next) - 1) { return 1; }
+    return 0;
+}
+
+# --- Block parser: continuation (0 matched, 1 not matched, 2 line consumed) -----------------------
+fn _mp_continue(p, n): i64 {
+    var kind = load64(n + _MN_KIND);
+    if (kind == MD_K_DOCUMENT || kind == MD_K_LIST) { return 0; }
+    if (kind == MD_K_BLOCKQUOTE) {
+        if (load64(p + _MP_INDENTED) == 0 && _mp_peek(p, load64(p + _MP_NNS)) == 62) {
+            _mp_advance_nns(p);
+            _mp_advance(p, 1, 0);
+            if (_md_is_sp(_mp_peek(p, load64(p + _MP_OFFSET))) == 1) { _mp_advance(p, 1, 1); }
+            return 0;
+        }
+        return 1;
+    }
+    if (kind == MD_K_ITEM) {
+        if (load64(p + _MP_BLANK) == 1) {
+            if (load64(n + _MN_FIRST) == 0) { return 1; }
+            _mp_advance_nns(p);
+            return 0;
+        }
+        var need = load64(n + _MN_N1) + load64(n + _MN_N2);
+        if (load64(p + _MP_INDENT) >= need) {
+            _mp_advance(p, need, 1);
+            return 0;
+        }
+        return 1;
+    }
+    if (kind == MD_K_HEADING || kind == MD_K_THEMATIC_BREAK) { return 1; }
+    if (kind == MD_K_CODE_BLOCK) {
+        if (load64(n + _MN_N2) == 1) {
+            # A closing fence: up to 3 spaces, the fence character at least as many times, spaces.
+            var nns = load64(p + _MP_NNS);
+            var fc = load64(n + _MN_N3);
+            if (load64(p + _MP_INDENT) <= 3 && _mp_peek(p, nns) == fc) {
+                var k = nns;
+                while (_mp_peek(p, k) == fc) { k = k + 1; }
+                if (k - nns >= load64(n + _MN_N4)) {
+                    var e = k;
+                    while (_md_is_sp(_mp_peek(p, e)) == 1) { e = e + 1; }
+                    if (e >= load64(p + _MP_LLEN)) {
+                        store64(n + _MN_N1, 0);
+                        if (_mp_finalize(p, n, load64(p + _MP_LINENO)) < 0) { return 0 - 1; }
+                        return 2;
+                    }
+                }
+            }
+            # Skip the opening fence's indentation, at most.
+            var skip = load64(n + _MN_N1);
+            while (skip > 0 && _md_is_sp(_mp_peek(p, load64(p + _MP_OFFSET))) == 1) {
+                _mp_advance(p, 1, 1);
+                skip = skip - 1;
+            }
+            return 0;
+        }
+        if (load64(p + _MP_INDENT) >= 4) {
+            _mp_advance(p, 4, 1);
+            return 0;
+        }
+        if (load64(p + _MP_BLANK) == 1) {
+            _mp_advance_nns(p);
+            return 0;
+        }
+        return 1;
+    }
+    if (kind == MD_K_PARAGRAPH) {
+        if (load64(p + _MP_BLANK) == 1) { return 1; }
+        return 0;
+    }
+    if (kind == MD_K_TABLE) {
+        if (load64(p + _MP_BLANK) == 1) { return 1; }
+        var tn = load64(p + _MP_NNS);
+        if (_md_row_scan(0, load64(p + _MP_LINE) + tn, load64(p + _MP_LLEN) - tn, 0) > 0) { return 0; }
+        return 1;
+    }
+    return 1;
+}
+
+# --- Block parser: starts (0 none, 1 container, 2 leaf) ------------------------------------------
+fn _mp_start_blockquote(p, container): i64 {
+    if (load64(p + _MP_INDENTED) == 1) { return 0; }
+    if (_mp_peek(p, load64(p + _MP_NNS)) != 62) { return 0; }
+    _mp_advance_nns(p);
+    _mp_advance(p, 1, 0);
+    if (_md_is_sp(_mp_peek(p, load64(p + _MP_OFFSET))) == 1) { _mp_advance(p, 1, 1); }
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    if (_mp_add_child(p, MD_K_BLOCKQUOTE) == 0) { return 0 - 1; }
+    return 1;
+}
+
+fn _mp_start_atx(p, container): i64 {
+    if (load64(p + _MP_INDENTED) == 1) { return 0; }
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    var s = load64(p + _MP_NNS);
+    var k = s;
+    while (k < len && load8(line + k) == 35) { k = k + 1; }
+    var level = k - s;
+    if (level < 1 || level > 6) { return 0; }
+    if (k < len && _md_is_sp(load8(line + k)) == 0) { return 0; }
+    _mp_advance_nns(p);
+    _mp_advance(p, level, 0);
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    var h = _mp_add_child(p, MD_K_HEADING);
+    if (h == 0) { return 0 - 1; }
+    store64(h + _MN_N1, level);
+    # The content: the rest of the line, trimmed, without a closing run of `#`.
+    var cs = load64(p + _MP_OFFSET);
+    var ce = len;
+    while (cs < ce && _md_is_sp(load8(line + cs)) == 1) { cs = cs + 1; }
+    while (ce > cs && _md_is_sp(load8(line + ce - 1)) == 1) { ce = ce - 1; }
+    var hs = ce;
+    while (hs > cs && load8(line + hs - 1) == 35) { hs = hs - 1; }
+    if (hs < ce) {
+        if (hs == cs) { ce = cs; }
+        elif (_md_is_sp(load8(line + hs - 1)) == 1) {
+            ce = hs;
+            while (ce > cs && _md_is_sp(load8(line + ce - 1)) == 1) { ce = ce - 1; }
+        }
+    }
+    if (_mb_add(_mp_a(p), load64(h + _MN_BUF), line + cs, ce - cs) < 0) { _md_oom(p); return 0 - 1; }
+    _mp_advance(p, len - load64(p + _MP_OFFSET), 0);
+    return 2;
+}
+
+fn _mp_start_fence(p, container): i64 {
+    if (load64(p + _MP_INDENTED) == 1) { return 0; }
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    var s = load64(p + _MP_NNS);
+    var fc = _mp_peek(p, s);
+    if (fc != 96 && fc != 126) { return 0; }
+    var k = s;
+    while (k < len && load8(line + k) == fc) { k = k + 1; }
+    var flen = k - s;
+    if (flen < 3) { return 0; }
+    if (fc == 96) {
+        var j = k;
+        while (j < len) {
+            if (load8(line + j) == 96) { return 0; }
+            j = j + 1;
+        }
+    }
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    var cb = _mp_add_child(p, MD_K_CODE_BLOCK);
+    if (cb == 0) { return 0 - 1; }
+    store64(cb + _MN_N2, 1);
+    store64(cb + _MN_N3, fc);
+    store64(cb + _MN_N4, flen);
+    store64(cb + _MN_N1, load64(p + _MP_INDENT));
+    _mp_advance_nns(p);
+    _mp_advance(p, flen, 0);
+    return 2;
+}
+
+fn _mp_start_setext(p, container): i64 {
+    if (load64(p + _MP_INDENTED) == 1) { return 0; }
+    if (load64(container + _MN_KIND) != MD_K_PARAGRAPH) { return 0; }
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    var s = load64(p + _MP_NNS);
+    var c = _mp_peek(p, s);
+    if (c != 61 && c != 45) { return 0; }
+    var k = s;
+    while (k < len && load8(line + k) == c) { k = k + 1; }
+    while (k < len && _md_is_sp(load8(line + k)) == 1) { k = k + 1; }
+    if (k < len) { return 0; }
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    # Reference definitions at the paragraph's start are not heading text.
+    var a = _mp_a(p);
+    var b = load64(container + _MN_BUF);
+    if (_mb_len(b) > 0 && load8(_mb_ptr(b)) == 91) {
+        var used = _md_parse_refs(p, _mb_ptr(b), _mb_len(b));
+        if (used < 0) { return 0 - 1; }
+        if (used > 0) {
+            var rest = _mb_new(a, _mb_len(b) - used + 8);
+            if (rest == 0) { _md_oom(p); return 0 - 1; }
+            if (_mb_add(a, rest, _mb_ptr(b) + used, _mb_len(b) - used) < 0) { _md_oom(p); return 0 - 1; }
+            store64(container + _MN_BUF, rest);
+            b = rest;
+        }
+    }
+    if (_mb_len(b) == 0 || _md_buf_blank(b) == 1) { return 0; }
+    var h = _md_new_node(p, MD_K_HEADING);
+    if (h == 0) { return 0 - 1; }
+    var level = 2;
+    if (c == 61) { level = 1; }
+    store64(h + _MN_N1, level);
+    store64(h + _MN_BUF, b);
+    store64(h + _MN_FLAGS, 1);
+    _mn_set_lines(h, _mn_start_line(container), load64(p + _MP_LINENO));
+    _mn_insert_after(container, h);
+    _mn_unlink(container);
+    store64(p + _MP_TIP, h);
+    _mp_advance(p, len - load64(p + _MP_OFFSET), 0);
+    return 2;
+}
+
+fn _mp_start_hr(p, container): i64 {
+    if (load64(p + _MP_INDENTED) == 1) { return 0; }
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    var s = load64(p + _MP_NNS);
+    var c = _mp_peek(p, s);
+    if (c != 42 && c != 95 && c != 45) { return 0; }
+    var cnt = 0;
+    var k = s;
+    while (k < len) {
+        var d = load8(line + k);
+        if (d == c) { cnt = cnt + 1; }
+        elif (_md_is_sp(d) == 0) { return 0; }
+        k = k + 1;
+    }
+    if (cnt < 3) { return 0; }
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    if (_mp_add_child(p, MD_K_THEMATIC_BREAK) == 0) { return 0 - 1; }
+    _mp_advance(p, len - load64(p + _MP_OFFSET), 0);
+    return 2;
+}
+
+fn _mp_start_item(p, container): i64 {
+    var ck = load64(container + _MN_KIND);
+    if (load64(p + _MP_INDENTED) == 1 && ck != MD_K_LIST) { return 0; }
+    if (load64(p + _MP_INDENT) >= 4) { return 0; }
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    var s = load64(p + _MP_NNS);
+    var c = _mp_peek(p, s);
+    var ordered = 0;
+    var start = 0;
+    var delim = 0;
+    var mlen = 0;
+    if (c == 42 || c == 43 || c == 45) {
+        delim = c;
+        mlen = 1;
+    } else {
+        var k = s;
+        while (k < len && _md_is_digit(load8(line + k)) == 1 && k - s < 10) { k = k + 1; }
+        var nd = k - s;
+        if (nd < 1 || nd > 9) { return 0; }
+        if (k >= len) { return 0; }
+        var dc = load8(line + k);
+        if (dc != 46 && dc != 41) { return 0; }
+        var v = 0;
+        var q = s;
+        while (q < k) { v = v * 10 + load8(line + q) - 48; q = q + 1; }
+        if (ck == MD_K_PARAGRAPH && v != 1) { return 0; }
+        ordered = 1;
+        start = v;
+        delim = dc;
+        mlen = nd + 1;
+    }
+    var nc = _mp_peek(p, s + mlen);
+    if (nc != 0 - 1 && _md_is_sp(nc) == 0) { return 0; }
+    if (ck == MD_K_PARAGRAPH) {
+        var r = s + mlen;
+        while (r < len && _md_is_sp(load8(line + r)) == 1) { r = r + 1; }
+        if (r >= len) { return 0; }
+    }
+    var marker_offset = load64(p + _MP_INDENT);
+    _mp_advance_nns(p);
+    _mp_advance(p, mlen, 1);
+    var sp_col = load64(p + _MP_COLUMN);
+    var sp_off = load64(p + _MP_OFFSET);
+    loop {
+        _mp_advance(p, 1, 1);
+        var nx = _mp_peek(p, load64(p + _MP_OFFSET));
+        if (load64(p + _MP_COLUMN) - sp_col >= 5 || _md_is_sp(nx) == 0) { break; }
+    }
+    var blank_item = 0;
+    if (_mp_peek(p, load64(p + _MP_OFFSET)) == 0 - 1) { blank_item = 1; }
+    var spaces = load64(p + _MP_COLUMN) - sp_col;
+    var padding = 0;
+    if (spaces >= 5 || spaces < 1 || blank_item == 1) {
+        padding = mlen + 1;
+        store64(p + _MP_COLUMN, sp_col);
+        store64(p + _MP_OFFSET, sp_off);
+        store64(p + _MP_PCTAB, 0);
+        if (_md_is_sp(_mp_peek(p, load64(p + _MP_OFFSET))) == 1) { _mp_advance(p, 1, 1); }
+    } else {
+        padding = mlen + spaces;
+    }
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    var tip = load64(p + _MP_TIP);
+    var same = 0;
+    if (load64(tip + _MN_KIND) == MD_K_LIST) {
+        if (load64(tip + _MN_N1) == ordered && load64(tip + _MN_N3) == delim) { same = 1; }
+    }
+    if (same == 0) {
+        var lst = _mp_add_child(p, MD_K_LIST);
+        if (lst == 0) { return 0 - 1; }
+        store64(lst + _MN_N1, ordered);
+        store64(lst + _MN_N2, start);
+        store64(lst + _MN_N3, delim);
+        store64(lst + _MN_N4, 1);
+    }
+    var it = _mp_add_child(p, MD_K_ITEM);
+    if (it == 0) { return 0 - 1; }
+    store64(it + _MN_N1, marker_offset);
+    store64(it + _MN_N2, padding);
+    store64(it + _MN_N3, 0 - 1);
+    return 1;
+}
+
+fn _mp_start_indented(p, container): i64 {
+    if (load64(p + _MP_INDENTED) == 0) { return 0; }
+    if (load64(load64(p + _MP_TIP) + _MN_KIND) == MD_K_PARAGRAPH) { return 0; }
+    if (load64(p + _MP_BLANK) == 1) { return 0; }
+    _mp_advance(p, 4, 1);
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    if (_mp_add_child(p, MD_K_CODE_BLOCK) == 0) { return 0 - 1; }
+    return 2;
+}
+
+# --- GFM tables ----------------------------------------------------------------------------------
+# The rows follow cmark-gfm (extensions/table.c), the GFM reference implementation: its cell
+# scanner, its delimiter-row grammar, and its rule that a paragraph which failed to become a table
+# once is not tried again.
+
+# cmark-gfm's spacechar: space, tab, VT, FF.
+fn _md_is_spc(c): i64 {
+    if (c == 32 || c == 9 || c == 11 || c == 12) { return 1; }
+    return 0;
+}
+
+# The cells of table row line s[0..n), as cmark-gfm reads them: an optional leading pipe, then
+# cells ended by pipes, where a backslash and an ASCII punctuation character (`\|` among them) do
+# not end one; a final pipe opens no empty cell. When `cells` is not 0, each cell's span, trimmed,
+# is pushed to it as start | len << 32. Returns the number of cells (0: the line is not a row), or
+# -1 when a push is refused.
+fn _md_row_scan(a, s, n, cells): i64 {
+    var count = 0;
+    var off = 0;
+    if (n > 0 && load8(s) == 124) {
+        off = 1;
+        while (off < n && _md_is_spc(load8(s + off)) == 1) { off = off + 1; }
+    }
+    while (off < n) {
+        var e = off;
+        while (e < n && load8(s + e) != 124) {
+            if (load8(s + e) == 92 && e + 1 < n && _md_is_apunct(load8(s + e + 1)) == 1) { e = e + 2; }
+            else { e = e + 1; }
+        }
+        var a0 = off;
+        var a1 = e;
+        while (a0 < a1 && _md_is_ws(load8(s + a0)) == 1) { a0 = a0 + 1; }
+        while (a1 > a0 && _md_is_ws(load8(s + a1 - 1)) == 1) { a1 = a1 - 1; }
+        if (cells != 0) {
+            if (vec_push_a(a, cells, a0 | ((a1 - a0) << 32)) < 0) { return 0 - 1; }
+        }
+        count = count + 1;
+        if (e >= n) { break; }
+        off = e + 1;
+        while (off < n && _md_is_spc(load8(s + off)) == 1) { off = off + 1; }
+    }
+    return count;
+}
+
+# The number of columns when s[0..n) is a delimiter row, else 0. cmark-gfm's grammar:
+# `|? marker (| marker)* |? spacechar*`, where a marker is `spacechar* :? -+ :? spacechar*`.
+fn _md_delim_row(s, n): i64 {
+    var i = 0;
+    var cols = 0;
+    if (n > 0 && load8(s) == 124) { i = 1; }
+    loop {
+        while (i < n && _md_is_spc(load8(s + i)) == 1) { i = i + 1; }
+        if (i < n && load8(s + i) == 58) { i = i + 1; }
+        var d = i;
+        while (i < n && load8(s + i) == 45) { i = i + 1; }
+        if (i == d) { return 0; }
+        if (i < n && load8(s + i) == 58) { i = i + 1; }
+        while (i < n && _md_is_spc(load8(s + i)) == 1) { i = i + 1; }
+        cols = cols + 1;
+        if (i >= n || load8(s + i) != 124) { break; }
+        i = i + 1;
+        var j = i;
+        while (j < n && _md_is_spc(load8(s + j)) == 1) { j = j + 1; }
+        if (j >= n) { return cols; }
+    }
+    if (i < n) { return 0; }
+    return cols;
+}
+
+# The alignment of the delimiter-row cell at span sp (start | len << 32) of s.
+fn _md_delim_align(s, sp): i64 {
+    var st = sp & 0xFFFFFFFF;
+    var ln = sp >> 32;
+    var left = 0;
+    var right = 0;
+    if (ln > 0 && load8(s + st) == 58) { left = 1; }
+    if (ln > 0 && load8(s + st + ln - 1) == 58) { right = 1; }
+    if (left == 1 && right == 1) { return MD_ALIGN_CENTER; }
+    if (left == 1) { return MD_ALIGN_LEFT; }
+    if (right == 1) { return MD_ALIGN_RIGHT; }
+    return MD_ALIGN_NONE;
+}
+
+# A table row node from line s[0..n) with `cols` columns, under `table`. Cells past cols are
+# dropped and missing ones are empty, as GFM says. 0 on a refusal; -1 when the table has already
+# had _MD_MAX_FILLED_CELLS cells filled in, and the line is not a row.
+fn _md_table_row(p, table, s, n, cols, header): i64 {
+    var a = _mp_a(p);
+    if (load64(table + _MN_N2) > _MD_MAX_FILLED_CELLS) { return 0 - 1; }
+    var cells = vec_new_a(a);
+    if (cells == 0) { return _md_oom(p); }
+    var got = _md_row_scan(a, s, n, cells);
+    if (got < 0) { return _md_oom(p); }
+    if (got == 0) { return 0 - 1; }
+    if (vec_len(cells) < cols) { store64(table + _MN_N2, load64(table + _MN_N2) + cols - vec_len(cells)); }
+    var row = _md_new_node(p, MD_K_TABLE_ROW);
+    if (row == 0) { return 0; }
+    store64(row + _MN_N1, header);
+    var aligns = load64(table + _MN_S1);
+    var k = 0;
+    while (k < cols) {
+        var cell = _md_new_node(p, MD_K_TABLE_CELL);
+        if (cell == 0) { return 0; }
+        store64(cell + _MN_N1, load8(aligns + k));
+        var b = _mb_new(a, 16);
+        if (b == 0) { return _md_oom(p); }
+        if (k < vec_len(cells)) {
+            var sp = vec_get(cells, k);
+            if (_mb_add(a, b, s + (sp & 0xFFFFFFFF), sp >> 32) < 0) { return _md_oom(p); }
+        }
+        store64(cell + _MN_BUF, b);
+        _mn_append(row, cell);
+        k = k + 1;
+    }
+    _mn_append(table, row);
+    return row;
+}
+
+# A table, opened by a delimiter row under a paragraph whose last line is a header row with as
+# many cells. A paragraph whose header did not match is marked (flag bit 1) and not tried again,
+# as in cmark-gfm.
+fn _mp_start_table(p, container): i64 {
+    if ((load64(p + _MP_FLAGS) & MD_EXT_TABLES) == 0) { return 0; }
+    if (load64(container + _MN_KIND) != MD_K_PARAGRAPH) { return 0; }
+    if (load64(p + _MP_INDENTED) == 1) { return 0; }
+    if ((load64(container + _MN_FLAGS) & 2) != 0) { return 0; }
+    var line = load64(p + _MP_LINE);
+    var len = load64(p + _MP_LLEN);
+    var s = load64(p + _MP_NNS);
+    var dl = line + s;
+    var dn = len - s;
+    var cols = _md_delim_row(dl, dn);
+    if (cols == 0) { return 0; }
+    var b = load64(container + _MN_BUF);
+    var hs = _mb_ptr(b);
+    var hn = _mb_len(b);
+    # The header is the paragraph's last line.
+    var he = hn;
+    if (he > 0 && load8(hs + he - 1) == 10) { he = he - 1; }
+    var hstart = he;
+    while (hstart > 0 && load8(hs + hstart - 1) != 10) { hstart = hstart - 1; }
+    var a = _mp_a(p);
+    if (_md_row_scan(a, hs + hstart, he - hstart, 0) != cols) {
+        store64(container + _MN_FLAGS, load64(container + _MN_FLAGS) | 2);
+        return 0;
+    }
+    var dcells = vec_new_a(a);
+    if (dcells == 0) { _md_oom(p); return 0 - 1; }
+    var dc = _md_row_scan(a, dl, dn, dcells);
+    if (dc < 0) { _md_oom(p); return 0 - 1; }
+    if (dc != cols) { return 0; }
+    var aligns = alloc_via(a, cols + 1);
+    if (aligns == 0) { _md_oom(p); return 0 - 1; }
+    var k = 0;
+    while (k < cols) {
+        store8(aligns + k, _md_delim_align(dl, vec_get(dcells, k)));
+        k = k + 1;
+    }
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    var table = _md_new_node(p, MD_K_TABLE);
+    if (table == 0) { return 0 - 1; }
+    store64(table + _MN_S1, aligns);
+    store64(table + _MN_N1, cols);
+    store64(table + _MN_FLAGS, 1);
+    var tb = _mb_new(a, 8);
+    if (tb == 0) { _md_oom(p); return 0 - 1; }
+    store64(table + _MN_BUF, tb);
+    _mn_set_lines(table, load64(p + _MP_LINENO) - 1, load64(p + _MP_LINENO));
+    if (_md_table_row(p, table, hs + hstart, he - hstart, cols, 1) <= 0) { return 0 - 1; }
+    # Lines of the paragraph above the header stay a paragraph.
+    if (hstart > 0) {
+        var keep = _mb_new(a, hstart + 8);
+        if (keep == 0) { _md_oom(p); return 0 - 1; }
+        if (_mb_add(a, keep, hs, hstart) < 0) { _md_oom(p); return 0 - 1; }
+        store64(container + _MN_BUF, keep);
+        _mn_insert_after(container, table);
+        if (_mp_finalize(p, container, load64(p + _MP_LINENO) - 2) < 0) { return 0 - 1; }
+    } else {
+        _mn_insert_after(container, table);
+        _mn_unlink(container);
+    }
+    store64(p + _MP_TIP, table);
+    _mp_advance(p, len - load64(p + _MP_OFFSET), 0);
+    return 2;
+}
+
+# --- Block parser: one line ----------------------------------------------------------------------
+fn _mp_line(p, line, len): i64 {
+    store64(p + _MP_LINE, line);
+    store64(p + _MP_LLEN, len);
+    store64(p + _MP_OFFSET, 0);
+    store64(p + _MP_COLUMN, 0);
+    store64(p + _MP_BLANK, 0);
+    store64(p + _MP_PCTAB, 0);
+    store64(p + _MP_LINENO, load64(p + _MP_LINENO) + 1);
+    var container = load64(p + _MP_DOC);
+    store64(p + _MP_OLDTIP, load64(p + _MP_TIP));
+    # 1. The open blocks this line continues.
+    var all_matched = 1;
+    loop {
+        var last = load64(container + _MN_LAST);
+        if (last == 0) { break; }
+        if (_mn_is_open(last) == 0) { break; }
+        container = last;
+        _mp_find_next_nonspace(p);
+        var r = _mp_continue(p, container);
+        if (r < 0) { return 0 - 1; }
+        if (r == 1) {
+            container = load64(container + _MN_PARENT);
+            all_matched = 0;
+            break;
+        }
+        if (r == 2) { return 0; }
+    }
+    store64(p + _MP_ALLCLOSED, 0);
+    if (container == load64(p + _MP_OLDTIP)) { store64(p + _MP_ALLCLOSED, 1); }
+    store64(p + _MP_LMC, container);
+    var ck = load64(container + _MN_KIND);
+    var matched_leaf = 0;
+    if (ck != MD_K_PARAGRAPH && _md_accepts_lines(ck) == 1) { matched_leaf = 1; }
+    # 2. New blocks this line opens. The table start comes last, as in cmark-gfm: a line that opens
+    # any other block is that block, and a line that opens one inside a table ends the table.
+    while (matched_leaf == 0) {
+        _mp_find_next_nonspace(p);
+        var res = _mp_start_blockquote(p, container);
+        if (res == 0) { res = _mp_start_atx(p, container); }
+        if (res == 0) { res = _mp_start_fence(p, container); }
+        if (res == 0) { res = _mp_start_setext(p, container); }
+        if (res == 0) { res = _mp_start_hr(p, container); }
+        if (res == 0) { res = _mp_start_item(p, container); }
+        if (res == 0) { res = _mp_start_indented(p, container); }
+        if (res == 0) { res = _mp_start_table(p, container); }
+        if (res < 0) { return 0 - 1; }
+        if (load64(p + _MP_ERR) != 0) { return 0 - 1; }
+        if (res == 0) {
+            _mp_advance_nns(p);
+            break;
+        }
+        container = load64(p + _MP_TIP);
+        if (res == 2) { matched_leaf = 1; }
+    }
+    # 3. The rest of the line.
+    var tip = load64(p + _MP_TIP);
+    if (load64(p + _MP_ALLCLOSED) == 0 && load64(p + _MP_BLANK) == 0 && load64(tip + _MN_KIND) == MD_K_PARAGRAPH) {
+        if (_mp_add_line(p) == 0) { return 0 - 1; }        # a lazy continuation line
+        return 0;
+    }
+    if (_mp_close_unmatched(p) < 0) { return 0 - 1; }
+    var kind = load64(container + _MN_KIND);
+    if (_md_accepts_lines(kind) == 1) {
+        if (_mp_add_line(p) == 0) { return 0 - 1; }
+    } elif (kind == MD_K_TABLE && matched_leaf == 0 && load64(p + _MP_BLANK) == 0) {
+        # A line the table continues, and no block start took (the delimiter row itself did).
+        var off = load64(p + _MP_OFFSET);
+        var row = _md_table_row(p, container, line + off, len - off, load64(container + _MN_N1), 0);
+        if (row == 0) { return 0 - 1; }
+        if (row < 0) {
+            # Not a row: a paragraph after the table.
+            if (_mp_add_child(p, MD_K_PARAGRAPH) == 0) { return 0 - 1; }
+            if (_mp_add_line(p) == 0) { return 0 - 1; }
+        }
+    } elif (load64(p + _MP_OFFSET) < len && load64(p + _MP_BLANK) == 0) {
+        if (_mp_add_child(p, MD_K_PARAGRAPH) == 0) { return 0 - 1; }
+        _mp_advance_nns(p);
+        if (_mp_add_line(p) == 0) { return 0 - 1; }
+    }
+    return 0;
+}
+
+# --- Inline parser -------------------------------------------------------------------------------
+# Delimiter records: { cc, numdelims, origdelims, node, prev, next, can_open, can_close,
+# position } (72 B); the position is the subject offset just past the run.
+# Bracket records: { node, prev, -, index, image, links-at-push, bracket_after } (56 B); the
+# index is the subject offset just past the `[` or `![`.
+# A link opener is inactive once a link has been made after it was pushed: every link made then
+# was inside it, and links do not nest.
+
+fn _mi_text(p, s, n): i64 {
+    var t = _md_new_node(p, MD_K_TEXT);
+    if (t == 0) { return 0; }
+    var st = str_new_a(_mp_a(p), s, n);
+    if (st == 0) { return _md_oom(p); }
+    store64(t + _MN_TEXT, st);
+    return t;
+}
+
+fn _mi_peek(p, off): i64 {
+    var i = load64(p + _MP_POS) + off;
+    if (i >= load64(p + _MP_SLEN)) { return 0 - 1; }
+    return load8(load64(p + _MP_SUBJ) + i);
+}
+
+# Append a text node for subj[s..s+n) to `block`. -1 on a refusal.
+fn _mi_add_text(p, block, s, n): i64 {
+    var t = _mi_text(p, load64(p + _MP_SUBJ) + s, n);
+    if (t == 0) { return 0 - 1; }
+    _mn_append(block, t);
+    return 0;
+}
+
+fn _mi_add_lit(p, block, lit): i64 {
+    var t = _mi_text(p, lit, strlen(lit));
+    if (t == 0) { return 0 - 1; }
+    _mn_append(block, t);
+    return 0;
+}
+
+fn _mi_newline(p, block): i64 {
+    store64(p + _MP_POS, load64(p + _MP_POS) + 1);
+    var last = load64(block + _MN_LAST);
+    var hard = 0;
+    if (last != 0 && load64(last + _MN_KIND) == MD_K_TEXT) {
+        var t = load64(last + _MN_TEXT);
+        var d = str_data(t);
+        var n = str_len(t);
+        if (n > 0 && load8(d + n - 1) == 32) {
+            if (n > 1 && load8(d + n - 2) == 32) { hard = 1; }
+            while (n > 0 && load8(d + n - 1) == 32) { n = n - 1; }
+            store64(t + 8, n);
+        }
+    }
+    var br = MD_K_SOFTBREAK;
+    if (hard == 1) { br = MD_K_LINEBREAK; }
+    var node = _md_new_node(p, br);
+    if (node == 0) { return 0 - 1; }
+    _mn_append(block, node);
+    while (_mi_peek(p, 0) == 32) { store64(p + _MP_POS, load64(p + _MP_POS) + 1); }
+    return 0;
+}
+
+fn _mi_backslash(p, block): i64 {
+    var pos = load64(p + _MP_POS);
+    var c = _mi_peek(p, 1);
+    if (c == 10) {
+        store64(p + _MP_POS, pos + 2);
+        var node = _md_new_node(p, MD_K_LINEBREAK);
+        if (node == 0) { return 0 - 1; }
+        _mn_append(block, node);
+        while (_mi_peek(p, 0) == 32) { store64(p + _MP_POS, load64(p + _MP_POS) + 1); }
+        return 0;
+    }
+    if (c != 0 - 1 && _md_is_apunct(c) == 1) {
+        store64(p + _MP_POS, pos + 2);
+        return _mi_add_text(p, block, pos + 1, 1);
+    }
+    store64(p + _MP_POS, pos + 1);
+    return _mi_add_text(p, block, pos, 1);
+}
+
+# Fill the backtick memo: for each run length up to _MD_MAX_TICKS, the start of the LAST run of
+# that length from `from` on. A later search for a run of length L at position q fails at once when the last
+# such run starts before q, so a line of unmatched backtick runs costs one scan, not one per run.
+fn _mi_scan_ticks(p, from): i64 {
+    var memo = load64(p + _MP_TICKS);
+    var k = 0;
+    while (k <= _MD_MAX_TICKS) { store64(memo + k * 8, 0 - 1); k = k + 1; }
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var i = from;
+    while (i < n) {
+        if (load8(s + i) == 96) {
+            var j = i;
+            while (j < n && load8(s + j) == 96) { j = j + 1; }
+            var L = j - i;
+            if (L <= _MD_MAX_TICKS) { store64(memo + L * 8, i); }
+            i = j;
+        } else {
+            i = i + 1;
+        }
+    }
+    store64(p + _MP_TICKSCAN, 1);
+    return 0;
+}
+
+fn _mi_backticks(p, block): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var start = load64(p + _MP_POS);
+    var i = start;
+    while (i < n && load8(s + i) == 96) { i = i + 1; }
+    var L = i - start;
+    var after = i;
+    if (L > _MD_MAX_TICKS) {
+        store64(p + _MP_POS, after);
+        return _mi_add_text(p, block, start, L);
+    }
+    if (load64(p + _MP_TICKSCAN) == 0) { _mi_scan_ticks(p, after); }
+    if (load64(load64(p + _MP_TICKS) + L * 8) < after) {
+        store64(p + _MP_POS, after);
+        return _mi_add_text(p, block, start, L);
+    }
+    var j = after;
+    while (j < n) {
+        if (load8(s + j) == 96) {
+            var k = j;
+            while (k < n && load8(s + k) == 96) { k = k + 1; }
+            if (k - j == L) {
+                # A code span: line endings become spaces, and one space is stripped from each end
+                # when both ends have one and the content is not all spaces.
+                var a = _mp_a(p);
+                var b = _mb_new(a, j - after + 8);
+                if (b == 0) { _md_oom(p); return 0 - 1; }
+                var q = after;
+                while (q < j) {
+                    var c = load8(s + q);
+                    if (c == 10) { c = 32; }
+                    if (_mb_put(a, b, c) < 0) { _md_oom(p); return 0 - 1; }
+                    q = q + 1;
+                }
+                var cs = _mb_ptr(b);
+                var cn = _mb_len(b);
+                if (cn >= 2 && load8(cs) == 32 && load8(cs + cn - 1) == 32) {
+                    var allsp = 1;
+                    var r = 0;
+                    while (r < cn) {
+                        if (load8(cs + r) != 32) { allsp = 0; }
+                        r = r + 1;
+                    }
+                    if (allsp == 0) { cs = cs + 1; cn = cn - 2; }
+                }
+                var code = _md_new_node(p, MD_K_CODE);
+                if (code == 0) { return 0 - 1; }
+                var lit = str_new_a(a, cs, cn);
+                if (lit == 0) { _md_oom(p); return 0 - 1; }
+                store64(code + _MN_TEXT, lit);
+                _mn_append(block, code);
+                store64(p + _MP_POS, k);
+                return 0;
+            }
+            j = k;
+        } else {
+            j = j + 1;
+        }
+    }
+    store64(p + _MP_POS, after);
+    return _mi_add_text(p, block, start, L);
+}
+
+fn _mi_push_delim(p, cc, num, node, can_open, can_close): i64 {
+    var d = alloc_via(_mp_a(p), 72);
+    if (d == 0) { _md_oom(p); return 0 - 1; }
+    var top = load64(p + _MP_DELIMS);
+    store64(d, cc);
+    store64(d + 8, num);
+    store64(d + 16, num);
+    store64(d + 24, node);
+    store64(d + 32, top);
+    store64(d + 40, 0);
+    store64(d + 48, can_open);
+    store64(d + 56, can_close);
+    store64(d + 64, load64(p + _MP_POS));
+    if (top != 0) { store64(top + 40, d); }
+    store64(p + _MP_DELIMS, d);
+    return 0;
+}
+
+fn _mi_remove_delim(p, d): i64 {
+    var prev = load64(d + 32);
+    var next = load64(d + 40);
+    if (prev != 0) { store64(prev + 40, next); }
+    if (next != 0) { store64(next + 32, prev); }
+    else { store64(p + _MP_DELIMS, prev); }
+    return 0;
+}
+
+# A run of `*`, `_` or (with MD_EXT_STRIKETHROUGH) `~`, with the spec's flanking rules.
+fn _mi_delim(p, block, cc): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var start = load64(p + _MP_POS);
+    var i = start;
+    while (i < n && load8(s + i) == cc) { i = i + 1; }
+    var num = i - start;
+    var before = _md_cp_before(s, start);
+    var after = _md_cp_at(s, n, i);
+    var a_ws = _md_cp_is_ws(after);
+    var a_p = _md_cp_is_punct(after);
+    var b_ws = _md_cp_is_ws(before);
+    var b_p = _md_cp_is_punct(before);
+    var left = 0;
+    if (a_ws == 0 && (a_p == 0 || b_ws == 1 || b_p == 1)) { left = 1; }
+    var right = 0;
+    if (b_ws == 0 && (b_p == 0 || a_ws == 1 || a_p == 1)) { right = 1; }
+    var can_open = left;
+    var can_close = right;
+    if (cc == 95) {
+        can_open = 0;
+        if (left == 1 && (right == 0 || b_p == 1)) { can_open = 1; }
+        can_close = 0;
+        if (right == 1 && (left == 0 || a_p == 1)) { can_close = 1; }
+    }
+    store64(p + _MP_POS, i);
+    var t = _mi_text(p, s + start, num);
+    if (t == 0) { return 0 - 1; }
+    _mn_append(block, t);
+    if (cc == 126 && num > 2) { return 0; }             # a run of 3+ tildes is text
+    if (can_open == 1 || can_close == 1) {
+        return _mi_push_delim(p, cc, num, t, can_open, can_close);
+    }
+    return 0;
+}
+
+fn _mi_push_bracket(p, node, index, image): i64 {
+    var b = alloc_via(_mp_a(p), 56);
+    if (b == 0) { _md_oom(p); return 0 - 1; }
+    var top = load64(p + _MP_BRACKETS);
+    if (top != 0) { store64(top + 48, 1); }            # bracket_after
+    store64(b, node);
+    store64(b + 8, top);
+    store64(b + 16, 0);
+    store64(b + 24, index);
+    store64(b + 32, image);
+    store64(b + 40, load64(p + _MP_LINKS));
+    store64(b + 48, 0);
+    store64(p + _MP_BRACKETS, b);
+    return 0;
+}
+
+fn _mi_open_bracket(p, block): i64 {
+    var start = load64(p + _MP_POS);
+    store64(p + _MP_POS, start + 1);
+    var t = _mi_text(p, load64(p + _MP_SUBJ) + start, 1);
+    if (t == 0) { return 0 - 1; }
+    _mn_append(block, t);
+    return _mi_push_bracket(p, t, start + 1, 0);
+}
+
+fn _mi_bang(p, block): i64 {
+    var start = load64(p + _MP_POS);
+    if (_mi_peek(p, 1) == 91) {
+        store64(p + _MP_POS, start + 2);
+        var t = _mi_text(p, load64(p + _MP_SUBJ) + start, 2);
+        if (t == 0) { return 0 - 1; }
+        _mn_append(block, t);
+        return _mi_push_bracket(p, t, start + 2, 1);
+    }
+    store64(p + _MP_POS, start + 1);
+    return _mi_add_text(p, block, start, 1);
+}
+
+# `[[target]]` or `[[target|label]]` (MD_EXT_WIKILINKS): no brackets or line ending inside, a
+# target that is not blank. Returns 1 when one was read, 0 when there is none, -1 on a refusal.
+fn _mi_wikilink(p, block): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var start = load64(p + _MP_POS);
+    if (start + 4 >= n || load8(s + start + 1) != 91) { return 0; }
+    var i = start + 2;
+    var bar = 0 - 1;
+    while (i < n) {
+        var c = load8(s + i);
+        if (c == 93) { break; }
+        if (c == 91 || c == 10) { return 0; }
+        if (c == 124 && bar < 0) { bar = i; }
+        i = i + 1;
+    }
+    if (i + 1 >= n || load8(s + i + 1) != 93) { return 0; }
+    var te = i;
+    if (bar >= 0) { te = bar; }
+    var ts = start + 2;
+    while (ts < te && _md_is_sp(load8(s + ts)) == 1) { ts = ts + 1; }
+    var tz = te;
+    while (tz > ts && _md_is_sp(load8(s + tz - 1)) == 1) { tz = tz - 1; }
+    if (tz == ts) { return 0; }
+    var ls = ts;
+    var le = tz;
+    if (bar >= 0) {
+        ls = bar + 1;
+        le = i;
+        while (ls < le && _md_is_sp(load8(s + ls)) == 1) { ls = ls + 1; }
+        while (le > ls && _md_is_sp(load8(s + le - 1)) == 1) { le = le - 1; }
+        if (le == ls) { ls = ts; le = tz; }
+    }
+    var w = _md_new_node(p, MD_K_WIKILINK);
+    if (w == 0) { return 0 - 1; }
+    var tgt = str_new_a(_mp_a(p), s + ts, tz - ts);
+    if (tgt == 0) { _md_oom(p); return 0 - 1; }
+    store64(w + _MN_S1, tgt);
+    var lab = _mi_text(p, s + ls, le - ls);
+    if (lab == 0) { return 0 - 1; }
+    _mn_append(w, lab);
+    _mn_append(block, w);
+    store64(p + _MP_POS, i + 2);
+    store64(p + _MP_LINKS, load64(p + _MP_LINKS) + 1);
+    return 1;
+}
+
+# ']': the spec's "look for link or image" step.
+fn _mi_close_bracket(p, block): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var startpos = load64(p + _MP_POS);
+    store64(p + _MP_POS, startpos + 1);
+    var opener = load64(p + _MP_BRACKETS);
+    if (opener == 0) { return _mi_add_text(p, block, startpos, 1); }
+    var is_image = load64(opener + 32);
+    if (is_image == 0 && load64(p + _MP_LINKS) > load64(opener + 40)) {
+        store64(p + _MP_BRACKETS, load64(opener + 8));
+        return _mi_add_text(p, block, startpos, 1);
+    }
+    var savepos = startpos + 1;
+    var matched = 0;
+    var dest = 0;
+    var title = 0;
+    # An inline link: `(` destination? title? `)`.
+    if (savepos < n && load8(s + savepos) == 40) {
+        var i = _md_spnl(s, n, savepos + 1);
+        var dsp[16];
+        store64(&dsp, i);
+        store64(&dsp + 8, 0);
+        var k = i;
+        var ok = 1;
+        if (i < n && load8(s + i) != 41) {
+            k = _md_scan_dest(s, n, i, &dsp);
+            if (k < 0) { ok = 0; }
+        }
+        if (ok == 1) {
+            var tsp[16];
+            store64(&tsp, 0);
+            store64(&tsp + 8, 0);
+            var hastitle = 0;
+            var j = _md_spnl(s, n, k);
+            if (j != k) {
+                var te = _md_scan_title(s, n, j, &tsp);
+                if (te >= 0) { hastitle = 1; j = _md_spnl(s, n, te); }
+            }
+            if (j < n && load8(s + j) == 41) {
+                matched = 1;
+                dest = _md_unescape(p, s + load64(&dsp), load64(&dsp + 8));
+                if (dest == 0) { return 0 - 1; }
+                if (hastitle == 1) {
+                    title = _md_unescape(p, s + load64(&tsp), load64(&tsp + 8));
+                    if (title == 0) { return 0 - 1; }
+                }
+                store64(p + _MP_POS, j + 1);
+            }
+        }
+    }
+    if (matched == 0) {
+        # A reference: `[label]`, `[]` (collapsed), or nothing (shortcut).
+        var lab[16];
+        var after = _md_scan_label(s, n, savepos, &lab);
+        var rs = 0 - 1;
+        var rn = 0;
+        var consumed = savepos;
+        if (after >= 0) {
+            rs = load64(&lab);
+            rn = load64(&lab + 8);
+            consumed = after;
+        } elif (savepos + 1 < n && load8(s + savepos) == 91 && load8(s + savepos + 1) == 93) {
+            consumed = savepos + 2;
+        }
+        if (rs < 0 && load64(opener + 48) == 0) {
+            rs = load64(opener + 24);
+            rn = startpos - rs;
+        }
+        if (rs >= 0 && rn <= 999) {
+            var norm = _md_norm_label(p, s + rs, rn);
+            if (norm == 0) { return 0 - 1; }
+            var def = _md_ref_find(p, norm);
+            if (def != 0) {
+                matched = 1;
+                dest = load64(def + 8);
+                title = load64(def + 16);
+                store64(p + _MP_POS, consumed);
+            }
+        }
+    }
+    if (matched == 0) {
+        store64(p + _MP_BRACKETS, load64(opener + 8));
+        store64(p + _MP_POS, startpos + 1);
+        return _mi_add_text(p, block, startpos, 1);
+    }
+    var kind = MD_K_LINK;
+    if (is_image == 1) { kind = MD_K_IMAGE; }
+    var link = _md_new_node(p, kind);
+    if (link == 0) { return 0 - 1; }
+    store64(link + _MN_S1, dest);
+    store64(link + _MN_S2, title);
+    var onode = load64(opener);
+    var tmp = load64(onode + _MN_NEXT);
+    while (tmp != 0) {
+        var nx = load64(tmp + _MN_NEXT);
+        _mn_unlink(tmp);
+        _mn_append(link, tmp);
+        tmp = nx;
+    }
+    _mn_append(block, link);
+    if (_mi_emphasis(p, load64(opener + 24)) < 0) { return 0 - 1; }
+    store64(p + _MP_BRACKETS, load64(opener + 8));
+    _mn_unlink(onode);
+    if (is_image == 0) { store64(p + _MP_LINKS, load64(p + _MP_LINKS) + 1); }
+    return 0;
+}
+
+fn _mi_entity(p, block): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var pos = load64(p + _MP_POS);
+    var dec[16];
+    var dn[8];
+    var el = _md_scan_entity(s, n, pos, &dec, &dn);
+    if (el == 0) {
+        store64(p + _MP_POS, pos + 1);
+        return _mi_add_text(p, block, pos, 1);
+    }
+    store64(p + _MP_POS, pos + el);
+    var a = _mp_a(p);
+    var cp = alloc_via(a, 8);
+    if (cp == 0) { _md_oom(p); return 0 - 1; }
+    memcpy(cp, &dec, load64(&dn));
+    var t = _mi_text(p, cp, load64(&dn));
+    if (t == 0) { return 0 - 1; }
+    _mn_append(block, t);
+    return 0;
+}
+
+# A character of a URI scheme after its first: a letter, a digit, `+`, `.` or `-`.
+fn _md_is_scheme_ch(c): i64 {
+    if (_md_is_alnum(c) == 1 || c == 43 || c == 46 || c == 45) { return 1; }
+    return 0;
+}
+
+# `<scheme:...>` or `<email>`. Returns 1 when one was read, 0 when there is none, -1 on a refusal.
+fn _mi_autolink(p, block): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var start = load64(p + _MP_POS);
+    var i = start + 1;
+    # A URI: a scheme of 2..32 characters, `:`, then no space, `<`, `>` or control character.
+    if (i < n && _md_is_alpha(load8(s + i)) == 1) {
+        var j = i + 1;
+        while (j < n && _md_is_scheme_ch(load8(s + j)) == 1) { j = j + 1; }
+        if (j - i >= 2 && j - i <= 32 && j < n && load8(s + j) == 58) {
+            var k = j + 1;
+            while (k < n && load8(s + k) > 32 && load8(s + k) != 60 && load8(s + k) != 62 && load8(s + k) != 127) {
+                k = k + 1;
+            }
+            if (k < n && load8(s + k) == 62) {
+                var url = str_new_a(_mp_a(p), s + i, k - i);
+                if (url == 0) { _md_oom(p); return 0 - 1; }
+                if (_mi_add_link(p, block, url, s + i, k - i) < 0) { return 0 - 1; }
+                store64(p + _MP_POS, k + 1);
+                return 1;
+            }
+        }
+    }
+    # An email address.
+    var e = i;
+    while (e < n && (_md_is_alnum(load8(s + e)) == 1 || _md_email_local(load8(s + e)) == 1)) { e = e + 1; }
+    if (e == i || e >= n || load8(s + e) != 64) { return 0; }
+    var d = e + 1;
+    var labels = 0;
+    loop {
+        var ls = d;
+        if (d >= n || _md_is_alnum(load8(s + d)) == 0) { return 0; }
+        while (d < n && (_md_is_alnum(load8(s + d)) == 1 || load8(s + d) == 45) && d - ls < 63) { d = d + 1; }
+        if (load8(s + d - 1) == 45) { return 0; }
+        labels = labels + 1;
+        if (d < n && load8(s + d) == 46) { d = d + 1; }
+        else { break; }
+    }
+    if (d >= n || load8(s + d) != 62) { return 0; }
+    var a = _mp_a(p);
+    var mb = _mb_new(a, d - i + 8);
+    if (mb == 0) { _md_oom(p); return 0 - 1; }
+    if (_mb_cstr(a, mb, "mailto:") < 0 || _mb_add(a, mb, s + i, d - i) < 0) { _md_oom(p); return 0 - 1; }
+    var murl = _mb_str(a, mb);
+    if (murl == 0) { _md_oom(p); return 0 - 1; }
+    if (_mi_add_link(p, block, murl, s + i, d - i) < 0) { return 0 - 1; }
+    store64(p + _MP_POS, d + 1);
+    return 1;
+}
+
+fn _md_email_local(c): i64 {
+    if (c == 46 || c == 33 || c == 35 || c == 36 || c == 37 || c == 38 || c == 39 || c == 42) { return 1; }
+    if (c == 43 || c == 47 || c == 61 || c == 63 || c == 94 || c == 95 || c == 96 || c == 123) { return 1; }
+    if (c == 124 || c == 125 || c == 126 || c == 45) { return 1; }
+    return 0;
+}
+
+# A link to url whose text is s[0..n), appended to block.
+fn _mi_add_link(p, block, url, s, n): i64 {
+    var link = _md_new_node(p, MD_K_LINK);
+    if (link == 0) { return 0 - 1; }
+    store64(link + _MN_S1, url);
+    var t = _mi_text(p, s, n);
+    if (t == 0) { return 0 - 1; }
+    _mn_append(link, t);
+    _mn_append(block, link);
+    return 0;
+}
+
+# 1 when a `:` or `w` may start an extended autolink here: MD_EXT_AUTOLINKS is on, and no `[` is
+# open (cmark-gfm matches none inside brackets).
+fn _mi_al_inline(p): i64 {
+    if ((load64(p + _MP_FLAGS) & MD_EXT_AUTOLINKS) == 0) { return 0; }
+    if (load64(p + _MP_BRACKETS) != 0) { return 0; }
+    return 1;
+}
+
+# 1 when byte c starts an inline construct.
+fn _mi_special(p, c): i64 {
+    if (c == 10 || c == 92 || c == 96 || c == 42 || c == 95 || c == 91 || c == 93 || c == 33) { return 1; }
+    if (c == 60 || c == 38) { return 1; }
+    if (c == 126 && (load64(p + _MP_FLAGS) & MD_EXT_STRIKETHROUGH) != 0) { return 1; }
+    if ((c == 58 || c == 119) && (load64(p + _MP_FLAGS) & MD_EXT_AUTOLINKS) != 0) { return 1; }
+    return 0;
+}
+
+# Parse the inline content s[0..n) into block's children.
+fn _mi_parse(p, block, s, n): i64 {
+    store64(p + _MP_SUBJ, s);
+    store64(p + _MP_SLEN, n);
+    store64(p + _MP_POS, 0);
+    store64(p + _MP_DELIMS, 0);
+    store64(p + _MP_BRACKETS, 0);
+    store64(p + _MP_TICKSCAN, 0);
+    while (load64(p + _MP_POS) < n) {
+        var pos = load64(p + _MP_POS);
+        var c = load8(s + pos);
+        var r = 0;
+        if (c == 10) { r = _mi_newline(p, block); }
+        elif (c == 92) { r = _mi_backslash(p, block); }
+        elif (c == 96) { r = _mi_backticks(p, block); }
+        elif (c == 42 || c == 95) { r = _mi_delim(p, block, c); }
+        elif (c == 126 && (load64(p + _MP_FLAGS) & MD_EXT_STRIKETHROUGH) != 0) { r = _mi_delim(p, block, c); }
+        elif (c == 91) {
+            var w = 0;
+            if ((load64(p + _MP_FLAGS) & MD_EXT_WIKILINKS) != 0) { w = _mi_wikilink(p, block); }
+            if (w < 0) { return 0 - 1; }
+            if (w == 0) { r = _mi_open_bracket(p, block); }
+        }
+        elif ((c == 58 || c == 119) && _mi_al_inline(p) == 1) {
+            var am = 0;
+            if (c == 58) { am = _mi_url_match(p, block); }
+            else { am = _mi_www_match(p, block); }
+            if (am < 0) { return 0 - 1; }
+            if (am == 0) {
+                store64(p + _MP_POS, pos + 1);
+                r = _mi_add_text(p, block, pos, 1);
+            }
+        }
+        elif (c == 33) { r = _mi_bang(p, block); }
+        elif (c == 93) { r = _mi_close_bracket(p, block); }
+        elif (c == 38) { r = _mi_entity(p, block); }
+        elif (c == 60) {
+            var al = _mi_autolink(p, block);
+            if (al < 0) { return 0 - 1; }
+            if (al == 0) {
+                store64(p + _MP_POS, pos + 1);
+                r = _mi_add_text(p, block, pos, 1);
+            }
+        } else {
+            var e = pos + 1;
+            while (e < n && _mi_special(p, load8(s + e)) == 0) { e = e + 1; }
+            # Trailing spaces before a line ending are the newline's to judge.
+            store64(p + _MP_POS, e);
+            r = _mi_add_text(p, block, pos, e - pos);
+        }
+        if (r < 0) { return 0 - 1; }
+        if (load64(p + _MP_ERR) != 0) { return 0 - 1; }
+    }
+    if (_mi_emphasis(p, 0) < 0) { return 0 - 1; }
+    return 0;
+}
+
+# The spec's "process emphasis", over the delimiters at position stack_bottom or later.
+fn _mi_emphasis(p, stack_bottom): i64 {
+    # openers_bottom: for `*` and `_` six slots each (can_open of the closer, origdelims % 3), and
+    # for `~` three (origdelims % 3, as cmark-gfm keys it), holding the position below which no
+    # opener is looked for.
+    var ob[128];
+    var k = 0;
+    while (k < 16) { store64(&ob + k * 8, stack_bottom); k = k + 1; }
+    var closer = 0;
+    var cand = load64(p + _MP_DELIMS);
+    while (cand != 0 && load64(cand + 64) >= stack_bottom) {
+        closer = cand;
+        cand = load64(cand + 32);
+    }
+    # closer is now the lowest delimiter in range (or 0).
+    while (closer != 0) {
+        var cc = load64(closer);
+        if (load64(closer + 56) == 0) {
+            closer = load64(closer + 40);
+        } else {
+            var slot = 12 + (load64(closer + 16) % 3);
+            if (cc != 126) {
+                slot = 0;
+                if (cc == 95) { slot = 6; }
+                if (load64(closer + 48) == 1) { slot = slot + 3; }
+                slot = slot + (load64(closer + 16) % 3);
+            }
+            var opener = load64(closer + 32);
+            var found = 0;
+            while (opener != 0 && load64(opener + 64) >= load64(&ob + slot * 8)) {
+                if (load64(opener) == cc && load64(opener + 48) == 1) {
+                    var odd = 0;
+                    if ((load64(closer + 48) == 1 || load64(opener + 56) == 1) && load64(closer + 16) % 3 != 0) {
+                        if ((load64(opener + 16) + load64(closer + 16)) % 3 == 0) { odd = 1; }
+                    }
+                    if (odd == 0) { found = 1; }
+                }
+                if (found == 1) { break; }
+                opener = load64(opener + 32);
+            }
+            var old_closer = closer;
+            if (found == 1 && cc == 126) {
+                var res = load64(closer + 40);
+                var son = load64(opener + 24);
+                var scn = load64(closer + 24);
+                if (load64(opener + 8) == load64(closer + 8)) {
+                    var strike = _md_new_node(p, MD_K_STRIKETHROUGH);
+                    if (strike == 0) { return 0 - 1; }
+                    var stmp = load64(son + _MN_NEXT);
+                    while (stmp != 0 && stmp != scn) {
+                        var snx = load64(stmp + _MN_NEXT);
+                        _mn_unlink(stmp);
+                        _mn_append(strike, stmp);
+                        stmp = snx;
+                    }
+                    _mn_insert_after(son, strike);
+                    _mn_unlink(son);
+                    _mn_unlink(scn);
+                }
+                var sd = closer;
+                while (sd != 0 && sd != opener) {
+                    var sdp = load64(sd + 32);
+                    _mi_remove_delim(p, sd);
+                    sd = sdp;
+                }
+                _mi_remove_delim(p, opener);
+                closer = res;
+            } elif (found == 1) {
+                var nuse = 1;
+                var kind = MD_K_EMPH;
+                if (load64(closer + 8) >= 2 && load64(opener + 8) >= 2) {
+                    nuse = 2;
+                    kind = MD_K_STRONG;
+                }
+                var onode = load64(opener + 24);
+                var cnode = load64(closer + 24);
+                store64(opener + 8, load64(opener + 8) - nuse);
+                store64(closer + 8, load64(closer + 8) - nuse);
+                var ot = load64(onode + _MN_TEXT);
+                store64(ot + 8, str_len(ot) - nuse);
+                var ct = load64(cnode + _MN_TEXT);
+                store64(ct + 8, str_len(ct) - nuse);
+                var emph = _md_new_node(p, kind);
+                if (emph == 0) { return 0 - 1; }
+                var tmp = load64(onode + _MN_NEXT);
+                while (tmp != 0 && tmp != cnode) {
+                    var nx = load64(tmp + _MN_NEXT);
+                    _mn_unlink(tmp);
+                    _mn_append(emph, tmp);
+                    tmp = nx;
+                }
+                _mn_insert_after(onode, emph);
+                # Delimiters between the opener and the closer are gone.
+                var d = load64(closer + 32);
+                while (d != 0 && d != opener) {
+                    var dp = load64(d + 32);
+                    _mi_remove_delim(p, d);
+                    d = dp;
+                }
+                if (load64(opener + 8) == 0) {
+                    _mn_unlink(onode);
+                    _mi_remove_delim(p, opener);
+                }
+                if (load64(closer + 8) == 0) {
+                    var nxc = load64(closer + 40);
+                    _mn_unlink(cnode);
+                    _mi_remove_delim(p, closer);
+                    closer = nxc;
+                }
+            } else {
+                closer = load64(closer + 40);
+                store64(&ob + slot * 8, load64(old_closer + 64));
+                if (load64(old_closer + 48) == 0) { _mi_remove_delim(p, old_closer); }
+            }
+        }
+    }
+    # Every delimiter in range is gone.
+    while (load64(p + _MP_DELIMS) != 0 && load64(load64(p + _MP_DELIMS) + 64) >= stack_bottom) {
+        _mi_remove_delim(p, load64(p + _MP_DELIMS));
+    }
+    return 0;
+}
+
+# --- GFM: extended autolinks ---------------------------------------------------------------------
+# These follow cmark-gfm (extensions/autolink.c), the GFM reference implementation, rule for rule:
+# `www.` and `http://` / `https://` / `ftp://` links are matched while inlines are parsed, on the
+# raw text, and never inside an open `[`; email addresses (and `mailto:` / `xmpp:` ones) are
+# matched afterwards, on the merged text outside links.
+
+# cmark-gfm's host character: a code point that is not white space or punctuation. Punctuation
+# here is the ASCII set and the Unicode P categories, cmark-gfm's definition (not CommonMark
+# 0.31's, which adds the S categories), so `http://🍄.ga` is a link as it is there.
+fn _md_al_hostchar(s, n): i64 {
+    if (n <= 0) { return 0; }
+    var b0 = load8(s);
+    if (b0 >= 128 && b0 < 192) { return 0; }
+    var cp[8];
+    var used = _uc_decode_utf8(s, 0, n, &cp);
+    if (b0 >= 128 && used == 1) { return 0; }
+    var c = load64(&cp);
+    if (c < 128) {
+        if (c == 9 || c == 10 || c == 12 || c == 13 || c == 32) { return 0; }
+        if (_md_is_apunct(c) == 1) { return 0; }
+        return 1;
+    }
+    var gc = unicode_category(c);
+    if (gc == 22) { return 0; }                         # Zs
+    if (gc >= 11 && gc <= 17) { return 0; }             # Pc .. Ps
+    return 1;
+}
+
+# 1 when s[0..n) starts with lit[0..k), ASCII case ignored.
+fn _md_ci_prefix(s, n, lit, k): i64 {
+    if (n < k) { return 0; }
+    var i = 0;
+    while (i < k) {
+        var c = load8(s + i);
+        if (c >= 65 && c <= 90) { c = c + 32; }
+        if (c != load8(lit + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# cmark-gfm's sd_autolink_issafe: an http, https or ftp scheme and `://`, then a host character.
+fn _md_al_safe(s, n): i64 {
+    if (n > 7 && _md_ci_prefix(s, n, "http://", 7) == 1 && _md_al_hostchar(s + 7, n - 7) == 1) { return 1; }
+    if (n > 8 && _md_ci_prefix(s, n, "https://", 8) == 1 && _md_al_hostchar(s + 8, n - 8) == 1) { return 1; }
+    if (n > 6 && _md_ci_prefix(s, n, "ftp://", 6) == 1 && _md_al_hostchar(s + 6, n - 6) == 1) { return 1; }
+    return 0;
+}
+
+# cmark-gfm's check_domain over d[0..size): the length of the domain, or 0 when an underscore is
+# in one of its last two segments (unless it has more than ten), or when `strict` and it has no
+# period.
+fn _md_al_domain(d, size, strict): i64 {
+    var i = 1;
+    var np = 0;
+    var us1 = 0;
+    var us2 = 0;
+    while (i < size - 1) {
+        if (load8(d + i) == 92 && i < size - 2) { i = i + 1; }
+        var c = load8(d + i);
+        if (c == 95) { us2 = us2 + 1; }
+        elif (c == 46) {
+            us1 = us2;
+            us2 = 0;
+            np = np + 1;
+        } elif (_md_al_hostchar(d + i, size - i) == 0 && c != 45) { break; }
+        i = i + 1;
+    }
+    if ((us1 > 0 || us2 > 0) && np <= 10) { return 0; }
+    if (strict == 1 && np == 0) { return 0; }
+    return i;
+}
+
+# The characters an extended autolink never ends with: ? ! . , : * _ ~ ' "
+fn _md_al_trailing(t): i64 {
+    if (t == 63 || t == 33 || t == 46 || t == 44 || t == 58) { return 1; }
+    if (t == 42 || t == 95 || t == 126 || t == 39 || t == 34) { return 1; }
+    return 0;
+}
+
+# cmark-gfm's autolink_delim: where a link of d[0..e) really ends. A `<` ends it; trailing
+# `?!.,:*_~'"` are not part of it, nor a `)` without an opening partner inside, nor a final
+# `&name;` (or a lone `;`).
+fn _md_al_delim(d, e): i64 {
+    var closing = 0;
+    var opening = 0;
+    var i = 0;
+    while (i < e) {
+        var c = load8(d + i);
+        if (c == 60) { e = i; break; }
+        if (c == 40) { opening = opening + 1; }
+        elif (c == 41) { closing = closing + 1; }
+        i = i + 1;
+    }
+    while (e > 0) {
+        var t = load8(d + e - 1);
+        if (t == 41) {
+            if (closing <= opening) { return e; }
+            closing = closing - 1;
+            e = e - 1;
+        } elif (_md_al_trailing(t) == 1) {
+            e = e - 1;
+        } elif (t == 59) {
+            var ne = e - 2;
+            while (ne > 0 && _md_is_alpha(load8(d + ne)) == 1) { ne = ne - 1; }
+            if (ne >= 0 && ne < e - 2 && load8(d + ne) == 38) { e = ne; }
+            else { e = e - 1; }
+        } else {
+            return e;
+        }
+    }
+    return e;
+}
+
+# Take the last k bytes back off the text at the end of block (they are about to be a link's).
+fn _mi_unput(block, k): i64 {
+    while (k > 0) {
+        var last = load64(block + _MN_LAST);
+        if (last == 0 || load64(last + _MN_KIND) != MD_K_TEXT) { return 0; }
+        var t = load64(last + _MN_TEXT);
+        if (str_len(t) > k) {
+            store64(t + 8, str_len(t) - k);
+            return 0;
+        }
+        k = k - str_len(t);
+        _mn_unlink(last);
+    }
+    return 0;
+}
+
+# At a `:`: `http://`, `https://` or `ftp://` and what follows, up to white space or `<`. Returns
+# 1 when a link was read, 0 when there is none, -1 on a refusal.
+fn _mi_url_match(p, block): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var pos = load64(p + _MP_POS);
+    if (n - pos < 4 || load8(s + pos + 1) != 47 || load8(s + pos + 2) != 47) { return 0; }
+    var rw = 0;
+    while (rw < pos && _md_is_alpha(load8(s + pos - rw - 1)) == 1) { rw = rw + 1; }
+    var st = pos - rw;
+    if (_md_al_safe(s + st, n - st) == 0) { return 0; }
+    var dl = _md_al_domain(s + pos + 3, n - pos - 3, 0);
+    if (dl == 0) { return 0; }
+    var e = 3 + dl;
+    while (pos + e < n && _md_is_ws(load8(s + pos + e)) == 0 && load8(s + pos + e) != 60) { e = e + 1; }
+    e = _md_al_delim(s + pos, e);
+    if (e == 0) { return 0; }
+    var url = str_new_a(_mp_a(p), s + st, e + rw);
+    if (url == 0) { _md_oom(p); return 0 - 1; }
+    _mi_unput(block, rw);
+    if (_mi_add_link(p, block, url, s + st, e + rw) < 0) { return 0 - 1; }
+    store64(p + _MP_POS, pos + e);
+    return 1;
+}
+
+# At a `w`: `www.` and a domain with a period, after white space, `*`, `_`, `~`, `(` or nothing.
+# Returns 1 when a link was read, 0 when there is none, -1 on a refusal.
+fn _mi_www_match(p, block): i64 {
+    var s = load64(p + _MP_SUBJ);
+    var n = load64(p + _MP_SLEN);
+    var pos = load64(p + _MP_POS);
+    if (pos > 0) {
+        var pc = load8(s + pos - 1);
+        if (pc != 42 && pc != 95 && pc != 126 && pc != 40 && _md_is_ws(pc) == 0) { return 0; }
+    }
+    if (n - pos < 4 || memeq(s + pos, "www.", 4) == 0) { return 0; }
+    var e = _md_al_domain(s + pos, n - pos, 1);
+    if (e == 0) { return 0; }
+    while (pos + e < n && _md_is_ws(load8(s + pos + e)) == 0 && load8(s + pos + e) != 60) { e = e + 1; }
+    e = _md_al_delim(s + pos, e);
+    if (e == 0) { return 0; }
+    var a = _mp_a(p);
+    var mb = _mb_new(a, e + 16);
+    if (mb == 0) { _md_oom(p); return 0 - 1; }
+    if (_mb_cstr(a, mb, "http://") < 0 || _mb_add(a, mb, s + pos, e) < 0) { _md_oom(p); return 0 - 1; }
+    var url = _mb_str(a, mb);
+    if (url == 0) { _md_oom(p); return 0 - 1; }
+    if (_mi_add_link(p, block, url, s + pos, e) < 0) { return 0 - 1; }
+    store64(p + _MP_POS, pos + e);
+    return 1;
+}
+
+# cmark-gfm's validate_protocol: `proto` (len bytes, ending in `:`) ends rewind bytes before d,
+# within the max_rewind bytes before it, at their start or after a byte that is not alphanumeric.
+fn _md_al_proto(d, proto, len, rewind, max_rewind): i64 {
+    if (len > max_rewind - rewind) { return 0; }
+    if (memeq(d - rewind - len, proto, len) == 0) { return 0; }
+    if (len == max_rewind - rewind) { return 1; }
+    if (_md_is_alnum(load8(d - rewind - len - 1)) == 1) { return 0; }
+    return 1;
+}
+
+# cmark-gfm's postprocess_text: split the email links out of one text node. -1 on a refusal.
+fn _md_email_text(p, text): i64 {
+    var a = _mp_a(p);
+    var t = load64(text + _MN_TEXT);
+    var data = str_data(t);
+    var remaining = str_len(t);
+    var start = 0;
+    var offset = 0;
+    var cur = text;
+    loop {
+        if (offset >= remaining) { break; }
+        var at = start + offset;
+        while (at < start + remaining && load8(data + at) != 64) { at = at + 1; }
+        if (at >= start + remaining) { break; }
+        var max_rewind = at - (start + offset);
+        var auto_mailto = 1;
+        var is_xmpp = 0;
+        var np = 0;
+        var rewind = 0;
+        var link_end = 0;
+        var skip = 0;
+        var again = 1;
+        while (again == 1) {
+            again = 0;
+            var base = data + start + offset + max_rewind;
+            rewind = 0;
+            while (rewind < max_rewind) {
+                var c = load8(base - rewind - 1);
+                if (_md_is_alnum(c) == 1 || c == 46 || c == 43 || c == 45 || c == 95) {
+                    rewind = rewind + 1;
+                } elif (c == 58 && _md_al_proto(base, "mailto:", 7, rewind, max_rewind) == 1) {
+                    auto_mailto = 0;
+                    rewind = rewind + 1;
+                } elif (c == 58 && _md_al_proto(base, "xmpp:", 5, rewind, max_rewind) == 1) {
+                    auto_mailto = 0;
+                    is_xmpp = 1;
+                    rewind = rewind + 1;
+                } else {
+                    break;
+                }
+            }
+            if (rewind == 0) {
+                offset = offset + max_rewind + 1;
+                skip = 1;
+            } else {
+                var lim = remaining - offset - max_rewind;
+                link_end = 1;
+                while (link_end < lim) {
+                    var c2 = load8(base + link_end);
+                    if (_md_is_alnum(c2) == 1) {
+                        link_end = link_end + 1;
+                    } elif (c2 == 64) {
+                        # Another `@`: start again from it.
+                        offset = offset + max_rewind + 1;
+                        max_rewind = link_end - 1;
+                        again = 1;
+                        break;
+                    } elif (c2 == 46 && link_end < lim - 1 && _md_is_alnum(load8(base + link_end + 1)) == 1) {
+                        np = np + 1;
+                        link_end = link_end + 1;
+                    } elif (c2 == 47 && is_xmpp == 1) {
+                        link_end = link_end + 1;
+                    } elif (c2 == 45 || c2 == 95) {
+                        link_end = link_end + 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        if (skip == 1) { continue; }
+        var at2 = data + start + offset + max_rewind;
+        var lastc = load8(at2 + link_end - 1);
+        if (link_end < 2 || np == 0 || (_md_is_alpha(lastc) == 0 && lastc != 46)) {
+            offset = offset + max_rewind + link_end;
+            continue;
+        }
+        link_end = _md_al_delim(at2, link_end);
+        if (link_end == 0) {
+            offset = offset + max_rewind + 1;
+            continue;
+        }
+        var ls = at2 - rewind;
+        var ll = link_end + rewind;
+        var mb = _mb_new(a, ll + 16);
+        if (mb == 0) { _md_oom(p); return 0 - 1; }
+        if (auto_mailto == 1) {
+            if (_mb_cstr(a, mb, "mailto:") < 0) { _md_oom(p); return 0 - 1; }
+        }
+        if (_mb_add(a, mb, ls, ll) < 0) { _md_oom(p); return 0 - 1; }
+        var url = _mb_str(a, mb);
+        if (url == 0) { _md_oom(p); return 0 - 1; }
+        var link = _md_new_node(p, MD_K_LINK);
+        if (link == 0) { return 0 - 1; }
+        store64(link + _MN_S1, url);
+        var lt = _mi_text(p, ls, ll);
+        if (lt == 0) { return 0 - 1; }
+        _mn_append(link, lt);
+        var post = _mi_text(p, at2 + link_end, remaining - offset - max_rewind - link_end);
+        if (post == 0) { return 0 - 1; }
+        _mn_insert_after(cur, link);
+        _mn_insert_after(link, post);
+        store64(load64(cur + _MN_TEXT) + 8, offset + max_rewind - rewind);
+        cur = post;
+        start = start + offset + max_rewind + link_end;
+        remaining = remaining - (offset + max_rewind + link_end);
+        offset = 0;
+    }
+    return 0;
+}
+
+# The email pass over every text node under n outside links. -1 on a refusal.
+fn _md_email_pass(p, n): i64 {
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) {
+        var next = load64(c + _MN_NEXT);
+        var kind = load64(c + _MN_KIND);
+        if (kind == MD_K_TEXT) {
+            if (_md_email_text(p, c) < 0) { return 0 - 1; }
+        } elif (kind != MD_K_LINK && kind != MD_K_IMAGE && kind != MD_K_WIKILINK) {
+            if (_md_email_pass(p, c) < 0) { return 0 - 1; }
+        }
+        c = next;
+    }
+    return 0;
+}
+
+# --- After parsing -------------------------------------------------------------------------------
+# Drop the paragraphs that were only reference definitions (flag bit 2) from under n.
+fn _md_drop_defs(n): i64 {
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) {
+        var next = load64(c + _MN_NEXT);
+        if (load64(c + _MN_KIND) == MD_K_PARAGRAPH) {
+            if ((load64(c + _MN_FLAGS) & 4) != 0) { _mn_unlink(c); }
+        } elif (_md_is_container(load64(c + _MN_KIND)) == 1) {
+            _md_drop_defs(c);
+        }
+        c = next;
+    }
+    return 0;
+}
+
+# GFM task list items: an item whose first paragraph starts `[ ]`, `[x]` or `[X]` and then a space.
+fn _md_task_pass(p, n): i64 {
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) {
+        if (load64(c + _MN_KIND) == MD_K_ITEM) {
+            var para = load64(c + _MN_FIRST);
+            if (para != 0 && load64(para + _MN_KIND) == MD_K_PARAGRAPH) {
+                var b = load64(para + _MN_BUF);
+                var s = _mb_ptr(b);
+                var len = _mb_len(b);
+                if (len >= 4 && load8(s) == 91 && load8(s + 2) == 93 && _md_is_spc(load8(s + 3)) == 1) {
+                    var m = load8(s + 1);
+                    var st = 0 - 1;
+                    if (m == 32 || m == 9) { st = 0; }
+                    if (m == 120 || m == 88) { st = 1; }
+                    if (st >= 0) {
+                        store64(c + _MN_N3, st);
+                        store64(b, s + 4);
+                        store64(b + 8, len - 4);
+                    }
+                }
+            }
+        }
+        if (_md_task_pass(p, c) < 0) { return 0 - 1; }
+        c = load64(c + _MN_NEXT);
+    }
+    return 0;
+}
+
+# Inline-parse every leaf under n.
+fn _md_inline_pass(p, n): i64 {
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) {
+        var kind = load64(c + _MN_KIND);
+        if (kind == MD_K_PARAGRAPH || kind == MD_K_HEADING || kind == MD_K_TABLE_CELL) {
+            var b = load64(c + _MN_BUF);
+            var s = _mb_ptr(b);
+            var len = _mb_len(b);
+            while (len > 0 && _md_is_ws(load8(s + len - 1)) == 1) { len = len - 1; }
+            var st = 0;
+            while (st < len && _md_is_ws(load8(s + st)) == 1) { st = st + 1; }
+            if (kind == MD_K_TABLE_CELL) {
+                # `\|` inside a cell is a pipe.
+                var a = _mp_a(p);
+                var cb = _mb_new(a, len + 8);
+                if (cb == 0) { return _md_oom(p) - 1; }
+                var q = st;
+                while (q < len) {
+                    if (load8(s + q) == 92 && q + 1 < len && load8(s + q + 1) == 124) { q = q + 1; }
+                    if (_mb_put(a, cb, load8(s + q)) < 0) { return _md_oom(p) - 1; }
+                    q = q + 1;
+                }
+                s = _mb_ptr(cb);
+                st = 0;
+                len = _mb_len(cb);
+            }
+            if (_mi_parse(p, c, s + st, len - st) < 0) { return 0 - 1; }
+        } elif (kind != MD_K_CODE_BLOCK && kind != MD_K_THEMATIC_BREAK) {
+            if (_md_inline_pass(p, c) < 0) { return 0 - 1; }
+        }
+        c = load64(c + _MN_NEXT);
+    }
+    return 0;
+}
+
+# Merge each run of adjacent text nodes into its first, and drop empty ones. A run whose bytes
+# already sit end to end is one Str widened; any other is copied once. -1 on a refusal.
+fn _md_merge_text(p, n): i64 {
+    var a = _mp_a(p);
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) {
+        if (load64(c + _MN_KIND) == MD_K_TEXT) {
+            var t1 = load64(c + _MN_TEXT);
+            var total = str_len(t1);
+            var contiguous = 1;
+            var e = load64(c + _MN_NEXT);
+            var prev = t1;
+            while (e != 0 && load64(e + _MN_KIND) == MD_K_TEXT) {
+                var te = load64(e + _MN_TEXT);
+                if (str_data(prev) + str_len(prev) != str_data(te)) { contiguous = 0; }
+                total = total + str_len(te);
+                prev = te;
+                e = load64(e + _MN_NEXT);
+            }
+            # e is the first node after the run.
+            if (load64(c + _MN_NEXT) != e) {
+                if (contiguous == 0) {
+                    var mb = _mb_new(a, total + 8);
+                    if (mb == 0) { return _md_oom(p) - 1; }
+                    var q = c;
+                    while (q != e) {
+                        var tq = load64(q + _MN_TEXT);
+                        if (_mb_add(a, mb, str_data(tq), str_len(tq)) < 0) { return _md_oom(p) - 1; }
+                        q = load64(q + _MN_NEXT);
+                    }
+                    store64(t1, _mb_ptr(mb));
+                }
+                store64(t1 + 8, total);
+                while (load64(c + _MN_NEXT) != e) { _mn_unlink(load64(c + _MN_NEXT)); }
+            }
+            if (total == 0) { _mn_unlink(c); }
+            c = e;
+        } else {
+            if (_md_merge_text(p, c) < 0) { return 0 - 1; }
+            c = load64(c + _MN_NEXT);
+        }
+    }
+    return 0;
+}
+
+# The tree's depth, at most limit + 1 (an explicit stack, so a deep tree cannot exhaust ours).
+fn _md_depth(root, limit): i64 {
+    var max = 0;
+    var d = 0;
+    var n = root;
+    loop {
+        d = d + 1;
+        if (d > max) { max = d; }
+        if (max > limit) { return max; }
+        var first = load64(n + _MN_FIRST);
+        if (first != 0) {
+            n = first;
+        } else {
+            loop {
+                if (n == root) { return max; }
+                var nx = load64(n + _MN_NEXT);
+                if (nx != 0) { n = nx; break; }
+                n = load64(n + _MN_PARENT);
+                d = d - 1;
+            }
+            d = d - 1;
+        }
+    }
+    return max;
+}
+
+# --- Public: parse -------------------------------------------------------------------------------
+# Parse Markdown text data[0..len) with extension `flags`, allocating through `a`. Returns the
+# document node, or 0 when an allocation is refused or nesting passes 128 levels (the reason is in
+# bayan_markdown_last_error()).
+fn bayan_markdown_parse_buf_a(a, data, len, flags): i64 {
+    var p = alloc_via(a, _MP_SIZE);
+    if (p == 0) { _md_last_err = "out of memory"; return 0; }
+    memset(p, 0, _MP_SIZE);
+    store64(p + _MP_A, a);
+    store64(p + _MP_FLAGS, flags);
+    var refs = vec_new_a(a);
+    if (refs == 0) { _md_last_err = "out of memory"; return 0; }
+    store64(p + _MP_REFS, refs);
+    var memo = alloc_via(a, (_MD_MAX_TICKS + 1) * 8);
+    if (memo == 0) { _md_last_err = "out of memory"; return 0; }
+    store64(p + _MP_TICKS, memo);
+    var doc = _md_new_node(p, MD_K_DOCUMENT);
+    if (doc == 0) { _md_last_err = "out of memory"; return 0; }
+    var db = _mb_new(a, 8);
+    if (db == 0) { _md_last_err = "out of memory"; return 0; }
+    store64(doc + _MN_BUF, db);
+    store64(doc + _MN_FLAGS, 1);
+    store64(p + _MP_DOC, doc);
+    store64(p + _MP_TIP, doc);
+    # A UTF-8 byte order mark at the start is not content (cmark drops it too).
+    if (len >= 3 && load8(data) == 0xEF && load8(data + 1) == 0xBB && load8(data + 2) == 0xBF) {
+        data = data + 3;
+        len = len - 3;
+    }
+    # NUL is replaced by U+FFFD, as the spec says for insecure characters.
+    var src = data;
+    var nul = 0;
+    var z = 0;
+    while (z < len) {
+        if (load8(data + z) == 0) { nul = nul + 1; }
+        z = z + 1;
+    }
+    if (nul > 0) {
+        var cb = _mb_new(a, len + nul * 2 + 8);
+        if (cb == 0) { _md_last_err = "out of memory"; return 0; }
+        z = 0;
+        while (z < len) {
+            var zc = load8(data + z);
+            var zr = 0;
+            if (zc == 0) { zr = _mb_cstr(a, cb, "\xef\xbf\xbd"); }
+            else { zr = _mb_put(a, cb, zc); }
+            if (zr < 0) { _md_last_err = "out of memory"; return 0; }
+            z = z + 1;
+        }
+        src = _mb_ptr(cb);
+        len = _mb_len(cb);
+    }
+    # Lines end at LF, CR LF or CR.
+    var i = 0;
+    while (i < len) {
+        var e = i;
+        while (e < len && load8(src + e) != 10 && load8(src + e) != 13) { e = e + 1; }
+        if (_mp_line(p, src + i, e - i) < 0) {
+            _md_last_err = load64(p + _MP_ERR);
+            return 0;
+        }
+        if (e < len && load8(src + e) == 13 && e + 1 < len && load8(src + e + 1) == 10) { e = e + 1; }
+        i = e + 1;
+    }
+    while (load64(p + _MP_TIP) != 0) {
+        if (_mp_finalize(p, load64(p + _MP_TIP), load64(p + _MP_LINENO)) < 0) {
+            _md_last_err = load64(p + _MP_ERR);
+            return 0;
+        }
+    }
+    _md_drop_defs(doc);
+    if (_md_ref_index(p) < 0) { _md_last_err = load64(p + _MP_ERR); return 0; }
+    if ((flags & MD_EXT_TASKLISTS) != 0) { _md_task_pass(p, doc); }
+    if (_md_inline_pass(p, doc) < 0) { _md_last_err = load64(p + _MP_ERR); return 0; }
+    # Inline nesting is bounded only by the input (emphasis can nest a level per two delimiters),
+    # and the passes below recurse into it: check the depth first.
+    if (_md_depth(doc, _MD_MAX_DEPTH) > _MD_MAX_DEPTH) {
+        _md_last_err = "nesting too deep";
+        return 0;
+    }
+    if (_md_merge_text(p, doc) < 0) { _md_last_err = load64(p + _MP_ERR); return 0; }
+    if ((flags & MD_EXT_AUTOLINKS) != 0) {
+        # On merged text, as cmark-gfm consolidates it first: an address can run through `_` and
+        # the other bytes that start inlines.
+        if (_md_email_pass(p, doc) < 0) { _md_last_err = load64(p + _MP_ERR); return 0; }
+        if (_md_merge_text(p, doc) < 0) { _md_last_err = load64(p + _MP_ERR); return 0; }
+    }
+    return doc;
+}
+
+# Parse a Markdown Str with extension flags (MD_EXT_*), allocating through `a`.
+fn bayan_markdown_parse_a(a, src: Str, flags): i64 {
+    if (src == 0) { _md_last_err = "null source"; return 0; }
+    return bayan_markdown_parse_buf_a(a, str_data(src), str_len(src), flags);
+}
+
+# Parse a Markdown Str as CommonMark.
+fn bayan_markdown_parse(src: Str): i64 { return bayan_markdown_parse_a(default_alloc(), src, 0); }
+
+# Parse a Markdown Str with extension flags (MD_EXT_GFM, MD_EXT_WIKILINKS, ...).
+fn bayan_markdown_parse_ext(src: Str, flags): i64 { return bayan_markdown_parse_a(default_alloc(), src, flags); }
+
+# --- Public: the tree ----------------------------------------------------------------------------
+fn bayan_markdown_kind(n): i64 { if (n == 0) { return 0; } return load64(n + _MN_KIND); }
+fn bayan_markdown_parent(n): i64 { if (n == 0) { return 0; } return load64(n + _MN_PARENT); }
+fn bayan_markdown_first_child(n): i64 { if (n == 0) { return 0; } return load64(n + _MN_FIRST); }
+fn bayan_markdown_last_child(n): i64 { if (n == 0) { return 0; } return load64(n + _MN_LAST); }
+fn bayan_markdown_next(n): i64 { if (n == 0) { return 0; } return load64(n + _MN_NEXT); }
+fn bayan_markdown_prev(n): i64 { if (n == 0) { return 0; } return load64(n + _MN_PREV); }
+
+# The number of children, by a walk.
+fn bayan_markdown_child_count(n): i64 {
+    if (n == 0) { return 0; }
+    var k = 0;
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) { k = k + 1; c = load64(c + _MN_NEXT); }
+    return k;
+}
+
+# Child i (from 0), or 0; a walk of i steps.
+fn bayan_markdown_child(n, i): i64 {
+    if (n == 0 || i < 0) { return 0; }
+    var c = load64(n + _MN_FIRST);
+    while (c != 0 && i > 0) { c = load64(c + _MN_NEXT); i = i - 1; }
+    return c;
+}
+
+# A TEXT or CODE node's literal, or a code block's: a Str, or 0.
+fn bayan_markdown_text(n): i64 { if (n == 0) { return 0; } return load64(n + _MN_TEXT); }
+
+# A heading's level, 1..6, or 0.
+fn bayan_markdown_level(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_HEADING) { return 0; }
+    return load64(n + _MN_N1);
+}
+
+# A link's, image's or wiki link's destination, as a Str (decoded; the renderer percent-encodes
+# it), or 0.
+fn bayan_markdown_url(n): i64 {
+    var k = bayan_markdown_kind(n);
+    if (k != MD_K_LINK && k != MD_K_IMAGE && k != MD_K_WIKILINK) { return 0; }
+    return load64(n + _MN_S1);
+}
+
+# A link's or image's title, a Str, or 0 when it has none.
+fn bayan_markdown_title(n): i64 {
+    var k = bayan_markdown_kind(n);
+    if (k != MD_K_LINK && k != MD_K_IMAGE) { return 0; }
+    return load64(n + _MN_S2);
+}
+
+# A fenced code block's info string, a Str (empty when there is none), or 0.
+fn bayan_markdown_info(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_CODE_BLOCK) { return 0; }
+    return load64(n + _MN_S1);
+}
+
+# 1 when the code block is fenced, 0 when it is indented.
+fn bayan_markdown_fenced(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_CODE_BLOCK) { return 0; }
+    return load64(n + _MN_N2);
+}
+
+# 1 for an ordered list.
+fn bayan_markdown_list_ordered(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_LIST) { return 0; }
+    return load64(n + _MN_N1);
+}
+
+# An ordered list's start number.
+fn bayan_markdown_list_start(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_LIST) { return 0; }
+    return load64(n + _MN_N2);
+}
+
+# 1 for a tight list (no blank lines between its items or their blocks).
+fn bayan_markdown_list_tight(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_LIST) { return 0; }
+    return load64(n + _MN_N4);
+}
+
+# A task list item's state: 1 checked, 0 not, -1 when the item is not a task.
+fn bayan_markdown_task(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_ITEM) { return 0 - 1; }
+    return load64(n + _MN_N3);
+}
+
+# A table cell's alignment (MD_ALIGN_*).
+fn bayan_markdown_align(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_TABLE_CELL) { return 0; }
+    return load64(n + _MN_N1);
+}
+
+# 1 for a table's header row.
+fn bayan_markdown_row_header(n): i64 {
+    if (bayan_markdown_kind(n) != MD_K_TABLE_ROW) { return 0; }
+    return load64(n + _MN_N1);
+}
+
+# --- HTML ----------------------------------------------------------------------------------------
+fn _mh_esc(a, b, s, n): i64 {
+    var i = 0;
+    var st = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        var rep = 0;
+        if (c == 38) { rep = "&amp;"; }
+        elif (c == 60) { rep = "&lt;"; }
+        elif (c == 62) { rep = "&gt;"; }
+        elif (c == 34) { rep = "&quot;"; }
+        if (rep != 0) {
+            if (_mb_add(a, b, s + st, i - st) < 0) { return 0 - 1; }
+            if (_mb_cstr(a, b, rep) < 0) { return 0 - 1; }
+            st = i + 1;
+        }
+        i = i + 1;
+    }
+    return _mb_add(a, b, s + st, n - st);
+}
+
+fn _mh_esc_str(a, b, s): i64 {
+    if (s == 0) { return 0; }
+    return _mh_esc(a, b, str_data(s), str_len(s));
+}
+
+# A URL for an href or src: bytes outside the safe set percent-encoded (an existing `%XX` kept),
+# `&` and `'` as entities. A dangerous one (_md_dangerous_url) is written as nothing.
+fn _mh_url(a, b, s): i64 {
+    if (s == 0) { return 0; }
+    if (_md_dangerous_url(s) == 1) { return 0; }
+    var d = str_data(s);
+    var n = str_len(s);
+    var hex = "0123456789ABCDEF";
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i);
+        var r = 0;
+        if (c == 38) { r = _mb_cstr(a, b, "&amp;"); }
+        elif (c == 39) { r = _mb_cstr(a, b, "&#x27;"); }
+        elif (c == 37 && i + 2 < n && _md_is_hex(load8(d + i + 1)) == 1 && _md_is_hex(load8(d + i + 2)) == 1) {
+            r = _mb_put(a, b, c);
+        }
+        elif (_md_is_alnum(c) == 1 || _mh_url_safe(c) == 1) { r = _mb_put(a, b, c); }
+        else {
+            r = _mb_put(a, b, 37);
+            if (r == 0) { r = _mb_put(a, b, load8(hex + (c >> 4))); }
+            if (r == 0) { r = _mb_put(a, b, load8(hex + (c & 15))); }
+        }
+        if (r < 0) { return 0 - 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 1 when url is one a renderer that passes no raw HTML must not pass either: `javascript:`,
+# `vbscript:`, `file:`, or `data:` other than `data:image/png`, `gif`, `jpeg` or `webp`, in any
+# case. cmark's rule (its default, safe mode); the destination is checked as decoded, so an entity
+# or an escape does not hide one.
+fn _md_dangerous_url(u): i64 {
+    var d = str_data(u);
+    var n = str_len(u);
+    if (_md_ci_prefix(d, n, "data:image/", 11) == 1) {
+        var r = d + 11;
+        var rn = n - 11;
+        if (_md_ci_prefix(r, rn, "png", 3) == 1 || _md_ci_prefix(r, rn, "gif", 3) == 1) { return 0; }
+        if (_md_ci_prefix(r, rn, "jpeg", 4) == 1 || _md_ci_prefix(r, rn, "webp", 4) == 1) { return 0; }
+    }
+    if (_md_ci_prefix(d, n, "javascript:", 11) == 1 || _md_ci_prefix(d, n, "vbscript:", 9) == 1) { return 1; }
+    if (_md_ci_prefix(d, n, "file:", 5) == 1 || _md_ci_prefix(d, n, "data:", 5) == 1) { return 1; }
+    return 0;
+}
+
+fn _mh_url_safe(c): i64 {
+    if (c == 45 || c == 95 || c == 46 || c == 33 || c == 126 || c == 42 || c == 40 || c == 41) { return 1; }
+    if (c == 59 || c == 47 || c == 63 || c == 58 || c == 64 || c == 61 || c == 43 || c == 36) { return 1; }
+    if (c == 44 || c == 35) { return 1; }
+    return 0;
+}
+
+# ` title="..."` for a link's or image's title, when it has one.
+fn _mh_title(a, b, t): i64 {
+    if (t == 0) { return 0; }
+    if (_mb_cstr(a, b, " title=\"") < 0 || _mh_esc_str(a, b, t) < 0) { return 0 - 1; }
+    return _mb_put(a, b, 34);
+}
+
+# A newline unless the output is empty or already ends in one.
+fn _mh_cr(a, b): i64 {
+    var n = _mb_len(b);
+    if (n > 0 && load8(_mb_ptr(b) + n - 1) != 10) { return _mb_put(a, b, 10); }
+    return 0;
+}
+
+# The plain text of n's inlines, for an image's alt attribute.
+fn _mh_plain(a, b, n): i64 {
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) {
+        var k = load64(c + _MN_KIND);
+        var r = 0;
+        if (k == MD_K_TEXT || k == MD_K_CODE) { r = _mh_esc_str(a, b, load64(c + _MN_TEXT)); }
+        elif (k == MD_K_SOFTBREAK || k == MD_K_LINEBREAK) { r = _mb_put(a, b, 10); }
+        else { r = _mh_plain(a, b, c); }
+        if (r < 0) { return 0 - 1; }
+        c = load64(c + _MN_NEXT);
+    }
+    return 0;
+}
+
+fn _mh_children(a, b, n, tight): i64 {
+    var c = load64(n + _MN_FIRST);
+    while (c != 0) {
+        if (_mh_node(a, b, c, tight) < 0) { return 0 - 1; }
+        c = load64(c + _MN_NEXT);
+    }
+    return 0;
+}
+
+fn _mh_tag(a, b, open, tag): i64 {
+    if (_mb_put(a, b, 60) < 0) { return 0 - 1; }
+    if (open == 0) { if (_mb_put(a, b, 47) < 0) { return 0 - 1; } }
+    if (_mb_cstr(a, b, tag) < 0) { return 0 - 1; }
+    return _mb_put(a, b, 62);
+}
+
+# Write node n. `tight` is 1 inside a tight list, where paragraphs lose their <p>.
+fn _mh_node(a, b, n, tight): i64 {
+    var k = load64(n + _MN_KIND);
+    if (k == MD_K_DOCUMENT) { return _mh_children(a, b, n, 0); }
+    if (k == MD_K_PARAGRAPH) {
+        if (tight == 1) { return _mh_children(a, b, n, tight); }
+        if (_mh_cr(a, b) < 0 || _mh_tag(a, b, 1, "p") < 0) { return 0 - 1; }
+        if (_mh_children(a, b, n, tight) < 0) { return 0 - 1; }
+        if (_mh_tag(a, b, 0, "p") < 0) { return 0 - 1; }
+        return _mh_cr(a, b);
+    }
+    if (k == MD_K_HEADING) {
+        var hn[4];
+        store8(&hn, 104);
+        store8(&hn + 1, 48 + load64(n + _MN_N1));
+        store8(&hn + 2, 0);
+        if (_mh_cr(a, b) < 0 || _mh_tag(a, b, 1, &hn) < 0) { return 0 - 1; }
+        if (_mh_children(a, b, n, 0) < 0) { return 0 - 1; }
+        if (_mh_tag(a, b, 0, &hn) < 0) { return 0 - 1; }
+        return _mh_cr(a, b);
+    }
+    if (k == MD_K_THEMATIC_BREAK) {
+        if (_mh_cr(a, b) < 0 || _mb_cstr(a, b, "<hr />") < 0) { return 0 - 1; }
+        return _mh_cr(a, b);
+    }
+    if (k == MD_K_CODE_BLOCK) {
+        if (_mh_cr(a, b) < 0 || _mb_cstr(a, b, "<pre><code") < 0) { return 0 - 1; }
+        var info = load64(n + _MN_S1);
+        if (info != 0 && str_len(info) > 0) {
+            var id = str_data(info);
+            var il = 0;
+            while (il < str_len(info) && _md_is_ws(load8(id + il)) == 0) { il = il + 1; }
+            if (_mb_cstr(a, b, " class=\"") < 0) { return 0 - 1; }
+            if (il < 9 || memeq(id, "language-", 9) == 0) {
+                if (_mb_cstr(a, b, "language-") < 0) { return 0 - 1; }
+            }
+            if (_mh_esc(a, b, id, il) < 0 || _mb_put(a, b, 34) < 0) { return 0 - 1; }
+        }
+        if (_mb_put(a, b, 62) < 0) { return 0 - 1; }
+        if (_mh_esc_str(a, b, load64(n + _MN_TEXT)) < 0) { return 0 - 1; }
+        if (_mb_cstr(a, b, "</code></pre>") < 0) { return 0 - 1; }
+        return _mh_cr(a, b);
+    }
+    if (k == MD_K_BLOCKQUOTE) {
+        if (_mh_cr(a, b) < 0 || _mh_tag(a, b, 1, "blockquote") < 0 || _mh_cr(a, b) < 0) { return 0 - 1; }
+        if (_mh_children(a, b, n, 0) < 0) { return 0 - 1; }
+        if (_mh_cr(a, b) < 0 || _mh_tag(a, b, 0, "blockquote") < 0) { return 0 - 1; }
+        return _mh_cr(a, b);
+    }
+    if (k == MD_K_LIST) {
+        var ord = load64(n + _MN_N1);
+        if (_mh_cr(a, b) < 0) { return 0 - 1; }
+        if (ord == 1) {
+            if (load64(n + _MN_N2) != 1) {
+                if (_mb_cstr(a, b, "<ol start=\"") < 0) { return 0 - 1; }
+                var nb[24];
+                var nl = fmt_int_buf(load64(n + _MN_N2), &nb);
+                if (_mb_add(a, b, &nb, nl) < 0 || _mb_cstr(a, b, "\">") < 0) { return 0 - 1; }
+            } else {
+                if (_mh_tag(a, b, 1, "ol") < 0) { return 0 - 1; }
+            }
+        } else {
+            if (_mh_tag(a, b, 1, "ul") < 0) { return 0 - 1; }
+        }
+        if (_mh_cr(a, b) < 0) { return 0 - 1; }
+        if (_mh_children(a, b, n, load64(n + _MN_N4)) < 0) { return 0 - 1; }
+        if (_mh_cr(a, b) < 0) { return 0 - 1; }
+        if (ord == 1) { if (_mh_tag(a, b, 0, "ol") < 0) { return 0 - 1; } }
+        else { if (_mh_tag(a, b, 0, "ul") < 0) { return 0 - 1; } }
+        return _mh_cr(a, b);
+    }
+    if (k == MD_K_ITEM) {
+        if (_mh_cr(a, b) < 0 || _mh_tag(a, b, 1, "li") < 0) { return 0 - 1; }
+        var task = load64(n + _MN_N3);
+        var box = 0;
+        if (task == 1) { box = "<input checked=\"\" disabled=\"\" type=\"checkbox\"> "; }
+        if (task == 0) { box = "<input disabled=\"\" type=\"checkbox\"> "; }
+        if (box != 0) { if (_mb_cstr(a, b, box) < 0) { return 0 - 1; } }
+        if (_mh_children(a, b, n, tight) < 0) { return 0 - 1; }
+        if (_mh_tag(a, b, 0, "li") < 0) { return 0 - 1; }
+        return _mh_cr(a, b);
+    }
+    if (k == MD_K_TABLE) {
+        if (_mh_cr(a, b) < 0 || _mb_cstr(a, b, "<table>\n<thead>\n") < 0) { return 0 - 1; }
+        var row = load64(n + _MN_FIRST);
+        if (row != 0) { if (_mh_row(a, b, row, "th") < 0) { return 0 - 1; } row = load64(row + _MN_NEXT); }
+        if (_mb_cstr(a, b, "</thead>\n") < 0) { return 0 - 1; }
+        if (row != 0) {
+            if (_mb_cstr(a, b, "<tbody>\n") < 0) { return 0 - 1; }
+            while (row != 0) {
+                if (_mh_row(a, b, row, "td") < 0) { return 0 - 1; }
+                row = load64(row + _MN_NEXT);
+            }
+            if (_mb_cstr(a, b, "</tbody>\n") < 0) { return 0 - 1; }
+        }
+        return _mb_cstr(a, b, "</table>\n");
+    }
+    if (k == MD_K_TEXT) { return _mh_esc_str(a, b, load64(n + _MN_TEXT)); }
+    if (k == MD_K_SOFTBREAK) { return _mb_put(a, b, 10); }
+    if (k == MD_K_LINEBREAK) { return _mb_cstr(a, b, "<br />\n"); }
+    if (k == MD_K_CODE) {
+        if (_mh_tag(a, b, 1, "code") < 0 || _mh_esc_str(a, b, load64(n + _MN_TEXT)) < 0) { return 0 - 1; }
+        return _mh_tag(a, b, 0, "code");
+    }
+    if (k == MD_K_EMPH || k == MD_K_STRONG || k == MD_K_STRIKETHROUGH) {
+        var tag = "em";
+        if (k == MD_K_STRONG) { tag = "strong"; }
+        if (k == MD_K_STRIKETHROUGH) { tag = "del"; }
+        if (_mh_tag(a, b, 1, tag) < 0 || _mh_children(a, b, n, tight) < 0) { return 0 - 1; }
+        return _mh_tag(a, b, 0, tag);
+    }
+    if (k == MD_K_LINK || k == MD_K_WIKILINK) {
+        if (_mb_cstr(a, b, "<a href=\"") < 0 || _mh_url(a, b, load64(n + _MN_S1)) < 0) { return 0 - 1; }
+        if (_mb_put(a, b, 34) < 0) { return 0 - 1; }
+        if (k == MD_K_WIKILINK) { if (_mb_cstr(a, b, " class=\"wikilink\"") < 0) { return 0 - 1; } }
+        if (k == MD_K_LINK) { if (_mh_title(a, b, load64(n + _MN_S2)) < 0) { return 0 - 1; } }
+        if (_mb_put(a, b, 62) < 0 || _mh_children(a, b, n, tight) < 0) { return 0 - 1; }
+        return _mb_cstr(a, b, "</a>");
+    }
+    if (k == MD_K_IMAGE) {
+        if (_mb_cstr(a, b, "<img src=\"") < 0 || _mh_url(a, b, load64(n + _MN_S1)) < 0) { return 0 - 1; }
+        if (_mb_cstr(a, b, "\" alt=\"") < 0 || _mh_plain(a, b, n) < 0 || _mb_put(a, b, 34) < 0) { return 0 - 1; }
+        if (_mh_title(a, b, load64(n + _MN_S2)) < 0) { return 0 - 1; }
+        return _mb_cstr(a, b, " />");
+    }
+    return 0;
+}
+
+fn _mh_row(a, b, row, tag): i64 {
+    if (_mb_cstr(a, b, "<tr>\n") < 0) { return 0 - 1; }
+    var cell = load64(row + _MN_FIRST);
+    while (cell != 0) {
+        if (_mb_put(a, b, 60) < 0 || _mb_cstr(a, b, tag) < 0) { return 0 - 1; }
+        var al = load64(cell + _MN_N1);
+        var astr = 0;
+        if (al == MD_ALIGN_LEFT) { astr = " align=\"left\""; }
+        if (al == MD_ALIGN_CENTER) { astr = " align=\"center\""; }
+        if (al == MD_ALIGN_RIGHT) { astr = " align=\"right\""; }
+        if (astr != 0) { if (_mb_cstr(a, b, astr) < 0) { return 0 - 1; } }
+        if (_mb_put(a, b, 62) < 0 || _mh_children(a, b, cell, 0) < 0) { return 0 - 1; }
+        if (_mh_tag(a, b, 0, tag) < 0 || _mb_put(a, b, 10) < 0) { return 0 - 1; }
+        cell = load64(cell + _MN_NEXT);
+    }
+    return _mb_cstr(a, b, "</tr>\n");
+}
+
+# Render a tree from bayan_markdown_parse as HTML, allocating through `a`. Returns a Str, or 0 on a
+# refusal.
+fn bayan_markdown_to_html_a(a, root): i64 {
+    if (root == 0) { return 0; }
+    var b = _mb_new(a, 256);
+    if (b == 0) { return 0; }
+    if (_mh_node(a, b, root, 0) < 0) { return 0; }
+    return _mb_str(a, b);
+}
+
+# Render a tree from bayan_markdown_parse as HTML (a Str; 0 on a refusal).
+fn bayan_markdown_to_html(root): i64 { return bayan_markdown_to_html_a(default_alloc(), root); }

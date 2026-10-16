@@ -11,3 +11,4 @@ atomic
 math
 fmt
 fnptr
+unicode

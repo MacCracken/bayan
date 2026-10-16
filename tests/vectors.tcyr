@@ -16,6 +16,7 @@
 #   python3 scripts/gen-toml-vectors.py    tests/fixtures/toml
 #   python3 scripts/gen-csv-vectors.py     tests/fixtures/csv
 #   python3 scripts/gen-yaml-vectors.py    tests/fixtures/yaml
+#   python3 scripts/gen-markdown-vectors.py tests/fixtures/markdown
 #
 # 1.5.3 adds a third set for the same reason the first two exist. src/toml.cyr
 # returned the RAW bytes between the quotes for six releases — escapes
@@ -33,6 +34,8 @@ include "lib/str.cyr"
 include "lib/fmt.cyr"
 include "lib/math.cyr"
 include "lib/assert.cyr"
+include "lib/unicode/categories.cyr"
+include "lib/unicode/casefold.cyr"
 
 include "src/u128.cyr"
 include "src/dtoa.cyr"
@@ -40,6 +43,8 @@ include "src/toml.cyr"
 include "src/csv.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
+include "src/markdown_entities.cyr"
+include "src/markdown.cyr"
 
 alloc_init();
 
@@ -714,6 +719,102 @@ fn run_yaml(): i64 {
     return 42;
 }
 
+# --- markdown: the upstream suites' own examples (1.9.0) ------------------------------------------
+# Expected HTML from the CommonMark and GFM specs and from cmark's and cmark-gfm's test files, not
+# from bayan; scripts/gen-markdown-vectors.py says which examples are excluded and why (raw HTML,
+# which bayan writes as text, and cmark-gfm's footnotes). A `C` row has no expected output, only a
+# document that must not crash the parser.
+var g_mv = 0;
+var g_mv_bad = 0;
+var g_mv_wiki = 0;
+
+fn m_num(buf, p, len, outv): i64 {
+    var v = 0;
+    while (p < len && load8(buf + p) >= 48 && load8(buf + p) <= 57) { v = v * 10 + load8(buf + p) - 48; p = p + 1; }
+    store64(outv, v);
+    return p;
+}
+
+# 1 when b[0..n) contains `[[`.
+fn m_has_wiki(b, n): i64 {
+    var i = 0;
+    while (i + 1 < n) {
+        if (load8(b + i) == 91 && load8(b + i + 1) == 91) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn m_render(src, n, flags): i64 {
+    var doc = bayan_markdown_parse_buf_a(default_alloc(), src, n, flags);
+    if (doc == 0) { return 0; }
+    return bayan_markdown_to_html(doc);
+}
+
+# Run one vector file. `wiki` 1: also run every row without `[[` with MD_EXT_WIKILINKS added, which
+# must change nothing.
+fn run_markdown(path, wiki): i64 {
+    var cap = 1 << 20;
+    var buf = alloc(cap);
+    if (buf == 0) { t_say("cannot allocate the markdown vector buffer\n"); return 1; }
+    var len = file_read_all(path, buf, cap);
+    if (len <= 0) { t_say("cannot read "); t_say(path); t_say("\n"); return 1; }
+    var mbuf = alloc(65536);
+    var hbuf = alloc(65536);
+    var nout[8];
+    var flags[8];
+    var ex[8];
+    var pos = 0;
+    while (pos < len) {
+        var kind = load8(buf + pos);
+        if (kind != 86 && kind != 67) { break; }                 # V C
+        pos = m_num(buf, pos + 2, len, &flags);
+        pos = m_num(buf, pos + 1, len, &ex);
+        pos = c_field(buf, pos + 1, len, mbuf, &nout);
+        var mn = load64(&nout);
+        var hn = 0;
+        if (kind == 86) {
+            pos = c_field(buf, pos + 1, len, hbuf, &nout);
+            hn = load64(&nout);
+        }
+        while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
+        pos = pos + 1;
+        var ok = 0;
+        var got = m_render(mbuf, mn, load64(&flags));
+        if (kind == 67) {
+            if (got != 0) { ok = 1; }
+        } elif (got != 0 && str_len(got) == hn) {
+            if (memeq(str_data(got), hbuf, hn) == 1) { ok = 1; }
+        }
+        if (ok == 1 && wiki == 1 && m_has_wiki(mbuf, mn) == 0) {
+            var gw = m_render(mbuf, mn, load64(&flags) | MD_EXT_WIKILINKS);
+            if (gw == 0 || str_eq(gw, got) == 0) { ok = 0; }
+            g_mv_wiki = g_mv_wiki + 1;
+        }
+        g_mv = g_mv + 1;
+        if (ok == 0) {
+            g_mv_bad = g_mv_bad + 1;
+            if (g_mv_bad <= 5) {
+                t_say("    "); t_say(path); t_say(" example "); t_num(load64(&ex)); t_say(" [");
+                t_dump(mbuf, mn); t_say("]\n");
+            }
+        }
+    }
+    return 42;
+}
+
+fn run_markdown_all(): i64 {
+    if (run_markdown("tests/fixtures/markdown/commonmark-0.31.2.vec", 1) != 42) { return 1; }
+    if (run_markdown("tests/fixtures/markdown/gfm-0.29.vec", 0) != 42) { return 1; }
+    if (run_markdown("tests/fixtures/markdown/cmark-gfm-extensions.vec", 0) != 42) { return 1; }
+    if (run_markdown("tests/fixtures/markdown/cmark-regression.vec", 1) != 42) { return 1; }
+    if (run_markdown("tests/fixtures/markdown/cmark-gfm-regression.vec", 0) != 42) { return 1; }
+    t_say("markdown vectors: "); t_num(g_mv); t_say(" ("); t_num(g_mv_wiki);
+    t_say(" again with wiki links on)   wrong: "); t_num(g_mv_bad); t_say("\n");
+    if (g_mv_bad > 0) { return 1; }
+    return 42;
+}
+
 test_group("vectors: u128 against Python's arbitrary-precision integers");
 var uv = run_u128();
 assert_eq(uv, 42, "u128: the vector file loaded and every check ran");
@@ -750,5 +851,12 @@ var yvv = run_yaml();
 assert_eq(yvv, 42, "yaml: the vector file loaded and every check ran");
 assert_gt(g_yv, 3400, "yaml: the expected number of vectors actually ran");
 assert_eq(g_yv_bad, 0, "yaml: zero disagreements with the oracle");
+
+test_group("vectors: markdown against the CommonMark, GFM, cmark and cmark-gfm suites (1.9.0)");
+var mvv = run_markdown_all();
+assert_eq(mvv, 42, "markdown: the vector files loaded and every check ran");
+assert_gt(g_mv, 660, "markdown: the expected number of vectors actually ran");
+assert_gt(g_mv_wiki, 580, "markdown: (and the CommonMark ones again with wiki links on)");
+assert_eq(g_mv_bad, 0, "markdown: zero disagreements with the suites");
 
 var r = assert_summary();

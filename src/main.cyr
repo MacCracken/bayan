@@ -1,5 +1,5 @@
-# bayan — smoke entry. Includes the stdlib prereqs + the full bundle (8 data
-# modules + the back-compat alias module) so `cyrius build` proves they parse,
+# bayan — smoke entry. Includes the stdlib prereqs + the bundle (every data
+# module but pdf, + the back-compat alias module) so `cyrius build` proves they parse,
 # link, and assemble together exactly as a downstream consumer would use
 # `lib/bayan.cyr`. Then exercises a few canonical bayan_* calls plus an alias.
 # Deep correctness lives in cyrius's json/toml/csv/base64/bigint/u128/cyml
@@ -8,8 +8,9 @@
 # NOTE: main.cyr carries its own includes (auto-prepend is skipped for files
 # with include directives), and lists the stdlib prereqs the consumer must
 # supply — `result` in particular (Result/`?`), which is NOT in cyrius's own
-# stdlib auto-prepend set, and `math` (1.5.14: bayan_f64_parse delegates to its
-# f64_parse_n).
+# stdlib auto-prepend set, `math` (1.5.14: bayan_f64_parse delegates to its
+# f64_parse_n), and `unicode/categories` + `unicode/casefold` (1.9.0: markdown's
+# emphasis rules and link-label matching).
 
 include "lib/syscalls.cyr"
 include "lib/string.cyr"
@@ -22,6 +23,8 @@ include "lib/math.cyr"
 include "lib/tagged.cyr"
 include "lib/result.cyr"
 include "lib/fnptr.cyr"
+include "lib/unicode/categories.cyr"
+include "lib/unicode/casefold.cyr"
 
 include "src/base64.cyr"
 include "src/csv.cyr"
@@ -32,6 +35,8 @@ include "src/cyml.cyr"
 include "src/dtoa.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
+include "src/markdown_entities.cyr"
+include "src/markdown.cyr"
 include "src/_compat.cyr"
 
 fn main(): i64 {
@@ -61,6 +66,13 @@ fn main(): i64 {
     var yv = bayan_yaml_parse_buf(ydoc, strlen(ydoc));
     if (bayan_json_v_is_obj(yv) != 1) { return 5; }
     if (bayan_json_v_int(bayan_json_v_obj_get_by_cstr(yv, "k")) != 42) { return 6; }
+
+    # markdown parses to its tree and renders HTML; the emphasis rules reach the
+    # unicode tables, and the link label is case-folded (ẞ matches ss)
+    var mdoc = bayan_markdown_parse(str_from("# *hi* [x][\xe1\xba\x9e]\n\n[ss]: /u\n"));
+    if (bayan_markdown_kind(bayan_markdown_first_child(mdoc)) != MD_K_HEADING) { return 7; }
+    var mhtml = bayan_markdown_to_html(mdoc);
+    if (str_eq_cstr(mhtml, "<h1><em>hi</em> <a href=\"/u\">x</a></h1>\n") != 1) { return 8; }
 
     return 42;
 }

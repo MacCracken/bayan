@@ -1,0 +1,505 @@
+# markdown fuzz harness — the parser and renderer over generated, damaged and pathological documents
+# (1.9.0).
+#
+# tests/vectors.tcyr checks bayan_markdown against the upstream suites' examples, and the scratch
+# differential against commonmark.js (CHANGELOG 1.9.0) found what they do not cover. This harness
+# keeps the properties that need no oracle, at a volume no fixture holds:
+#
+#   SOUP     documents built from tokens that start every block and inline construct (list and
+#            quote markers, fences, `#`, `|`, delimiter runs, brackets, entities, backslashes,
+#            autolinks, `www.`, `[[`), across CRLF, tabs and non-ASCII. Each is parsed with no
+#            flags and with MD_EXT_GFM | MD_EXT_WIKILINKS, then once more after 1..3 random edits.
+#   EDGES    every prefix of documents that end the input in each scanner's states: inside an
+#            entity, a backtick run, a link destination or title, a definition, an autolink, a
+#            table row, an email or www link, a wiki link, after a backslash.
+#   DEEP     nesting from 120 to 135 levels, in block quotes, lists and emphasis, across the cap.
+#   LARGE    cmark's pathological inputs (test/pathological_tests.py), at sizes where a quadratic
+#            path would run past the harness timeout, and a table past the filled-cell bound.
+#
+# Properties. Any failure prints the document and exits non-zero:
+#   (a) no crash, and no load past the source: every document is parsed from the END of a mapping
+#       whose next page is PROT_NONE, so a read at src[len] is a SIGSEGV.
+#   (b) the HTML is well formed: bayan escapes every `<` of the input, so every `<` in its output
+#       opens a tag it wrote. Each must be one of the tags the renderer writes, and they must nest:
+#       a stack of names, void tags (hr, br, img, input) aside, empty at the end.
+#   (c) the parse does not depend on where the source sits: a second parse, from the heap, writes
+#       the same bytes.
+#   (d) one document in eight is parsed again with one allocation refused, picked at random from
+#       the ones the parse makes: the parse returns 0, with "out of memory".
+#   (e) a document past the nesting cap is refused with "nesting too deep", never parsed partly.
+#
+# xorshift64, seeded as tests/json.fcyr is, so a failure reproduces exactly. The heap is rewound
+# before every document.
+
+# NOTE: a file carrying include directives skips the [deps].stdlib auto-prepend, so the stdlib
+# prerequisites are listed explicitly here, exactly as src/main.cyr does.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/mmap.cyr"
+include "lib/unicode/categories.cyr"
+include "lib/unicode/casefold.cyr"
+
+include "src/markdown_entities.cyr"
+include "src/markdown.cyr"
+
+var g_x = 0x9E3779B97F4A7C15;
+
+fn xs64(): i64 {
+    g_x = g_x ^ (g_x << 13);
+    g_x = g_x ^ (g_x >> 7);
+    g_x = g_x ^ (g_x << 17);
+    return g_x;
+}
+# Uniform in 0..n-1.
+fn fz_rand(n): i64 { return ((xs64() >> 1) % n); }
+
+fn fz_say(s): i64 { print(s, strlen(s)); return 0; }
+fn fz_num(n): i64 {
+    var b[24];
+    var l = fmt_int_buf(n, &b);
+    print(&b, l);
+    return 0;
+}
+# A byte span, printable, with other bytes as \xHH.
+fn fz_dump(p, n): i64 {
+    var hex = "0123456789abcdef";
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c >= 32 && c < 127 && c != 92) { print(p + i, 1); }
+        else {
+            var e[4];
+            store8(&e, 92);
+            store8(&e + 1, 120);
+            store8(&e + 2, load8(hex + (c >> 4)));
+            store8(&e + 3, load8(hex + (c & 15)));
+            print(&e, 4);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Tokens, separated by \x01 and ended by \x02, in one literal (static data, so alloc_reset leaves
+# them). An empty token is an empty line.
+var FZ_PRE = "\x01\x01\x01\x01> \x01>\x01- \x01* \x01+ \x011. \x012) \x0110. \x01 \x01  \x01   \x01    \x01\t\x01 \t\x01# \x01## \x01###### \x01####### \x01#\x01```\x01~~~\x01````\x01``` x\x01~~~ y z\x01---\x01***\x01___\x01- - -\x01===\x01--\x01[foo]: /url\x01[foo]: <a b> 'title'\x01[Foo bar]:\n/u\x01[\xe1\xba\x9e]: /ss\x01  - \x01   > \x01> - \x01- > \x011. - \x01-\t\x01*    \x015.  \x01| a | b |\x01|-|:-:|\x01| --- | --- |\x01- [ ] \x01- [x] \x01* [X] \x02";
+var FZ_INL = "*\x01**\x01***\x01_\x01__\x01`\x01``\x01[\x01]\x01![\x01(\x01)\x01<http://a.b>\x01<a@b.c>\x01<\x01>\x01\\\x01\\*\x01\\[\x01&amp;\x01&#35;\x01&#x1F600;\x01&copy;\x01&bogus;\x01&#0;\x01 \x01  \x01\t\x01foo\x01bar\x01a\x011\x01\xc3\xa9\x01\xe1\xba\x9e\x01ss\x01[foo]\x01[Foo]\x01[foo][]\x01[x](/u \"t\")\x01[x](<y z>)\x01](/u)\x01](\x01\"\x01'\x01!\x01.\x01-\x01#\x01~\x01~~\x01|\x01:\x01\xc2\xa0\x01\xe2\x82\xb9\x01a*\x01*a\x01_a_\x01a_b\x01**a**\x01`a`\x01x  \n\x01x\\\n\x01(a)\x01[a]: b\x01*(*\x01www.x.org\x01http://a.b/c\x01i@j.kl\x01mailto:m@n.op\x01[[w]]\x01[[w|x]]\x01[[\x01]]\x01javascript:x\x01<div>\x02";
+var g_pre[2048];        # FZ_PRE's tokens: offset, length
+var g_npre = 0;
+var g_inl[2048];
+var g_ninl = 0;
+
+fn fz_index(tab, out): i64 {
+    var n = 0;
+    var i = 0;
+    loop {
+        var st = i;
+        while (load8(tab + i) != 1 && load8(tab + i) != 2) { i = i + 1; }
+        store64(out + n * 16, st);
+        store64(out + n * 16 + 8, i - st);
+        n = n + 1;
+        if (load8(tab + i) == 2 || n >= 120) { break; }
+        i = i + 1;
+    }
+    return n;
+}
+
+const FZ_CAP = 65536;
+var g_doc = 0;          # the document being built (FZ_CAP)
+var g_fence = 0;        # the end of a mapping whose next page is PROT_NONE
+var g_bad = 0;
+var g_docs = 0;
+var g_refused = 0;
+var g_deep = 0;
+
+fn fz_addn(at, s, n): i64 {
+    if (at + n >= FZ_CAP - 8) { return at; }
+    memcpy(g_doc + at, s, n);
+    return at + n;
+}
+fn fz_add(at, s): i64 { return fz_addn(at, s, strlen(s)); }
+# Token k of table tab, indexed in idx.
+fn fz_tok(at, tab, idx, k): i64 { return fz_addn(at, tab + load64(idx + k * 16), load64(idx + k * 16 + 8)); }
+
+# A soup document into g_doc; its length.
+fn fz_soup(): i64 {
+    var n = 0;
+    var lines = 1 + fz_rand(7);
+    var crlf = 0;
+    if (fz_rand(20) == 0) { crlf = 1; }
+    var l = 0;
+    while (l < lines) {
+        if (fz_rand(5) > 0) {
+            n = fz_tok(n, FZ_PRE, &g_pre, fz_rand(g_npre));
+            var k = fz_rand(9);
+            while (k > 0) {
+                n = fz_tok(n, FZ_INL, &g_inl, fz_rand(g_ninl));
+                k = k - 1;
+            }
+        }
+        if (crlf == 1) { n = fz_add(n, "\r\n"); } else { n = fz_add(n, "\n"); }
+        l = l + 1;
+    }
+    if (fz_rand(5) == 0 && n > 0) { n = n - 1; }
+    return n;
+}
+
+# 1..3 random edits to g_doc[0..n): replace, insert or delete a byte, or cut it short.
+fn fz_damage(n): i64 {
+    var e = 1 + fz_rand(3);
+    while (e > 0) {
+        var op = fz_rand(4);
+        if (n == 0) { op = 1; }
+        var at = 0;
+        if (n > 0) { at = fz_rand(n); }
+        var b = fz_rand(256);
+        if (fz_rand(2) == 0) { b = load8("*_`[]()<>!\\&#|~:-+>\n\t ` x" + fz_rand(24)); }
+        if (op == 0) { store8(g_doc + at, b); }
+        elif (op == 1 && n < FZ_CAP - 8) {
+            var q = n;
+            while (q > at) { store8(g_doc + q, load8(g_doc + q - 1)); q = q - 1; }
+            store8(g_doc + at, b);
+            n = n + 1;
+        } elif (op == 2) {
+            var q2 = at;
+            while (q2 + 1 < n) { store8(g_doc + q2, load8(g_doc + q2 + 1)); q2 = q2 + 1; }
+            n = n - 1;
+        } else { n = at; }
+        e = e - 1;
+    }
+    return n;
+}
+
+# (b): the tags of h nest, and each is one the renderer writes. Returns 1 when well formed.
+fn fz_tag_id(p, n): i64 {
+    var names = " p h1 h2 h3 h4 h5 h6 blockquote ul ol li pre code em strong del a table thead tbody tr th td hr br img input ";
+    var nl = strlen(names);
+    var i = 0;
+    var id = 0;
+    while (i < nl) {
+        if (load8(names + i) == 32) {
+            id = id + 1;
+            if (i + n + 1 < nl && memeq(names + i + 1, p, n) == 1 && load8(names + i + 1 + n) == 32) { return id; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fz_well_formed(h): i64 {
+    var s = str_data(h);
+    var n = str_len(h);
+    var open_tags[1024];
+    var sp = 0;
+    var i = 0;
+    while (i < n) {
+        if (load8(s + i) == 60) {
+            var j = i + 1;
+            var close = 0;
+            if (j < n && load8(s + j) == 47) { close = 1; j = j + 1; }
+            var ns = j;
+            while (j < n && load8(s + j) != 32 && load8(s + j) != 62 && load8(s + j) != 47) { j = j + 1; }
+            var id = fz_tag_id(s + ns, j - ns);
+            if (id == 0) { return 0; }
+            while (j < n && load8(s + j) != 62) {
+                if (load8(s + j) == 60) { return 0; }        # a title may span lines; no `<` though
+                j = j + 1;
+            }
+            if (j >= n) { return 0; }
+            if (id >= 24) {
+                if (close == 1) { return 0; }                    # hr br img input are void
+            } elif (close == 0) {
+                if (sp >= 128) { return 0; }
+                store64(&open_tags + sp * 8, id);
+                sp = sp + 1;
+            } else {
+                if (sp == 0) { return 0; }
+                sp = sp - 1;
+                if (load64(&open_tags + sp * 8) != id) { return 0; }
+            }
+            i = j + 1;
+        } else {
+            i = i + 1;
+        }
+    }
+    if (sp != 0) { return 0; }
+    return 1;
+}
+
+fn fz_fail(what, n): i64 {
+    g_bad = g_bad + 1;
+    if (g_bad <= 10) {
+        fz_say("markdown fuzz: "); fz_say(what); fz_say(": [");
+        fz_dump(g_doc, n);
+        fz_say("]\n");
+    }
+    return 0;
+}
+
+# The refusal lever: the default allocator's alloc slot, refusing request g_nth alone.
+var g_nth = 0 - 1;
+var g_calls = 0;
+fn fz_refuse_nth(state, size): i64 {
+    g_calls = g_calls + 1;
+    if (g_calls == g_nth) { return 0; }
+    return alloc(size);
+}
+
+# Parse g_doc[0..n) with flags at the fence and from the heap, and check (a)-(e).
+fn fz_check(n, flags): i64 {
+    if (n > FZ_CAP) { return 0; }
+    memcpy(g_fence - n, g_doc, n);
+    var dv = default_alloc();
+    var saved = load64(dv);
+    store64(dv, &fz_refuse_nth);
+    g_nth = 0 - 1;
+    g_calls = 0;
+    var d1 = bayan_markdown_parse_buf_a(dv, g_fence - n, n, flags);
+    var calls = g_calls;
+    store64(dv, saved);
+    g_docs = g_docs + 1;
+    if (d1 == 0) {
+        if (str_eq_cstr(str_from(bayan_markdown_last_error()), "nesting too deep") == 1) { g_deep = g_deep + 1; return 0; }
+        return fz_fail("refused a document", n);
+    }
+    var h1 = bayan_markdown_to_html(d1);
+    if (h1 == 0) { return fz_fail("no HTML", n); }
+    if (fz_well_formed(h1) == 0) {
+        fz_fail("ill-formed HTML", n);
+        fz_say("    "); fz_dump(str_data(h1), str_len(h1)); fz_say("\n");
+        return 0;
+    }
+    var copy = alloc(n + 1);
+    memcpy(copy, g_doc, n);
+    var d2 = bayan_markdown_parse_buf_a(default_alloc(), copy, n, flags);
+    if (d2 == 0 || str_eq(bayan_markdown_to_html(d2), h1) == 0) { return fz_fail("a second parse differs", n); }
+    if (calls > 0 && fz_rand(8) == 0) {
+        store64(dv, &fz_refuse_nth);
+        g_nth = 1 + fz_rand(calls);
+        g_calls = 0;
+        var d3 = bayan_markdown_parse_buf_a(dv, g_fence - n, n, flags);
+        store64(dv, saved);
+        g_nth = 0 - 1;
+        g_refused = g_refused + 1;
+        if (d3 != 0) { return fz_fail("a refused allocation still parsed", n); }
+        if (str_eq_cstr(str_from(bayan_markdown_last_error()), "out of memory") == 0) { return fz_fail("refused, but not out of memory", n); }
+    }
+    return 1;
+}
+
+fn fz_both(n): i64 {
+    fz_check(n, 0);
+    fz_check(n, MD_EXT_GFM | MD_EXT_WIKILINKS);
+    return 0;
+}
+
+# Every prefix of cstr doc, under both flag sets.
+fn fz_prefixes(doc): i64 {
+    var n = strlen(doc);
+    memcpy(g_doc, doc, n);
+    var l = 0;
+    while (l <= n) {
+        alloc_reset();
+        fz_both(l);
+        l = l + 1;
+    }
+    return n + 1;
+}
+
+fn fz_edges(): i64 {
+    var k = 0;
+    k = k + fz_prefixes("a &amp; &#x1F600; &#35; b");
+    k = k + fz_prefixes("``a`` ```b`` `c");
+    k = k + fz_prefixes("[a](<b c> \"t\\\"\") [d](e 'f') [g](h (i))");
+    k = k + fz_prefixes("[r]: <u v> \"t\"\n[s]:\n  /w\n  'x'\n\n[r] [s][] [R][s]");
+    k = k + fz_prefixes("<http://a.b/c> <m@n.op> <a");
+    k = k + fz_prefixes("| a \\| b | `c|d` |\n| :-- | --: |\n| 1 | 2 |\n|");
+    # A row's last cell ending in a backslash at the end of the input: the cell scanner must not
+    # look past it for the character it might escape.
+    k = k + fz_prefixes("| a | b |\n| - | - |\n| c \\");
+    k = k + fz_prefixes("|a|\n|-|\n\\");
+    k = k + fz_prefixes("x i@j.kl. www.a.b/c?d=e&f;) http://g.h/(i) mailto:m@n.op xmpp:x@y.z/r.");
+    k = k + fz_prefixes("[[a b|c d]] [[e]] [[f|");
+    k = k + fz_prefixes("\\* \\\n\\");
+    k = k + fz_prefixes("```z\ncode\n  ```\n~~~\n\n    ind\n\t\ttab\n");
+    k = k + fz_prefixes("> - [ ] a\n>   - [x] b\n>\n> c\n");
+    k = k + fz_prefixes("*a **b _c_ d** e* ~~f~~ ~g~ __h__");
+    k = k + fz_prefixes("Head\n===\nSub\n---\n# T #\n");
+    k = k + fz_prefixes("\xef\xbb\xbf\x00x\r\ny\rz");
+    return k;
+}
+
+# (e): nesting from 120 to 135 levels in each of three shapes.
+fn fz_deep(): i64 {
+    var lv = 120;
+    while (lv <= 135) {
+        var shape = 0;
+        while (shape < 3) {
+            alloc_reset();
+            var n = 0;
+            var i = 0;
+            if (shape == 0) {
+                while (i < lv) { n = fz_add(n, ">"); i = i + 1; }
+                n = fz_add(n, " a *b*");
+            } elif (shape == 1) {
+                while (i < lv / 2) { n = fz_add(n, "- "); i = i + 1; }
+                n = fz_add(n, "x");
+            } else {
+                while (i < lv) { n = fz_add(n, "*a "); i = i + 1; }
+                n = fz_add(n, "b");
+                i = 0;
+                while (i < lv) { n = fz_add(n, " a*"); i = i + 1; }
+            }
+            fz_both(n);
+            shape = shape + 1;
+        }
+        lv = lv + 1;
+    }
+    return 0;
+}
+
+# One large input built from `unit` repeated k times, parsed with flags; it must parse, and its HTML
+# must be well formed. A quadratic path at these sizes runs past the harness timeout.
+fn fz_large(unit, k, flags): i64 {
+    alloc_reset();
+    var sb = str_builder_new();
+    var i = 0;
+    while (i < k) { str_builder_add_cstr(sb, unit); i = i + 1; }
+    var src = str_builder_build(sb);
+    var d = bayan_markdown_parse_ext(src, flags);
+    if (d == 0) {
+        if (str_eq_cstr(str_from(bayan_markdown_last_error()), "nesting too deep") == 1) { return 0; }
+        g_bad = g_bad + 1;
+        fz_say("markdown fuzz: a large document was refused: "); fz_say(unit); fz_say("\n");
+        return 0;
+    }
+    var h = bayan_markdown_to_html(d);
+    if (h == 0 || fz_well_formed(h) == 0) {
+        g_bad = g_bad + 1;
+        fz_say("markdown fuzz: a large document's HTML is ill-formed: "); fz_say(unit); fz_say("\n");
+    }
+    return 0;
+}
+
+fn fz_large_all(): i64 {
+    fz_large("a_ ", 100000, 0);
+    # cmark's issue #389: emphasis whose openers' bound, kept as a pointer to a delimiter that is
+    # then removed, stops bounding. The emphasis nests past the cap, so this is refused, but only
+    # after the inlines are parsed.
+    alloc_reset();
+    var sb0 = str_builder_new();
+    var i0 = 0;
+    while (i0 < 60000) { str_builder_add_cstr(sb0, "*a "); i0 = i0 + 1; }
+    i0 = 0;
+    while (i0 < 60000) { str_builder_add_cstr(sb0, "_a*_ "); i0 = i0 + 1; }
+    if (bayan_markdown_parse(str_builder_build(sb0)) != 0) { g_bad = g_bad + 1; fz_say("markdown fuzz: issue #389 parsed past the cap\n"); }
+    fz_large("[a", 100000, 0);
+    fz_large("*a_ ", 80000, 0);
+    fz_large("[ (](", 80000, 0);
+    fz_large("![[]()", 100000, 0);
+    fz_large("[a](<b", 60000, 0);
+    fz_large("[a](b", 60000, 0);
+    fz_large("&amp;", 200000, 0);
+    fz_large("[a][", 60000, 0);
+    fz_large("www.a_b.c_d ", 30000, MD_EXT_GFM);
+    fz_large("a@b.c@d.e@", 30000, MD_EXT_GFM);
+    fz_large("~~a~~ ", 30000, MD_EXT_GFM);
+    # Backtick runs of every length 1..2499, as cmark's test has them.
+    alloc_reset();
+    var sb = str_builder_new();
+    var r = 1;
+    while (r < 2500) {
+        str_builder_add_cstr(sb, "e");
+        var t = 0;
+        while (t < r) { str_builder_add_cstr(sb, "`"); t = t + 1; }
+        r = r + 1;
+    }
+    var bt = bayan_markdown_parse(str_builder_build(sb));
+    if (bt == 0 || bayan_markdown_to_html(bt) == 0) { g_bad = g_bad + 1; fz_say("markdown fuzz: the backtick runs failed\n"); }
+    # Many definitions, each referenced once: the lookups must not scan the definitions.
+    alloc_reset();
+    sb = str_builder_new();
+    var i = 0;
+    while (i < 40000) {
+        str_builder_add_cstr(sb, "[d"); str_builder_add_int(sb, i); str_builder_add_cstr(sb, "]: /u\n");
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 40000) {
+        str_builder_add_cstr(sb, "[d"); str_builder_add_int(sb, i); str_builder_add_cstr(sb, "] ");
+        i = i + 1;
+    }
+    var rf = bayan_markdown_parse(str_builder_build(sb));
+    if (rf == 0) { g_bad = g_bad + 1; fz_say("markdown fuzz: the definitions failed\n"); }
+    else {
+        var links = 0;
+        var c = bayan_markdown_first_child(bayan_markdown_first_child(rf));
+        while (c != 0) {
+            if (bayan_markdown_kind(c) == MD_K_LINK) { links = links + 1; }
+            c = bayan_markdown_next(c);
+        }
+        if (links != 40000) { g_bad = g_bad + 1; fz_say("markdown fuzz: not every reference was found\n"); }
+    }
+    # A 1024-column header and 600 one-cell rows fill in 1023 cells a row; past 524,288 filled
+    # cells the lines stop being rows, and the rest is a paragraph.
+    alloc_reset();
+    sb = str_builder_new();
+    str_builder_add_cstr(sb, "|");
+    i = 0;
+    while (i < 1024) { str_builder_add_cstr(sb, "a|"); i = i + 1; }
+    str_builder_add_cstr(sb, "\n|");
+    i = 0;
+    while (i < 1024) { str_builder_add_cstr(sb, "-|"); i = i + 1; }
+    str_builder_add_cstr(sb, "\n");
+    i = 0;
+    while (i < 600) { str_builder_add_cstr(sb, "x\n"); i = i + 1; }
+    var tb = bayan_markdown_parse_ext(str_builder_build(sb), MD_EXT_TABLES);
+    var tt = bayan_markdown_first_child(tb);
+    if (bayan_markdown_kind(tt) != MD_K_TABLE || bayan_markdown_child_count(tt) != 514
+        || bayan_markdown_kind(bayan_markdown_next(tt)) != MD_K_PARAGRAPH) {
+        g_bad = g_bad + 1;
+        fz_say("markdown fuzz: the filled-cell bound did not hold at 513 body rows\n");
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var fm = mmap_anon(FZ_CAP + 4096);
+    if (fm == 0) { fz_say("markdown fuzz: mmap failed\n"); return 1; }
+    if (cyr_mprotect(fm + FZ_CAP, 4096, 0) != 0) { fz_say("markdown fuzz: mprotect failed\n"); return 1; }
+    g_fence = fm + FZ_CAP;
+    g_doc = mmap_anon(FZ_CAP);
+    if (g_doc == 0) { fz_say("markdown fuzz: mmap failed\n"); return 1; }
+    g_npre = fz_index(FZ_PRE, &g_pre);
+    g_ninl = fz_index(FZ_INL, &g_inl);
+
+    var it = 0;
+    while (it < 6000) {
+        alloc_reset();
+        var n = fz_soup();
+        fz_both(n);
+        n = fz_damage(n);
+        fz_both(n);
+        it = it + 1;
+    }
+    var nedge = fz_edges();
+    fz_deep();
+    fz_large_all();
+
+    fz_say("markdown fuzz: "); fz_num(g_docs); fz_say(" parses ("); fz_num(nedge);
+    fz_say(" edge prefixes, "); fz_num(g_deep); fz_say(" refused as too deep, ");
+    fz_num(g_refused); fz_say(" with an allocation refused), large inputs; ");
+    fz_num(g_bad); fz_say(" wrong\n");
+    if (g_bad > 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+syscall(60, r);
