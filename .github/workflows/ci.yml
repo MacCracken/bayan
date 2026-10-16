@@ -28,7 +28,7 @@ defaults:
 #   static     format, lint, include audit, and the source-level naming checks
 #   x86_64     build, smoke, suite, fuzz, bench, coverage, mulmod + divmod cost
 #   aarch64    the same program cross-built for aarch64 and run under qemu
-#   oracles    independent oracles: the PDF validator, font metrics, vectors (u128, f64, toml, csv)
+#   oracles    independent oracles: the PDF validator, font metrics, vectors (u128, f64, toml, csv, yaml)
 #   dist       the bundles, their regeneration, and the consumer/deprecation gate
 #
 # The committed lib/ is what every job builds against; only `toolchain` runs
@@ -514,6 +514,25 @@ jobs:
           python3 -W error scripts/gen-csv-vectors.py "${RUNNER_TEMP}/cv"
           diff "${RUNNER_TEMP}/cv/csv.vec" tests/fixtures/csv/csv.vec \
             || { echo "::error::csv vectors differ from scripts/gen-csv-vectors.py output"; exit 1; }
+
+      # And the YAML quoted-scalar vectors (1.8.0), whose oracle is PyYAML. It is
+      # not in the stdlib, so the step installs the distribution's python3-yaml
+      # when the import fails, as the aarch64 job installs qemu-user, and fails
+      # if it still cannot import it: the oracle is never silently skipped.
+      # src/yaml.cyr kept quoted bodies verbatim until 1.8.0, and each quote scan
+      # stopped at the first quote character.
+      - name: YAML vectors regenerate identically
+        run: |
+          set -euo pipefail
+          if ! python3 -c 'import yaml' 2>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq python3-yaml
+          fi
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' \
+            || { echo "::error::python3 cannot import yaml (PyYAML); the YAML oracle cannot run"; exit 1; }
+          python3 -W error scripts/gen-yaml-vectors.py "${RUNNER_TEMP}/yv"
+          diff "${RUNNER_TEMP}/yv/strings.vec" tests/fixtures/yaml/strings.vec \
+            || { echo "::error::yaml vectors differ from scripts/gen-yaml-vectors.py output"; exit 1; }
 
   # --- distribution: bayan's actual product is dist/, not build/ -----------
   dist:

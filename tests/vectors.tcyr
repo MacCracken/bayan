@@ -15,6 +15,7 @@
 #   python3 scripts/gen-numeric-vectors.py tests/fixtures/numeric
 #   python3 scripts/gen-toml-vectors.py    tests/fixtures/toml
 #   python3 scripts/gen-csv-vectors.py     tests/fixtures/csv
+#   python3 scripts/gen-yaml-vectors.py    tests/fixtures/yaml
 #
 # 1.5.3 adds a third set for the same reason the first two exist. src/toml.cyr
 # returned the RAW bytes between the quotes for six releases — escapes
@@ -37,6 +38,8 @@ include "src/u128.cyr"
 include "src/dtoa.cyr"
 include "src/toml.cyr"
 include "src/csv.cyr"
+include "src/json.cyr"
+include "src/yaml.cyr"
 
 alloc_init();
 
@@ -638,6 +641,79 @@ fn run_csv(): i64 {
     return 42;
 }
 
+# =============================================================================
+# yaml quoted scalars against PyYAML (1.8.0)
+# =============================================================================
+#
+# S <doc> <value>: the string at key k. K <doc> <key>: the document's one key.
+# A <doc> <value>: element 0 of k's flow sequence. X <doc>: PyYAML refuses it,
+# so bayan must. Hex fields, `-` for an empty one (scripts/gen-yaml-vectors.py).
+# Until 1.8.0 a quoted body was verbatim, and each quote scan stopped at the
+# first quote character.
+
+var g_yv = 0;
+var g_yv_bad = 0;
+
+fn y_got_equals(got, wbuf, wn): i64 {
+    if (got == 0) { return 0; }
+    if (str_len(got) != wn) { return 0; }
+    if (wn == 0) { return 1; }
+    return memeq(str_data(got), wbuf, wn);
+}
+
+fn run_yaml(): i64 {
+    var cap = 1 << 20;
+    var buf = alloc(cap);
+    if (buf == 0) { t_say("cannot allocate the yaml vector buffer\n"); return 1; }
+    var len = file_read_all("tests/fixtures/yaml/strings.vec", buf, cap);
+    if (len <= 0) { t_say("cannot read tests/fixtures/yaml/strings.vec\n"); return 1; }
+    var dbuf = alloc(8192);
+    var wbuf = alloc(8192);
+    var nout[8];
+    var pos = 0;
+    while (pos < len) {
+        var kind = load8(buf + pos);
+        if (kind != 83 && kind != 75 && kind != 65 && kind != 88) { break; }   # S K A X
+        pos = pos + 2;
+        pos = c_field(buf, pos, len, dbuf, &nout);
+        var dn = load64(&nout);
+        var wn = 0;
+        if (kind != 88) {
+            pos = c_field(buf, pos + 1, len, wbuf, &nout);
+            wn = load64(&nout);
+        }
+        while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
+        pos = pos + 1;
+        var tree = bayan_yaml_parse_buf(dbuf, dn);
+        var ok = 0;
+        if (kind == 88) {
+            if (tree == 0) { ok = 1; }
+        } elif (tree != 0) {
+            if (kind == 83) {
+                ok = y_got_equals(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(tree, "k")), wbuf, wn);
+            } elif (kind == 75) {
+                if (bayan_json_v_obj_len(tree) == 1) { ok = y_got_equals(bayan_json_v_obj_key(tree, 0), wbuf, wn); }
+            } else {
+                var seq = bayan_json_v_obj_get_by_cstr(tree, "k");
+                ok = y_got_equals(bayan_json_v_str(bayan_json_v_arr_get(seq, 0)), wbuf, wn);
+            }
+        }
+        g_yv = g_yv + 1;
+        if (ok == 0) {
+            g_yv_bad = g_yv_bad + 1;
+            if (g_yv_bad <= 5) {
+                t_say("    yaml vector "); t_num(g_yv); t_say(" kind ");
+                var kb[1]; store8(&kb, kind); print(&kb, 1);
+                t_say(" ["); t_dump(dbuf, dn); t_say("]\n");
+            }
+        }
+    }
+    t_say("yaml vectors: "); t_num(g_yv);
+    t_say("   wrong: "); t_num(g_yv_bad); t_say("\n");
+    if (g_yv_bad > 0) { return 1; }
+    return 42;
+}
+
 test_group("vectors: u128 against Python's arbitrary-precision integers");
 var uv = run_u128();
 assert_eq(uv, 42, "u128: the vector file loaded and every check ran");
@@ -668,5 +744,11 @@ var cvv = run_csv();
 assert_eq(cvv, 42, "csv: the vector file loaded and every check ran");
 assert_gt(g_cv, 4800, "csv: the expected number of vectors actually ran");
 assert_eq(g_cv_bad, 0, "csv: zero disagreements with the oracle");
+
+test_group("vectors: yaml quoted scalars against PyYAML (1.8.0)");
+var yvv = run_yaml();
+assert_eq(yvv, 42, "yaml: the vector file loaded and every check ran");
+assert_gt(g_yv, 3400, "yaml: the expected number of vectors actually ran");
+assert_eq(g_yv_bad, 0, "yaml: zero disagreements with the oracle");
 
 var r = assert_summary();

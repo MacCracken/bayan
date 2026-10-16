@@ -4279,9 +4279,13 @@ assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 0, "cyml: 
 assert_eq(bayan_cyml_doc_header_len(tm_d), 1, "cyml: (after the file header x)");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse("x\n[[entries]", 13)), 0,
   "cyml: a marker cut off before its last byte is still not one");
+# A CRLF marker is a marker (1.8.0). To 1.7.1 a CR ended no line, so this was one entry, from the
+# `---`, whose 19-byte header held the marker as text.
 tm_d = bayan_cyml_parse(TM_CRLF, strlen(TM_CRLF));
-assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: a CRLF marker is not a marker: one entry, from the ---");
-assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 19, "cyml: whose header holds it as text");
+assert_eq(bayan_cyml_doc_entry_count(tm_d), 1, "cyml: a CRLF marker is a marker: one entry, from it");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(tm_d, 0)), 4,
+  "cyml: whose header is id=1 (it was the marker text and id=1, 19 bytes)");
+assert_eq(bayan_cyml_doc_header_len(tm_d), 1, "cyml: (after the file header x)");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_INDENT, strlen(TM_INDENT))), 0,
   "cyml: nor is an indented one");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TM_AT0, 0)), 0, "cyml: empty input has no entries");
@@ -4296,12 +4300,20 @@ test_group("cyml: the --- searches hop line to line and find every --- line (1.6
 # 1.7.0 changed the rule the reference states (1.6.1 copied 1.6.0's): a delimiter is a whole `---`
 # line, at byte 0 or after a `\n`, ending at a `\n` or at the region's end, and the position is the
 # line's start. Four answers moved with it, each pinned below with its old value in the label.
+#
+# 1.8.0 added CR LF as a line end, and a CR just before the region's end.
 fn _td_is_delim_ref(data, len, q): i64 {
     if (q + 3 > len) { return 0; }
     if (q > 0) { if (load8(data + q - 1) != 10) { return 0; } }
     if (load8(data + q) != 45 || load8(data + q + 1) != 45 || load8(data + q + 2) != 45) { return 0; }
-    if (q + 3 < len) { if (load8(data + q + 3) != 10) { return 0; } }
-    return 1;
+    if (q + 3 == len) { return 1; }
+    var t = load8(data + q + 3);
+    if (t == 10) { return 1; }
+    if (t == 13) {
+        if (q + 4 == len) { return 1; }
+        if (load8(data + q + 4) == 10) { return 1; }
+    }
+    return 0;
 }
 var td_bad = 0;
 var td_offsets = 0;
@@ -4369,7 +4381,10 @@ td_d = bayan_cyml_parse(TD_CUT, strlen(TD_CUT));
 assert_eq(bayan_cyml_doc_entry_count(td_d), 1, "cyml: a --- that is the last line is a delimiter (1.7.0; was not)");
 assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 5, "cyml: (the header is a = 1)");
 assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(td_d, 0)), 0, "cyml: (and the body empty)");
-assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_CRLF, strlen(TD_CRLF))), 0, "cyml: nor is a CRLF one");
+td_d = bayan_cyml_parse(TD_CRLF, strlen(TD_CRLF));
+assert_eq(bayan_cyml_doc_entry_count(td_d), 1, "cyml: a CRLF --- line is a delimiter (1.8.0; it was not)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(td_d, 0)), 5, "cyml: (the header is a = 1)");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(td_d, 0)), 4, "cyml: (and the body is body)");
 assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse(TD_NEAR, strlen(TD_NEAR))), 0,
   "cyml: nor ----, -- or `--- `");
 # A blank line before the --- no longer hides it (1.7.0). To 1.6.2 byte 0 was tested for the flush
@@ -4586,5 +4601,88 @@ assert_eq(streq(vec_get(bayan_csv_parse_line(CS_LINE), 17), "f"), 1, "csv: (the 
 var cs_back = bayan_csv_parse_line(bayan_csv_write_line(cs_row));
 assert_eq(vec_len(cs_back), 18, "csv: (and the row round-trips)");
 assert_eq(streq(vec_get(cs_back, 0), "x,y"), 1, "csv: (its quoted fields whole)");
+
+test_group("cyml: CR LF ends a marker or --- line (1.8.0)");
+# A CR ended no line to 1.7.1, so a file saved with CRLF line endings parsed to no entries and one
+# block of header text, with nothing reported. CR LF ends a line now, as LF does, and so does a CR
+# just before the end of the input or region; a CR anywhere else is still text.
+var CR_DOC = "[meta]\r\nname = x\r\n[[entries]]\r\nid = 1\r\n---\r\nA\r\n[[entries]]\r\nid = 2\r\n---\r\nB\r\n";
+var cr_d = bayan_cyml_parse(CR_DOC, strlen(CR_DOC));
+assert_eq(bayan_cyml_doc_entry_count(cr_d), 2, "cyml: a CRLF document has its two entries (it had none)");
+assert_eq(bayan_cyml_doc_header_len(cr_d), 16, "cyml: (its file header is [meta] and name = x, CR LF between)");
+var cr_e0 = bayan_cyml_doc_entry(cr_d, 0);
+assert_eq(bayan_cyml_entry_header_len(cr_e0), 6, "cyml: entry 0's header is id = 1");
+assert_eq(memeq(bayan_cyml_entry_header(cr_e0), "id = 1", 6), 1, "cyml: (its bytes)");
+assert_eq(bayan_cyml_entry_body_len(cr_e0), 1, "cyml: and its body A, without the CR");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(cr_d, 1)), 1, "cyml: entry 1's body is B");
+var CR_ADJ = "[[entries]]\r\n[[entries]]\r\nid=2\r\n---\r\nB\r\n";
+cr_d = bayan_cyml_parse(CR_ADJ, strlen(CR_ADJ));
+assert_eq(bayan_cyml_doc_entry_count(cr_d), 2, "cyml: two adjacent CRLF markers are two entries");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(cr_d, 0)), 0, "cyml: (the first one empty)");
+assert_eq(bayan_cyml_entry_header_len(bayan_cyml_doc_entry(cr_d, 1)), 4, "cyml: (the second's header id=2)");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse("x\n[[entries]]\rfoo\n", 18)), 0,
+  "cyml: a CR not followed by LF is text: `[[entries]]\\rfoo` is no marker");
+assert_eq(bayan_cyml_doc_entry_count(bayan_cyml_parse("a = 1\n---\rb\n", 12)), 0, "cyml: nor `---\\rb` a delimiter");
+cr_d = bayan_cyml_parse("a = 1\r\n---\r", 11);
+assert_eq(bayan_cyml_doc_entry_count(cr_d), 1, "cyml: a --- line ending in a CR at the end of input is a delimiter");
+assert_eq(bayan_cyml_entry_body_len(bayan_cyml_doc_entry(cr_d, 0)), 0, "cyml: (with an empty body)");
+var cr_hp = 0; var cr_hl = 0; var cr_bp = 0; var cr_bl = 0;
+var CR_ONE = "title = t\r\n---\r\nbody\r\n";
+assert_eq(bayan_cyml_split(CR_ONE, strlen(CR_ONE), &cr_hp, &cr_hl, &cr_bp, &cr_bl), 1, "cyml: split finds a CRLF ---");
+assert_eq(cr_hl, 9, "cyml: (the header title = t)");
+assert_eq(cr_bp, CR_ONE + 16, "cyml: (the body starts past the CR LF)");
+assert_eq(cr_bl, 4, "cyml: (and is body)");
+
+test_group("yaml: quoted scalars are decoded in the parser (1.8.0)");
+# A quoted body was verbatim to 1.7.1 ("the toml convention", which toml dropped at 1.5.3; ADR 0009),
+# and every quote scan stopped at the first quote character. tests/vectors.tcyr checks 3,429
+# documents against PyYAML; these rows name each fix, and pin the refusals PyYAML does not share.
+fn _yqp(doc): i64 { return bayan_yaml_parse_buf(doc, strlen(doc)); }
+fn _yq(doc): i64 { return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse_buf(doc, strlen(doc)), "k")); }
+fn _yq_is(doc, want): i64 {
+    var got = _yq(doc);
+    if (got == 0) { return 0; }
+    return str_eq_cstr(got, want);
+}
+assert_eq(_yq_is("k: \"a\\nb\"", "a\nb"), 1, "yaml: \\n is a newline (it was backslash, n)");
+assert_eq(_yq_is("k: \"C:\\\\tmp\"", "C:\\tmp"), 1, "yaml: \\\\ is one backslash (it was two)");
+assert_eq(_yq_is("k: \"say \\\"hi\\\"\"", "say \"hi\""), 1, "yaml: \\\" is a quote (the scalar was refused)");
+assert_eq(_yq_is("k: 'it''s'", "it's"), 1, "yaml: '' in single quotes is a quote (the scalar was refused)");
+assert_eq(_yq_is("k: 'C:\\tmp'", "C:\\tmp"), 1, "yaml: a backslash in single quotes is a backslash");
+assert_eq(_yq_is("k: \"\\x41\\u00e9\\U0001F600\"", "A\xc3\xa9\xf0\x9f\x98\x80"), 1,
+  "yaml: \\x, \\u and \\U are code points, written as UTF-8");
+assert_eq(_yq_is("k: \"\\L\"", "\xe2\x80\xa8"), 1, "yaml: \\L is U+2028 (two bytes become three)");
+assert_eq(str_len(_yq("k: \"a\\0b\"")), 3, "yaml: \\0 is a NUL inside the string");
+assert_eq(_yq_is("k: \"x\\\" # y\"", "x\" # y"), 1,
+  "yaml: a # after an escaped quote is text (the line was cut there as a comment)");
+assert_eq(_yq_is("k: \"a\\\"b\" # c", "a\"b"), 1, "yaml: while a # after the closing quote is a comment");
+var yq_t = _yqp("\"a\\\"b\": 1");
+assert_eq(str_eq_cstr(bayan_json_v_obj_key(yq_t, 0), "a\"b"), 1, "yaml: a quoted key is decoded (it kept its backslash)");
+yq_t = _yqp("\"a\\\": b\": 1");
+assert_eq(str_eq_cstr(bayan_json_v_obj_key(yq_t, 0), "a\": b"), 1,
+  "yaml: a `: ` after an escaped quote is inside the key (the key ended there)");
+yq_t = _yqp("'it''s': 1");
+assert_eq(str_eq_cstr(bayan_json_v_obj_key(yq_t, 0), "it's"), 1, "yaml: and a single-quoted key's '' (it kept both)");
+yq_t = _yqp("k: [\"a\\\"b\", 'x''y']");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(bayan_json_v_obj_get_by_cstr(yq_t, "k"), 0)), "a\"b"), 1,
+  "yaml: a flow element is decoded (the sequence was refused)");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(bayan_json_v_obj_get_by_cstr(yq_t, "k"), 1)), "x'y"), 1,
+  "yaml: (and a single-quoted one)");
+# Duplicate keys are found on the decoded text: these are the same key twice.
+assert_eq(_yqp("\"\\x61\": 1\na: 2\n"), 0, "yaml: \"\\x61\" and a are a duplicate key");
+assert_eq(_yqp("'a': 1\n\"a\": 2\n"), 0, "yaml: (as are 'a' and \"a\")");
+# Refused: PyYAML refuses the first four (tests/vectors.tcyr's X rows). It accepts a surrogate into a
+# Python str, which has no UTF-8 form; bayan refuses it.
+assert_eq(_yqp("k: \"\\q\""), 0, "yaml: an escape YAML does not define is refused (it was kept)");
+assert_eq(str_contains_cstr(str_from(bayan_yaml_last_error()), "unknown escape"), 1, "yaml: (named in the error)");
+assert_eq(_yqp("k: \"\\x4\""), 0, "yaml: a short hex escape is refused");
+assert_eq(_yqp("k: \"\\uZZZZ\""), 0, "yaml: a non-hex one too");
+assert_eq(_yqp("k: \"\\U00110000\""), 0, "yaml: and a code point past U+10FFFF");
+assert_eq(_yqp("k: \"\\ud800\""), 0, "yaml: a surrogate is refused: it has no UTF-8 form");
+assert_eq(_yqp("\"a\"b\": 1"), 0, "yaml: a key that opens a quote must be one quoted scalar");
+# A body with nothing to decode still shares the source buffer.
+var YQ_SRC = "k: \"plain text\"";
+var yq_v = bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bayan_yaml_parse_buf(YQ_SRC, strlen(YQ_SRC)), "k"));
+assert_eq(str_data(yq_v), YQ_SRC + 4, "yaml: an undecoded body points into the source, as before");
 
 var r = assert_summary();

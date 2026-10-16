@@ -47,12 +47,12 @@ TOML themselves, and fix 3's documentation is in the module header.
   from the value's first byte, so `format = '[ $host ]($style)'` turned into an "array". 1.5.4
   answered with the same principle, recording on each pair the kind of value the parser saw
   (`bayan_toml_pair_kind`) rather than guessing it from the bytes later.
-- **Neutral** — the reasoning carries over to yaml, where it is still open. Double-quoted YAML
-  scalars keep their escapes verbatim, "the toml convention" in `src/yaml.cyr`'s words, a convention
-  that ended here. The json tree YAML parses into does not record quote style either
-  ([ADR 0008](0008-yaml-parses-into-the-json-value-tree.md)), so the fix is in yaml's parser
-  (roadmap 1.8.0). cyml needs nothing: it returns its headers as raw TOML spans and decodes no
-  values itself.
+- **Neutral** — the reasoning carries over to yaml, and 1.8.0 applied it there. Until then yaml's
+  quoted scalars kept their escapes verbatim, "the toml convention" in `src/yaml.cyr`'s words, a
+  convention that ended here. The json tree YAML parses into does not record quote style either
+  ([ADR 0008](0008-yaml-parses-into-the-json-value-tree.md)), so the fix went into yaml's parser:
+  double quotes take YAML 1.2's escapes and single quotes `''`, checked against PyYAML. cyml needs
+  nothing: it returns its headers as raw TOML spans and decodes no values itself.
 
 ## Alternatives considered
 

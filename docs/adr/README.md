@@ -45,5 +45,4 @@ proposed would silently break every caller passing a non-literal C string.
 `_compat` aliases (0006), the per-format sublibs (0007), yaml parsing into the
 json tree (0008) and decoding TOML strings in the parser (0009). Each gives the
 release that made the decision and marks any alternative the record does not
-mention. 0009 matters most for what comes next: its reasoning is the case for
-yaml's escapes on the roadmap (1.8.0).
+mention. 0009's reasoning is what 1.8.0 applied to yaml's quoted scalars.

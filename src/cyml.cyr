@@ -17,7 +17,10 @@
 # right after a marker, a `---` after a blank first line or right after its
 # marker or right before the next one, and either line as the last line with
 # no newline after it, were all read as text (CHANGELOG [1.7.0]). A `\r` does
-# not end a line: `[[entries]]\r\n` and `---\r\n` are text.
+# not end a line on its own: CRLF does (1.8.0), a lone CR before the end of
+# the input or region does, and a CR anywhere else is text. Until 1.8.0 a CR
+# ended nothing, so `[[entries]]\r\n` and `---\r\n` were text, and a file
+# saved with CRLF line endings parsed to no entries and one block of header.
 
 # v5.8.30 — Result-returning *_r variant for the file-loading
 # parser (`bayan_cyml_parse_file_r`). Bare `bayan_cyml_parse(data, len)` keeps
@@ -108,15 +111,30 @@ fn bayan_cyml_doc_entry(d, n): i64 {
     return load64(entries + n * 8);
 }
 
-# 1 when `---` sits at `at` and ends its line: a `\n` follows, or the end of
-# the searched region (the input, or the entry's end). Whether `at` begins a
-# line is the caller's test.
+# Where the line whose content stops at `pos` ends: the index of its `\n`, or
+# len when the content runs to the end of data[0..len). The terminator is
+# `\n`, `\r\n` (1.8.0; CR LF ends a line as LF does), or a `\r` just before
+# the end. -1 when `pos` is not the end of a line: some other byte follows.
+fn _cyml_eol(data, len, pos): i64 {
+    if (pos >= len) { return len; }
+    var c = load8(data + pos);
+    if (c == 10) { return pos; }
+    if (c == 13) {
+        if (pos + 1 >= len) { return len; }
+        if (load8(data + pos + 1) == 10) { return pos + 1; }
+    }
+    return 0 - 1;
+}
+
+# 1 when `---` sits at `at` and ends its line (_cyml_eol): a `\n` or CR LF
+# follows, or the end of the searched region (the input, or the entry's end).
+# Whether `at` begins a line is the caller's test.
 fn _cyml_delim_at(data, len, at): i64 {
     if (at + 3 > len) { return 0; }
     if (load8(data + at)     != 45) { return 0; }   # -
     if (load8(data + at + 1) != 45) { return 0; }   # -
     if (load8(data + at + 2) != 45) { return 0; }   # -
-    if (at + 3 < len && load8(data + at + 3) != 10) { return 0; }   # \n, or the end
+    if (_cyml_eol(data, len, at + 3) < 0) { return 0; }
     return 1;
 }
 
@@ -165,16 +183,21 @@ fn _cyml_next_delim(data, len, i): i64 {
 }
 
 # Where the body after the `---` line at q begins, in data[0..len): past the
-# line's newline, or len when the line ends the region.
-fn _cyml_body_at(q, len): i64 {
-    if (q + 4 > len) { return len; }
-    return q + 4;
+# line's newline (LF or CR LF), or len when the line ends the region. For
+# CR LF, q + 4 would land on the LF instead, which the trim removes, so the
+# two agree on every output (a 1.8.0 mutation pass sees q + 4 survive; that is
+# not a gap in the tests). The header start after a CRLF marker is the same.
+fn _cyml_body_at(data, q, len): i64 {
+    var e = _cyml_eol(data, len, q + 3);
+    if (e >= len) { return len; }
+    return e + 1;
 }
 
-# 1 when the marker line `[[entries]]` starts at `at`: the 11 bytes, then
-# `\n` or the end of the input. The end of the input counts from 1.7.0: a
-# file's last line need not end in a newline, and `x\n[[entries]]` used to be
-# a single entry whose body held the marker as text.
+# 1 when the marker line `[[entries]]` starts at `at`: the 11 bytes, then the
+# end of the line (_cyml_eol: `\n`, CR LF from 1.8.0, or the end of the
+# input). The end of the input counts from 1.7.0: a file's last line need not
+# end in a newline, and `x\n[[entries]]` used to be a single entry whose body
+# held the marker as text.
 fn _cyml_marker_at(data, len, at): i64 {
     if (at + 11 > len) { return 0; }
     if (load8(data + at)      != 91)  { return 0; }   # [
@@ -188,7 +211,7 @@ fn _cyml_marker_at(data, len, at): i64 {
     if (load8(data + at + 8)  != 115) { return 0; }   # s
     if (load8(data + at + 9)  != 93)  { return 0; }   # ]
     if (load8(data + at + 10) != 93)  { return 0; }   # ]
-    if (at + 11 < len && load8(data + at + 11) != 10) { return 0; }   # \n, or the end
+    if (_cyml_eol(data, len, at + 11) < 0) { return 0; }
     return 1;
 }
 
@@ -232,6 +255,15 @@ fn _cyml_next_entries(data, len, i): i64 {
         p = p + 1;
     }
     return len;
+}
+
+# Where the marker text `[[entries]]` begins, for a marker position p from
+# _cyml_next_entries: p itself for a marker flush at byte 0, else p + 1 (p is
+# the newline before it). Position 0 is both a marker at byte 0 and a newline
+# at byte 0 before one; the byte there tells them apart.
+fn _cyml_marker_text(data, p): i64 {
+    if (load8(data + p) == 10) { return p + 1; }
+    return p;
 }
 
 # Trim leading/trailing whitespace from a (ptr, len) pair.
@@ -294,8 +326,8 @@ fn bayan_cyml_parse(data, len): i64 {
     # rather than testing every byte. Two passes stay: one pass into a
     # doubling array would be faster again, but alloc is a bump allocator, so
     # every outgrown array would stay behind, which the exact count avoids.
-    # After a match the scan resumes ON the marker's own newline (1.7.0 — this
-    # merged two entries): 11 past offset 0, else 12, the end of `[[entries]]`.
+    # After a match the scan resumes just past `[[entries]]` (1.7.0 — this
+    # merged two entries), on the marker's own newline, or its CR.
     # It used to resume past that newline, and a marker can only follow one,
     # so a second marker right after the first was not seen: `[[entries]]\n
     # [[entries]]\nid=2` was one entry whose header began with the second
@@ -306,7 +338,7 @@ fn bayan_cyml_parse(data, len): i64 {
     var i = _cyml_next_entries(data, len, 0);
     while (i < len) {
         entry_count = entry_count + 1;
-        if (i == 0) { i = 11; } else { i = i + 12; }
+        i = _cyml_marker_text(data, i) + 11;
         i = _cyml_next_entries(data, len, i);
     }
 
@@ -319,7 +351,7 @@ fn bayan_cyml_parse(data, len): i64 {
         while (i < len && w < entry_count) {
             store64(entry_starts + w * 8, i);
             w = w + 1;
-            if (i == 0) { i = 11; } else { i = i + 12; }
+            i = _cyml_marker_text(data, i) + 11;
             i = _cyml_next_entries(data, len, i);
         }
     }
@@ -337,7 +369,7 @@ fn bayan_cyml_parse(data, len): i64 {
         # Header = data[0..delim_pos], body = the text after the `---` line
         var hp = 0; var hl = 0; var bp = 0; var bl = 0;
         _cyml_trim(data, delim_pos, &hp, &hl);
-        var body_start = _cyml_body_at(delim_pos, len);
+        var body_start = _cyml_body_at(data, delim_pos, len);
         _cyml_trim(data + body_start, len - body_start, &bp, &bl);
 
         store64(doc, hp);
@@ -375,8 +407,8 @@ fn bayan_cyml_parse(data, len): i64 {
         # empty entry (a marker straight after a marker), or a marker that
         # ends the input, has no header: its next marker, or the end, comes
         # first, and the start is held there.
-        var hdr_start = estart + 12;
-        if (estart > 0) { hdr_start = estart + 13; }
+        # The header starts past the marker line's LF or CR LF.
+        var hdr_start = _cyml_eol(data, len, _cyml_marker_text(data, estart) + 11) + 1;
         if (hdr_start > eend) { hdr_start = eend; }
 
         # Find the `---` line within this entry. hdr_start follows the marker's
@@ -392,7 +424,7 @@ fn bayan_cyml_parse(data, len): i64 {
         } else {
             var ehp = 0; var ehl = 0; var ebp = 0; var ebl = 0;
             _cyml_trim(data + hdr_start, edelim - hdr_start, &ehp, &ehl);
-            var ebody_start = _cyml_body_at(edelim, eend);
+            var ebody_start = _cyml_body_at(data, edelim, eend);
             _cyml_trim(data + ebody_start, eend - ebody_start, &ebp, &ebl);
             e = bayan_cyml_entry_new(ehp, ehl, ebp, ebl);
         }
@@ -597,7 +629,7 @@ fn bayan_cyml_split(data, len, out_hdr, out_hdr_len, out_body, out_body_len): i6
     var i = _cyml_next_delim(data, len, 0);
     if (i >= len) { return 0; }
     _cyml_trim(data, i, out_hdr, out_hdr_len);
-    var body_start = _cyml_body_at(i, len);
+    var body_start = _cyml_body_at(data, i, len);
     _cyml_trim(data + body_start, len - body_start, out_body, out_body_len);
     return 1;
 }

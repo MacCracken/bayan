@@ -16,22 +16,7 @@
 > joined 1.7.0.
 > 1.6.2 (2026-10-15) shipped its slot whole and removed it. So did 1.7.0, whose cyml line rule also
 > covers the end of a region and a last line with no newline; it added 1.7.1 and a 1.8.0 item.
-> 1.7.1 (2026-10-15) shipped its slot whole and removed it.
-
-## 1.8.0 — minor: yaml decodes escapes; cyml reads CRLF lines
-
-- **Double-quoted yaml scalars keep their `\` escapes verbatim** (`src/yaml.cyr:20`, `:371`: "no
-  \-escape decoding — the toml convention"). That convention ended in 1.5.3, when toml started
-  decoding in the parser, the only place that knows which quote produced a string (mneme's filing,
-  [archived](issues/archived/2026-08-22-mneme-toml-basic-strings-not-unescaped.md), named yaml too).
-  Pick the oracle before writing the code, as toml has `tomllib`. cyml needs nothing here: it returns
-  its headers as raw TOML spans and decodes no values itself.
-- **cyml: a CR does not end a line** (Known gap 17). `[[entries]]\r\n` and `---\r\n` are text, so a
-  `.cyml` saved with CRLF line endings parses to no entries and one block of header text: neither
-  its markers nor its `---` lines are seen, and nothing reports it. TOML allows CRLF, so the headers
-  would be fine; only the two line tests are not. 1.7.0 settled what a marker or delimiter line is;
-  let `\r\n` end one too. Check it as 1.7.0 did: a line-by-line Python model of the rule (rebuilt;
-  1.7.0's was scratch) against the parser at every prefix of random documents, now with CRLF.
+> 1.7.1 (2026-10-15) and 1.8.0 (2026-10-15) each shipped their slot whole and removed it.
 
 ## 1.9.0 — minor: `bayan_markdown_*`
 

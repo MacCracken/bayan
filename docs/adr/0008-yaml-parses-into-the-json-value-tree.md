@@ -47,8 +47,8 @@ reuses the JSON parser's machinery to build them.**
   0 in both formats, and json's number fix at 1.5.1 fixed yaml with it.
 - **Negative** — the tree records values, not how they were written. A string cell does not say
   which quote produced it, so anything that depends on the quote style has to happen in the parser.
-  That is [ADR 0009](0009-toml-strings-are-decoded-in-the-parser.md)'s argument, and why the yaml
-  escapes item on the roadmap (1.8.0) is a parser change.
+  That is [ADR 0009](0009-toml-strings-are-decoded-in-the-parser.md)'s argument, and why yaml's
+  quoted scalars are decoded by its parser (1.8.0).
 - **Neutral** — the line this draws: reuse the tree where the formats share a data model. PDF does
   not, so its objects have their own tree ([ADR 0002](0002-pdf-objects-do-not-reuse-the-json-value-tree.md)),
   and TOML's flat model may move into this one (roadmap 1.11.0).

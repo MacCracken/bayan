@@ -2,6 +2,123 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.0] — 2026-10-15
+
+Minor release, the roadmap's 1.8.0 slot. **yaml decodes its quoted scalars in the parser**, the
+choice ADR 0009 made for TOML at 1.5.3: double quotes take YAML 1.2's escapes, single quotes take
+`''`, and every scan that tracks quotes agrees on where a quoted region ends. Checked against
+PyYAML. **cyml reads CRLF lines:** a CR LF ends a marker or `---` line, so a file saved with
+Windows line endings has its entries. Public API: nothing added or removed. The pin stays 6.7.12,
+and the floor 6.7.9 (checked there).
+
+> ### ⚠ What to re-check
+>
+> - **yaml.** A quoted value, key or flow element comes back decoded: `"a\nb"` is `a`, newline,
+>   `b`, and `"C:\\tmp"` has one backslash. **Remove any code that decoded bayan's output itself, or
+>   it will decode twice.** Documents that were refused now parse: a `\"` inside double quotes, and
+>   `''` inside single quotes. Documents that parsed are now refused: an escape YAML does not define
+>   (`\q`), a short or non-hex `\x` / `\u` / `\U`, a code point past U+10FFFF or a surrogate, and a
+>   key that opens a quote but is not one quoted scalar (`"a"b": 1`). Duplicate keys are compared
+>   decoded, so `"\x61": 1` and `a: 2` in one mapping is now a duplicate, and refused.
+> - **cyml.** A document with CRLF line endings parses into its entries and bodies. To 1.7.1 it gave
+>   no entries and one block of header text. A lone CR mid-line is still text.
+
+### Changed — yaml quoted scalars are decoded
+
+- **Double-quoted scalars take YAML 1.2's escapes:** `\0 \a \b \t \n \v \f \r \e`,
+  backslash-space, `\"`, `\/`, `\\`, `\N` (U+0085), `\_` (U+00A0), `\L` (U+2028), `\P` (U+2029), a
+  backslash before a TAB, and `\xXX`, `\uXXXX` and `\UXXXXXXXX` as code points written in UTF-8.
+  Bodies were verbatim until now, "the toml convention" in the module's words, which TOML itself
+  dropped at 1.5.3 (ADR 0009). That made `"C:\\tmp"` two backslashes and `"a\nb"` a backslash and an
+  `n`. Decoding happens in `_yp_unquote`, in the parser: the json tree YAML parses into records no
+  quote style (ADR 0008), so nothing later could tell which rule applies.
+- **Single-quoted scalars take `''` for a quote.** A backslash there is a backslash, as before.
+- **Values, keys and flow elements all decode.** A quoted key kept its escapes (`"a\"b"` was
+  `a\"b`), and a single-quoted key its doubled quotes (`'it''s'` was `it''s`).
+- **Every quote scan agrees where a quoted region ends** (`_yp_qend`: in double quotes `\` escapes
+  the next byte, and in single quotes `''` is a quote). The comment stripper, the key's colon
+  finder, scalars and flow elements each took the first quote character as the close. So
+  `k: "x\" # y"` came back as `x\`, its ` # y"` stripped as a comment, and `"say \"hi\""`,
+  `'it''s'` and `["a\"b"]` were refused as malformed.
+- **Refused loudly, with the offset of the escape:** an escape YAML does not define (`\q`, which
+  was kept), a `\x` / `\u` / `\U` with too few or non-hex digits, a code point past U+10FFFF, and a
+  surrogate (U+D800–U+DFFF). PyYAML refuses all of those but the surrogate, which it reads into a
+  Python string. A surrogate is not a character and has no UTF-8 form, so bayan has nothing faithful
+  to return. **A key that opens a quote must be one quoted scalar**: `"a"b": 1` was the key `a"b`,
+  and is refused now, as the same shape is refused for a value.
+- **Duplicate keys are compared after decoding**, so a mapping with `"\x61"` and `a` is refused for
+  its duplicate.
+- A quoted scalar with nothing to decode still shares the source buffer. One that decodes is a new
+  allocation (at most 1.5 times the body: `\L` and `\P` are two bytes that become three), and a
+  refused allocation is a parse error, "out of memory in quoted scalar".
+
+### Changed — cyml: CR LF ends a marker or `---` line (Known gap 17)
+
+- A CR ended no line until now, so `[[entries]]\r\n` and `---\r\n` were text. A `.cyml` saved with
+  CRLF line endings parsed to no entries and one block of header text, and nothing reported it. Now
+  a marker or delimiter line ends at `\n`, at `\r\n`, at the end of the input or region, or at a
+  `\r` just before that end. A CR anywhere else is text, so `[[entries]]\rfoo` is not a marker.
+  TOML allows CRLF, so the headers themselves were always fine.
+- The new private `_cyml_eol` says where a line ends. `_cyml_marker_at`, `_cyml_delim_at` and
+  `_cyml_body_at` use it, and an entry's header now starts past its marker's LF or CR LF. Marker
+  position 0 means either a marker at byte 0 or a newline at byte 0 before one. The new
+  `_cyml_marker_text` tells the two apart by the byte there, which the old fixed offsets never
+  needed to do.
+
+### Added
+
+- **`scripts/gen-yaml-vectors.py` and `tests/fixtures/yaml/strings.vec`**: 3,429 vectors from
+  PyYAML. 1,991 are values, 676 keys and 681 flow elements, each a quoted scalar built from plain
+  text, `#`, `: ` and the full escape set, some with a trailing comment. 81 are documents PyYAML
+  refuses, which bayan must refuse too. Each is checked with the oracle before it is written. The
+  surrogate is left out on purpose (see above). CI's `oracles` job regenerates the vectors and
+  requires no change. PyYAML is not in Python's stdlib, so the step installs the distribution's
+  `python3-yaml` when the import fails, as the aarch64 job installs `qemu-user`, and fails if it
+  still cannot import it.
+
+### Tests
+
+- **`tests/vectors.tcyr`: the YAML vectors, 0 wrong.** On 1.7.1's module 1,896 of the 3,429 were
+  wrong.
+- **`tests/bayan.tcyr` 1,611 → 1,656.** yaml: +25, one row per decoded form, for the comment and
+  colon scans, keys and flow elements, the duplicate compared decoded, each refusal including the
+  surrogate the oracle cannot carry, and the zero-copy case. cyml: +20, a whole-CRLF document,
+  adjacent CRLF markers, a lone CR as text, a `---\r` at the end, and split. The 1.6.0 and 1.6.1
+  pins for a CRLF marker and a CRLF `---` move to their new answers, each label naming the old one.
+  The delimiter scan's reference states the CR rule.
+- **yaml mutants: twelve,** each failing at least one suite: each side of `_yp_qend`, the comment
+  scan and the colon scan without the rule, verbatim bodies, an unknown escape kept, a surrogate
+  kept, `\u` read as two digits, raw keys, raw flow elements, `''` kept, and no range check. The
+  oracle misses the surrogate mutant, and the pinned rows catch it. The pinned rows missed the
+  colon mutant until a row was added for it; the oracle caught it with 4 wrong.
+- **cyml against the line reference, extended to CR:** the 1.7.0 scratch model with the CR rule,
+  over 30,000 random documents built from LF and CRLF markers and delimiters, lone CRs and `---\r`,
+  each at every prefix. All 2,265,694 prefixes agree on x86_64 and on aarch64 under qemu. 1.7.1's
+  module differs on 22,193 of the documents. Five mutants: treating CR as text, refusing a CR before
+  the end, and misreading position 0 each fail. Starting the body at `q + 4`, or the header at
+  `s + 12`, after a CRLF line changes no output, because that lands on the LF and the trim removes
+  it. The source says so, as the divmod block does for its redundant tests.
+- **The floor stays 6.7.9.** In a scratch copy pinned to 6.7.9 with its `lib/`: the build and all 6
+  test files are warning-free (the YAML and CSV vectors 0 wrong there too), the smoke entry exits
+  42, and 6.7.9's `distlib --all --check` accepts the bundles 6.7.12 generated.
+- Gates, all green on the 6.7.12 pin. x86_64: build, smoke, `cyrius test` (6/6), the deprecated
+  lookups, fuzz, bench, coverage 506/506, the cost gate. aarch64 under qemu: build, smoke, test,
+  deprecated lookups, fuzz, bench, the cost gate, the PDF writer byte-identical across targets.
+  Also: format, lint (0/0 across `src/`), `vet`, the arch-arm check, the vendored-fold guard,
+  `distlib --all --check`, regeneration with no change, `scripts/consumer-check.sh` and the
+  raw-include build. Then the CI mirror: every `ci.yml` job, each in its own fresh copy of the tree,
+  on the 6.7.12 release, all six green, the new YAML regeneration step included.
+- **`dist/` regenerated** (`cyrius distlib --all`). `bayan.cyr`, `bayan-yaml` and `bayan-cyml`
+  carry the changes; the other seven change only their version header. The `.deps` sidecars are
+  unchanged.
+
+### Docs
+
+- ADRs [0008](docs/adr/0008-yaml-parses-into-the-json-value-tree.md) and
+  [0009](docs/adr/0009-toml-strings-are-decoded-in-the-parser.md) record that 1.8.0 applied 0009's
+  argument to yaml. [`docs/development/roadmap.md`](docs/development/roadmap.md): the 1.8.0 section
+  is gone; 1.9.0 (`bayan_markdown_*`) is next. `state.md` refreshed: Known gap 17 is closed.
+
 ## [1.7.1] — 2026-10-15
 
 Patch release, the roadmap's 1.7.1 slot. **Each csv function returns 0 when an allocation is
