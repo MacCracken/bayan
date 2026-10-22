@@ -19,19 +19,9 @@
 > 1.7.1 (2026-10-15) and 1.8.0 (2026-10-15) each shipped their slot whole and removed it.
 > 1.9.0 (2026-10-15) shipped its slot whole (`bayan_markdown_*`) and removed it; its `MD_*` names
 > joined 1.10.0's `const` list.
-
-## 1.10.0 — minor: public names typed
-
-Both items break source: a consumer's code can stop compiling. Before this release, check the
-names against the other folds in cyrius `lib/`. A `const` beside a same-named `var` in another
-fold is a hard error.
-
-- **Public constants as `const`:** `JTAG_*`, `TOML_K_*`, `JSON_K_*` (new at 1.7.0), `JS_EV_*`, the
-  public `PDF_*` and markdown's `MD_K_*`, `MD_EXT_*` and `MD_ALIGN_*` (new at 1.9.0, 31 more), about
-  86 top-level `var`s. A `const` has no storage, so `&NAME` or an assignment stops compiling.
-- **`: bool` on the 27 public predicates** (`bayan_*_is_*` / `_has_*`, e.g.
-  `bayan_toml_pair_is_array`). A `: bool` return is type-checked, so integer use at a call site
-  can stop compiling.
+> 1.10.0 (2026-10-22) shipped its slot whole and removed it, with the pin move to 6.7.16. Typed by
+> what they are rather than by spelling, the names were 99 constants and 32 predicates, not 86 and
+> 27 (ADR 0012). No name collided with another fold in 6.7.16's `lib/`.
 
 ## 1.11.0 — minor: TOML into the tagged tree; one lookup key type
 

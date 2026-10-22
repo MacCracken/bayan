@@ -2,11 +2,21 @@
 
 > Refreshed every release. CLAUDE.md is preferences/process/procedures
 > (durable); this file is **state** (volatile).
-> Last refreshed: 2026-10-15.
+> Last refreshed: 2026-10-22.
 
 ## Version
 
-**1.9.0** — a minor, the roadmap's 1.9.0 slot whole; pin unchanged at **6.7.12**.
+**1.10.0** — a minor, the roadmap's 1.10.0 slot whole; pin **6.7.12 → 6.7.16**. **The public names
+are typed** (ADR 0012): the 99 public constants are `const` and the 32 public predicates, with their
+12 `_compat` aliases, return `: bool`. The roadmap's lists, by spelling, said 86 and 27; the 13
+constants (`PTAG_*`, `U256_SIZE`, `JSON_PAIR_SIZE`, `JV_SIZE`) and 5 predicates (`_eq` ×4,
+`bayan_pdf_winansi_ok`) they missed are typed too. No value and no answer changed. ⚠ `&NAME`,
+assigning one and declaring one yourself stop compiling, and a second copy of the toml or bigint
+module in one program is now refused, as json, pdf and markdown already were (architecture note
+002). No integer use of a predicate's answer stops compiling on 6.7.16. A `static` CI step keeps the
+next name typed. Floor 6.7.9, checked there.
+
+Before it, **1.9.0** — a minor, the roadmap's 1.9.0 slot whole; pin unchanged at **6.7.12**.
 **`bayan_markdown_*`**: CommonMark 0.31.2 to a node tree of its own (ADR 0010) and the tree to
 HTML, with GFM's tables, task lists, strikethrough and autolinks, and `[[wiki links]]`, each behind
 a flag (`MD_EXT_*`). Raw HTML is text and a `javascript:`-class URL is dropped from the HTML (ADR
@@ -259,7 +269,16 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
 
 ## Toolchain
 
-- **Cyrius pin**: `6.7.12`, bumped at 1.6.1 from `6.7.11` (`cyrius.cyml [package].cyrius`);
+- **Cyrius pin**: `6.7.16`, bumped at 1.10.0 from `6.7.12` (`cyrius.cyml [package].cyrius`):
+  `cyrius lib sync --full --relock`, then `deps` and `deps --verify` (113 verified); 34 files changed,
+  and `lib/` is byte-identical to the 6.7.16 **release** (installed through `install.sh` into an
+  isolated home, SHA-256 and Ed25519 signature verified; its compilers, CLI, `cyrfmt`, `cyrlint` and
+  `cybs` are identical to the local install). The 1.9.0 sources passed every x86_64, static and dist
+  gate on 6.7.16 unchanged. Every `ci.yml` job ran in its own fresh tree on that release at 1.10.0:
+  all six green. A fresh home has no trusted `cyrsign`, so `install.sh` skips the signature check
+  there ("signature check skipped"); put an existing `cyrsign` on `PATH` for the install and it
+  verifies. **Floor 6.7.9** re-checked at 1.10.0 on the 6.7.9 release, the same way as at 1.6.2
+  below. Before it: `6.7.12`, bumped at 1.6.1 from `6.7.11`;
   `lib/` re-vendored by `cyrius lib sync --full --relock`: 113 files, 0 differ against the 6.7.12
   snapshot (installed from the tag, `97abbfec`; its `SOURCE_COMMIT` records that the tree matches
   the tag), `cyrius.lock` 113 entries (`cyrius deps --verify`: 113 verified). **On 6.7.12, `cyrius
@@ -300,7 +319,7 @@ diagnostic; 1.4.0 completed the `_a` JSON surface. Carved from cyrius stdlib at
   2026-08-10, **undocumented**) → 6.5.28 (1.4.2) → 6.5.33 (1.5.0) → 6.5.36
   (1.5.3) → 6.6.0 (1.5.5) → 6.6.2 (1.5.6) → 6.6.6 (1.5.7) → 6.6.9 (1.5.8) → 6.6.11 (1.5.9)
   → 6.6.12 (1.5.10) → 6.6.18 (1.5.12) → 6.7.5 (1.5.13) → 6.7.9 (1.5.14) → 6.7.11 (1.6.0)
-  → 6.7.12 (1.6.1).
+  → 6.7.12 (1.6.1) → 6.7.16 (1.10.0).
 - **Caveat on the local snapshot — still live.** `~/.cyrius/versions/<pin>/lib`
   on a machine that also develops cyrius can carry unreleased in-flight edits at
   the same version number: at 6.5.28 its `freelist.cyr` had been edited in place
@@ -314,13 +333,13 @@ in-repo: `yaml` (1.2.0 — parses into json's value tree, so it must sit after
 `json.cyr` in bundle order), `pdf` (1.5.0 — cross-dep-free, so its position
 is convention rather than necessity) and `markdown` (1.9.0 — its own tree; it
 needs only its generated entity table, `markdown_entities.cyr`, before it, and
-the stdlib's `unicode` modules). Re-measured from the tree 2026-10-15 (1.9.0):
+the stdlib's `unicode` modules). Re-measured from the tree 2026-10-22 (1.10.0):
 
 | Module | Lines | Public fns | Canonical prefix |
 |--------|-------|-----------|------------------|
 | `src/pdf.cyr`    | 9539 | 152 | `bayan_pdf_*` |
 | `src/markdown.cyr` | 3347 | 27 | `bayan_markdown_*` |
-| `src/json.cyr`   | 2259 | 74 | `bayan_json_*` |
+| `src/json.cyr`   | 2287 | 74 | `bayan_json_*` |
 | `src/toml.cyr`   | 1727 | 33 | `bayan_toml_*` |
 | `src/yaml.cyr`   | 1073 | 12 | `bayan_yaml_*` |
 | `src/u128.cyr`   | 818  | 35 | `bayan_u128_*` / `bayan_u64_*` |
@@ -365,8 +384,8 @@ this is mutation-verified.
 
 - `src/_compat.cyr` — 153 back-compat aliases (legacy names → `bayan_*`;
   yaml and the 1.5.3 toml escape helpers are new API, no aliases).
-- `dist/bayan.cyr` — **21,076**-line bundle (17,664 at 1.8.0, 17,459 at 1.7.1, 17,446 at 1.7.0, 17,272 at 1.6.2, 17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
-  regenerated via `cyrius distlib --all` at 1.9.0 on the 6.7.12 pin (a second run is byte-identical). This is the artifact folded into
+- `dist/bayan.cyr` — **21,104**-line bundle (21,076 at 1.9.0, 17,664 at 1.8.0, 17,459 at 1.7.1, 17,446 at 1.7.0, 17,272 at 1.6.2, 17,146 at 1.6.1, 17,117 at 1.6.0, 17,098 at 1.5.14, 17,567 at 1.5.13),
+  regenerated via `cyrius distlib --all` at 1.10.0 on the 6.7.16 pin (a second run is byte-identical). This is the artifact folded into
   `cyrius/lib/bayan.cyr`. `src/pdf.cyr` is 9,530 of those lines, so the fold's cost to
   cyrius is dominated by one module; `[lib.pdf]` is a self-contained
   single-module closure if cyrius would rather fold it separately.
@@ -375,7 +394,7 @@ this is mutation-verified.
   sidecar. Canonical `bayan_*` names only. Every sidecar is complete:
   `scripts/consumer-check.sh` builds all 11 bundles from their declared leaves
   alone, and goes red when a needed one is deleted (checked at 1.5.7). Lines and
-  leaf counts below are measured at 1.9.0 (6.7.12's distlib); the base bundle
+  leaf counts below are measured at 1.10.0 (6.7.16's distlib; only json and yaml moved, by 28 lines); the base bundle
   declares 12 (1.5.14 added `math` to it and to json / yaml, 1.9.0 `unicode` to it
   and to markdown). `unicode` is a family leaf, a directory: distlib's `# Requires`
   block includes all seven of its files, and consumer-check does the same (1.9.0).
@@ -383,9 +402,9 @@ this is mutation-verified.
   | Sublib | Lines | Stdlib leaves |
   |---|---|---|
   | `bayan-pdf`    | 9556 | 7 (single-module closure — no `json.cyr`, no `dtoa.cyr`) |
-  | `bayan-yaml`   | 3822 | 11 (carries `json.cyr` — shared value tree / parser state) |
+  | `bayan-yaml`   | 3850 | 11 (carries `json.cyr` — shared value tree / parser state) |
   | `bayan-markdown` | 3423 | 6 (carries `markdown_entities.cyr`; `unicode` among the six) |
-  | `bayan-json`   | 2746 | 11 |
+  | `bayan-json`   | 2774 | 11 |
   | `bayan-toml`   | 1743 | 6 |
   | `bayan-cyml`   | 714  | 6 |
   | `bayan-u128`   | 829  | 1 |
@@ -400,11 +419,18 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,781 asserts, green** @1.9.0 on x86_64 and aarch64 under qemu (1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **1,889 asserts and 99 `#assert`s, green** @1.10.0 on x86_64 and aarch64 under qemu (1,781 @1.9.0, 1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
   1.5.1 sweep guards, the 1.5.2 coverage additions.
+
+  **1.10.0 adds** (+108, and 99 compile-time), three typed-name groups: an `#assert` per public
+  constant of its 1.9.0 value (an `#assert` is a const context, so a name back to `var` fails the
+  build); `switch`es over `JTAG_*` and `MD_K_*` and a stack u256 sized by `U256_SIZE`; each of the 44
+  bool functions passed to a `b: bool` parameter for a true and a false answer (the first true rows
+  for `bayan_pdf_is_encrypted` and `bayan_pdf_stream_is_image`); and five integer uses of an answer.
+  12 mutants, each caught.
 
   **1.9.0 adds** (+125), seven markdown groups: the tree and every accessor (on the right kind,
   the wrong one and 0); pinned HTML (escaping, percent-encoding, entities and near-miss names, the
@@ -583,7 +609,7 @@ this is mutation-verified.
 ### Coverage
 
 `cyrius coverage` — **533/533 fns (100%)**, 12/12 files, gated at `--min 100`
-(re-measured at 1.9.0 on 6.7.12, which adds markdown's 27; at 1.6.1 on 6.7.12, where the private delimiter helpers come and go uncounted; at 1.6.0 on 6.7.11, and at 1.5.14 on 6.7.9 — removing the private `_d_*` parser fns changes nothing here, the
+(re-measured at 1.10.0 on 6.7.16, which adds no function; at 1.9.0 on 6.7.12, which adds markdown's 27; at 1.6.1 on 6.7.12, where the private delimiter helpers come and go uncounted; at 1.6.0 on 6.7.11, and at 1.5.14 on 6.7.9 — removing the private `_d_*` parser fns changes nothing here, the
 counter counts public fns; at 1.5.10 on 6.6.12, whose counter matches whole references and
 excludes `main`; 1.5.10 adds `bayan_json_parse_a` and
 `bayan_json_v_obj_get_by_cstr`).
@@ -604,7 +630,7 @@ parallel jobs** (it was one 32-step job), each installing the pin through
 | job | gates |
 |---|---|
 | `toolchain` | version consistency · `cyrius.lock` verifies · `cyrius deps` changes nothing · `lib/` == the pinned snapshot |
-| `static` | format · lint · include audit · nothing reaches the vendored fold (1.6.1) · pdf naming hazards · typed-lookup overload base · mulmod and divmod arch arms (divmod 1.6.2) |
+| `static` | format · lint · include audit · nothing reaches the vendored fold (1.6.1) · pdf naming hazards · typed-lookup overload base · typed public names: constants `const`, predicates `: bool` (1.10.0) · mulmod and divmod arch arms (divmod 1.6.2) |
 | `x86_64` | build · smoke 42 · suite · fuzz · bench · `coverage --min 100` · mulmod and divmod cost · markdown cost (1.9.0) |
 | `aarch64` | cross-built, run under qemu: build + smoke · suite · all fuzz harnesses · bench · mulmod and divmod cost · markdown cost (1.9.0) · pdf output byte-identical to x86_64's |
 | `oracles` | pdf writer through `pdfcheck.py` · fixture polarity · font metrics (+ regeneration where groff exists) · numeric, TOML, CSV (1.7.0), YAML (1.8.0) and markdown (1.9.0) vectors regenerate · the markdown entity table regenerates (1.9.0) |
@@ -738,7 +764,10 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
    **Guarded from 1.6.1.** `scripts/vendored-fold-guard.sh`, a CI step in `static`, fails on every
    route to it: an include from `src/`, `tests/` or `scripts/`, `bayan` in `[deps]`, and a `bayan`
    leaf in a `dist/` sidecar (each planted at 1.6.1 and each red). The file itself stays, because
-   `lib sync --full` puts it back. At 1.6.1 the 6.7.12 snapshot carries bayan **1.6.0**,
+   `lib sync --full` puts it back. At 1.10.0 the 6.7.16 snapshot carries bayan **1.9.0**,
+   byte-identical to its `dist/bayan.cyr`. From 1.10.0 an accidental include beside `src/` would
+   no longer build at all: both copies declare the public `const`s, and cyrius refuses a `const`
+   declared twice (architecture note 002). At 1.6.1 the 6.7.12 snapshot carried bayan **1.6.0**,
    byte-identical to its `dist/bayan.cyr`.
 
    At 1.6.0 the 6.7.11 snapshot carried bayan **1.5.14**, so an accidental include would have
@@ -819,7 +848,8 @@ by number. Gap 12 is not: the fix is a `cycc_cx` in cyrius's release tarball.
    hardware-divide wide path at ~13× a plain call; the speed gate's 50× limit does not see that
    path.
 12. **CI cannot compile cx** — possibly no longer: the **6.7.12** release tarball, installed at
-   1.6.1 through `install.sh` (checksum and Ed25519 signature verified), ships `bin/cycc_cx`.
+   1.6.1 through `install.sh` (checksum and Ed25519 signature verified), ships `bin/cycc_cx`, and
+   so does 6.7.16's (installed the same way at 1.10.0).
    Unexplored: whether a cx build of bayan's suite runs under its `cxvm`, and so whether CI can
    gain a cx track. Until 6.7.12 the release tarball shipped `cxvm` but no `cycc_cx`,
    so the cx arm of `bayan_u64_mulmod` is checked only structurally
@@ -925,8 +955,9 @@ entries). CI verifies it before resolving.
 
 ## Consumers
 
-- **cyrius** — folds `dist/bayan.cyr` → `lib/bayan.cyr`. The 6.7.12 snapshot
-  carries **1.6.0**, so the next refold carries 1.6.1's delimiter scan and refusal checks.
+- **cyrius** — folds `dist/bayan.cyr` → `lib/bayan.cyr`. The 6.7.16 snapshot
+  carries **1.9.0**, so the next refold carries 1.10.0's typed names. No other file in 6.7.16's
+  `lib/` declares any of the 99 constant names (checked at 1.10.0, as the roadmap asked).
 - **prakash** (optics; filed the 1.5.7 issue). ⚠ **Action on re-pin:**
   `tests/hardening.tcyr` pins `1.621274542797433e-9` → `0x3E1BDA70DB50D1A0`,
   the WRONG +1 ULP value, so that the first `cyrius deps` vendoring 1.5.7
@@ -953,6 +984,5 @@ entries). CI verifies it before resolving.
 
 ## Next
 
-[`roadmap.md`](roadmap.md) holds the sequence. **1.10.0** comes next, a minor: typed public names
-(the `const` migration, which now includes markdown's 31 `MD_*` names, and `: bool` predicates).
-Then TOML into the tagged tree (1.11.0), and the audit and frozen surface (1.12.0).
+[`roadmap.md`](roadmap.md) holds the sequence. **1.11.0** comes next, a minor: TOML into the tagged
+tree (`bayan_toml_v_parse`) and one lookup key type. Then the audit and frozen surface (1.12.0).

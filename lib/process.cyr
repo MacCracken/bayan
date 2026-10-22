@@ -8,7 +8,8 @@
 #   freestanding.
 # process.cyr — process management
 # Usage: include "lib/process.cyr"
-# Includes its own definers (6.6.9): syscalls.cyr, alloc.cyr, string.cyr, result.cyr, vec.cyr, str.cyr.
+# Includes its own definers (6.6.9): syscalls.cyr, alloc.cyr, string.cyr, result.cyr, vec.cyr, str.cyr;
+# and io.cyr on Linux / macOS (env_block, 6.7.16).
 #
 # v5.10.18 — was hard-blocked on `O_WRONLY` from `lib/io.cyr` for
 # the `/dev/null` redirect in `run_capture`; cyrius's own
@@ -53,6 +54,10 @@ include "lib/process_agnos.cyr"
 
 #ifndef CYRIUS_TARGET_WIN
 #ifndef CYRIUS_TARGET_AGNOS
+
+# The environment exec_cmd forwards is lib/io.cyr's env_block (see _read_environ_envp). io.cyr
+# includes nothing of this module, so there is no cycle. CHANGELOG [6.7.16]
+include "lib/io.cyr"
 
 # ⛔ v6.6.6 — NO CHILD THIS MODULE SPAWNS OUTLIVES ITS PARENT, AND EVERY CHILD IT WAITS
 # FOR CAN BE BOUNDED.
@@ -712,6 +717,17 @@ fn _exec3(cmd, arg1, arg2): i64 {
     sys_exit(127);
 }
 
+# Point `target` (0 / 1 / 2) at `fd` and drop `fd` — unless `fd` already IS `target`. A parent
+# that started with a std fd closed hands that number to the next pipe or open (fds 0 and 1
+# closed: the capture pipe is (0, 1); fd 2 closed: the child's /dev/null opens at 2), and
+# `dup2(fd, fd)` is a no-op: closing `fd` then closed the redirect it had just made, so the
+# exec'd program started with that std fd closed and a capture read 0 bytes. CHANGELOG [6.7.15]
+fn _proc_redirect(fd, target): i64 {
+    sys_dup2(fd, target);
+    if (fd != target) { sys_close(fd); }
+    return 0;
+}
+
 # Run a command and wait for it. Returns Result(exit_code).
 fn run(cmd, arg1, arg2): Result {
     var _pg_ppid = sys_getpid();
@@ -747,10 +763,9 @@ fn run_capture(cmd, arg1, arg2, buf, buflen): Result {
     if (pid == 0) {
         _proc_child_guard(_pg_ppid);
         sys_close(read_fd);
-        sys_dup2(write_fd, 1);
-        sys_close(write_fd);
+        _proc_redirect(write_fd, 1);
         var devnull = sys_open("/dev/null", 1, 0);   # 1 = O_WRONLY (Linux/macOS native; PE backend reroutes)
-        if (devnull >= 0) { sys_dup2(devnull, 2); sys_close(devnull); }
+        if (devnull >= 0) { _proc_redirect(devnull, 2); }
         _exec3(cmd, arg1, arg2);
     }
     sys_close(write_fd);
@@ -937,10 +952,9 @@ fn exec_capture_status(args, buf, buflen, status_out): i64 {
     if (pid == 0) {
         _proc_child_guard(_pg_ppid);
         sys_close(rfd);
-        sys_dup2(wfd, 1);
-        sys_close(wfd);
+        _proc_redirect(wfd, 1);
         var devnull = sys_open("/dev/null", 1, 0);   # 1 = O_WRONLY (mirrors run_capture)
-        if (devnull >= 0) { sys_dup2(devnull, 2); sys_close(devnull); }
+        if (devnull >= 0) { _proc_redirect(devnull, 2); }
         sys_execve(cmd, argv, envp);
         sys_exit(127);
     }
@@ -1002,7 +1016,7 @@ fn exec_env(args, env): i64 {
     if (pid == 0) {
         _proc_child_guard(_pg_ppid);
         var devnull = sys_open("/dev/null", 1, 0);   # 1 = O_WRONLY (mirrors run_capture)
-        if (devnull >= 0) { sys_dup2(devnull, 2); sys_close(devnull); }
+        if (devnull >= 0) { _proc_redirect(devnull, 2); }
         sys_execve(cmd, argv, envp);
         sys_exit(127);
     }
@@ -1095,10 +1109,9 @@ fn exec_capture_str(args, buf, buflen): i64 {
     if (pid == 0) {
         _proc_child_guard(_pg_ppid);
         sys_close(rfd);
-        sys_dup2(wfd, 1);
-        sys_close(wfd);
+        _proc_redirect(wfd, 1);
         var devnull = sys_open("/dev/null", 1, 0);   # 1 = O_WRONLY (mirrors run_capture)
-        if (devnull >= 0) { sys_dup2(devnull, 2); sys_close(devnull); }
+        if (devnull >= 0) { _proc_redirect(devnull, 2); }
         sys_execve(cmd, argv, envp);
         sys_exit(127);
     }
@@ -1141,7 +1154,7 @@ fn exec_env_str(args, env): i64 {
     if (pid == 0) {
         _proc_child_guard(_pg_ppid);
         var devnull = sys_open("/dev/null", 1, 0);   # 1 = O_WRONLY (mirrors run_capture)
-        if (devnull >= 0) { sys_dup2(devnull, 2); sys_close(devnull); }
+        if (devnull >= 0) { _proc_redirect(devnull, 2); }
         sys_execve(cmd, argv, envp);
         sys_exit(127);
     }
@@ -1160,20 +1173,19 @@ fn exec_env_str(args, env): i64 {
 # the pre-v5.10.43 byte-or-pointer impl, would crash under the
 # new STR-path dispatch) to 32 (byte literal for space). Hits the
 # byte path of str_split's v5.10.43 runtime dispatch.
-# Read /proc/self/environ and build a NULL-terminated envp array suitable
-# for execve. Each entry points into a heap copy of the environ blob, so the
-# array outlives this call and survives across fork into the child. Returns
-# the envp array pointer, or 0 if environ can't be read (caller substitutes
-# an empty env). Mirrors getenv's /proc/self/environ source (lib/io.cyr).
+# The NULL-terminated envp array execve wants, holding this process's whole environment: the
+# block lib/io.cyr's env_block answers (getenv's, read once to its end — /proc/self/environ on
+# Linux, the entry-stack envp on macOS). Each entry points into that block, which lives for the
+# process and is only read, so the array survives fork into the child. Answers 0 when there is
+# no environment (the caller substitutes an empty one).
+# It opened /proc/self/environ itself, with ONE read of at most 65,535 bytes: macOS has no /proc,
+# so every child of exec_cmd (and the compiled cyriusly's) ran with an EMPTY environment there,
+# and on Linux a larger environment was cut, every variable past the cut gone. CHANGELOG [6.7.16]
 fn _read_environ_envp(): i64 {
-    var fd = sys_open("/proc/self/environ", 0, 0);   # 0 = O_RDONLY
-    if (fd < 0) { return 0; }
-    var blob = alloc(65536);
-    if (blob == 0) { sys_close(fd); return 0; }
-    var n = sys_read(fd, blob, 65535);
-    sys_close(fd);
-    if (n <= 0) { return 0; }
-    store8(blob + n, 0);
+    var lenb[8];
+    var blob = env_block(&lenb);
+    var n = load64(&lenb);
+    if (blob == 0 || n <= 0) { return 0; }
     # environ entries are NUL-separated; one terminator per entry.
     var count = 0;
     var i = 0;

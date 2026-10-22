@@ -670,9 +670,9 @@ fn find_files_checked(path: Str, ext: Str, failed): i64 {
 # ( -path '*/X/*' -o ... ) -prune -o -print` with X drawn
 # from `prunes`.
 #
-# Pinned at v5.9.17 for the TS corpus regression gates which
-# walk `~/Repos/secureyeoman` for *.ts / *.tsx while skipping
-# node_modules, dist, build, .next, coverage. Signature picked
+# Added at v5.9.17 for walking a TypeScript tree for *.ts / *.tsx
+# while skipping node_modules, dist, build, .next, coverage
+# (programs/ts_test_runner.cyr; no gate walks another project since 6.7.16). Signature picked
 # to mirror `dir_walk(path, results)` so callers can use the
 # same shape.
 # v6.5.12: depth-bounded, same reasoning as `_dir_walk_d` above — pruning by NAME does

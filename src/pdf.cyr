@@ -90,50 +90,50 @@
 
 # === Constants ===============================================================
 
-# Object cell tags. Plain vars mirroring JTAG_* (json.cyr:239-245).
-var PTAG_NULL   = 0;
-var PTAG_BOOL   = 1;
-var PTAG_INT    = 2;
-var PTAG_REAL   = 3;
-var PTAG_NAME   = 4;
-var PTAG_STR    = 5;
-var PTAG_ARR    = 6;
-var PTAG_DICT   = 7;
-var PTAG_STREAM = 8;
-var PTAG_REF    = 9;
+# Object cell tags, `const` like json.cyr's JTAG_* (1.10.0).
+const PTAG_NULL   = 0;
+const PTAG_BOOL   = 1;
+const PTAG_INT    = 2;
+const PTAG_REAL   = 3;
+const PTAG_NAME   = 4;
+const PTAG_STR    = 5;
+const PTAG_ARR    = 6;
+const PTAG_DICT   = 7;
+const PTAG_STREAM = 8;
+const PTAG_REF    = 9;
 
 # Standard-14 face ids — the exact order of scripts/gen-widths.py's FONTS_SRC.
-var PDF_FONT_HELVETICA         = 0;
-var PDF_FONT_HELVETICA_BOLD    = 1;
-var PDF_FONT_HELVETICA_OBLIQUE = 2;
-var PDF_FONT_HELVETICA_BOLDOBL = 3;
-var PDF_FONT_TIMES_ROMAN       = 4;
-var PDF_FONT_TIMES_BOLD        = 5;
-var PDF_FONT_TIMES_ITALIC      = 6;
-var PDF_FONT_TIMES_BOLDITALIC  = 7;
-var PDF_FONT_COURIER           = 8;
-var PDF_FONT_COURIER_BOLD      = 9;
-var PDF_FONT_COURIER_OBLIQUE   = 10;
-var PDF_FONT_COURIER_BOLDOBL   = 11;
-var PDF_FONT_SYMBOL            = 12;
-var PDF_FONT_ZAPFDINGBATS      = 13;
-var PDF_FONT_COUNT             = 14;
+const PDF_FONT_HELVETICA         = 0;
+const PDF_FONT_HELVETICA_BOLD    = 1;
+const PDF_FONT_HELVETICA_OBLIQUE = 2;
+const PDF_FONT_HELVETICA_BOLDOBL = 3;
+const PDF_FONT_TIMES_ROMAN       = 4;
+const PDF_FONT_TIMES_BOLD        = 5;
+const PDF_FONT_TIMES_ITALIC      = 6;
+const PDF_FONT_TIMES_BOLDITALIC  = 7;
+const PDF_FONT_COURIER           = 8;
+const PDF_FONT_COURIER_BOLD      = 9;
+const PDF_FONT_COURIER_OBLIQUE   = 10;
+const PDF_FONT_COURIER_BOLDOBL   = 11;
+const PDF_FONT_SYMBOL            = 12;
+const PDF_FONT_ZAPFDINGBATS      = 13;
+const PDF_FONT_COUNT             = 14;
 
 # Page presets, in milli-points.
-var PDF_PAGE_A4     = 0;
-var PDF_PAGE_LETTER = 1;
-var PDF_PAGE_LEGAL  = 2;
+const PDF_PAGE_A4     = 0;
+const PDF_PAGE_LETTER = 1;
+const PDF_PAGE_LEGAL  = 2;
 
-var PDF_MODE_WRITE = 0;
-var PDF_MODE_READ  = 1;
+const PDF_MODE_WRITE = 0;
+const PDF_MODE_READ  = 1;
 
 # WinAnsi transcode policy for codepoints the encoding cannot represent.
-var PDF_WINANSI_STRICT     = 0;   # reject loudly
-var PDF_WINANSI_SUBSTITUTE = 1;   # emit '?'
+const PDF_WINANSI_STRICT     = 0;   # reject loudly
+const PDF_WINANSI_SUBSTITUTE = 1;   # emit '?'
 
 # Handle guard word, 'BPDF'. In an i64-everywhere language a magic word is the
 # only boundary check the type system can offer.
-var PDF_MAGIC = 1112494662;
+const PDF_MAGIC = 1112494662;
 
 # === Struct sizes and bounds =================================================
 
@@ -177,11 +177,11 @@ fn bayan_pdf_set_inflate(fp): i64 { _pdf_inflate_fp = fp; return 0; }
 # emits uncompressed streams and omits /Filter, which is still valid PDF.
 fn bayan_pdf_set_deflate(fp): i64 { _pdf_deflate_fp = fp; return 0; }
 
-# 1 if an inflate hook is installed.
-fn bayan_pdf_has_inflate(): i64 { if (_pdf_inflate_fp == 0) { return 0; } return 1; }
+# True if an inflate hook is installed.
+fn bayan_pdf_has_inflate(): bool { if (_pdf_inflate_fp == 0) { return false; } return true; }
 
-# 1 if a deflate hook is installed.
-fn bayan_pdf_has_deflate(): i64 { if (_pdf_deflate_fp == 0) { return 0; } return 1; }
+# True if a deflate hook is installed.
+fn bayan_pdf_has_deflate(): bool { if (_pdf_deflate_fp == 0) { return false; } return true; }
 
 # === Last-error mirror =======================================================
 #
@@ -562,12 +562,12 @@ fn bayan_pdf_font_id(name: cstring): i64 {
 # Face id -> BaseFont name, or "" when out of range.
 fn bayan_pdf_font_name(id): Str { return str_from(_pdff_basefont(id)); }
 
-# 1 for the four Courier faces, which are the only monospaced standard-14
-# faces (every code is 600/1000 em). 0 for everything else, out of range
+# True for the four Courier faces, which are the only monospaced standard-14
+# faces (every code is 600/1000 em). False for everything else, out of range
 # included — an accessor never aborts.
-fn bayan_pdf_font_is_monospace(id): i64 {
-    if (id >= PDF_FONT_COURIER && id <= PDF_FONT_COURIER_BOLDOBL) { return 1; }
-    return 0;
+fn bayan_pdf_font_is_monospace(id): bool {
+    if (id >= PDF_FONT_COURIER && id <= PDF_FONT_COURIER_BOLDOBL) { return true; }
+    return false;
 }
 
 # Advance width of one code, in 1/1000 em, WinAnsi-indexed (built-in-indexed
@@ -1058,22 +1058,22 @@ fn bayan_pdf_from_winansi(src: Str): Str {
     return bayan_pdf_from_winansi_a(default_alloc(), src);
 }
 
-# 1 if every codepoint in this UTF-8 Str has a WinAnsi byte, else 0. Lets a
+# True if every codepoint in this UTF-8 Str has a WinAnsi byte, else false. Lets a
 # caller choose between transcoding and a UTF-16BE string object without
-# provoking an error, and answers 0 for malformed UTF-8 too — "can this be
+# provoking an error, and answers false for malformed UTF-8 too — "can this be
 # WinAnsi-encoded" is no less false when the input was never text.
-fn bayan_pdf_winansi_ok(src: Str): i64 {
-    if (src == 0) { return 0; }
+fn bayan_pdf_winansi_ok(src: Str): bool {
+    if (src == 0) { return false; }
     var n = str_len(src);
     var p = str_data(src);
     var dec[16];
     var i = 0;
     while (i < n) {
-        if (_pdfg_utf8_next(p, n, i, &dec) == 0) { return 0; }
-        if (_pdfg_cp_to_winansi(load64(&dec)) < 0) { return 0; }
+        if (_pdfg_utf8_next(p, n, i, &dec) == 0) { return false; }
+        if (_pdfg_cp_to_winansi(load64(&dec)) < 0) { return false; }
         i = i + load64(&dec + 8);
     }
-    return 1;
+    return true;
 }
 
 # === _pdfo_ — the PdfObj object-cell model ===================================
@@ -1571,55 +1571,55 @@ fn bayan_pdf_obj_tag(o): i64 {
     return load64(o);
 }
 
-# 1 if `o` is a number — INT or REAL. Geometry readers want either.
-fn bayan_pdf_obj_is_num(o): i64 {
-    if (o == 0) { return 0; }
+# True if `o` is a number — INT or REAL. Geometry readers want either.
+fn bayan_pdf_obj_is_num(o): bool {
+    if (o == 0) { return false; }
     var t = load64(o);
-    if (t == PTAG_INT)  { return 1; }
-    if (t == PTAG_REAL) { return 1; }
-    return 0;
+    if (t == PTAG_INT)  { return true; }
+    if (t == PTAG_REAL) { return true; }
+    return false;
 }
 
-# 1 if `o` is a PTAG_NAME.
-fn bayan_pdf_obj_is_name(o): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) == PTAG_NAME) { return 1; }
-    return 0;
+# True if `o` is a PTAG_NAME.
+fn bayan_pdf_obj_is_name(o): bool {
+    if (o == 0) { return false; }
+    if (load64(o) == PTAG_NAME) { return true; }
+    return false;
 }
 
-# 1 if `o` is a PTAG_STR (either source form).
-fn bayan_pdf_obj_is_string(o): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) == PTAG_STR) { return 1; }
-    return 0;
+# True if `o` is a PTAG_STR (either source form).
+fn bayan_pdf_obj_is_string(o): bool {
+    if (o == 0) { return false; }
+    if (load64(o) == PTAG_STR) { return true; }
+    return false;
 }
 
-# 1 if `o` is a PTAG_ARR.
-fn bayan_pdf_obj_is_array(o): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) == PTAG_ARR) { return 1; }
-    return 0;
+# True if `o` is a PTAG_ARR.
+fn bayan_pdf_obj_is_array(o): bool {
+    if (o == 0) { return false; }
+    if (load64(o) == PTAG_ARR) { return true; }
+    return false;
 }
 
-# 1 if `o` is a PTAG_DICT.
-fn bayan_pdf_obj_is_dict(o): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) == PTAG_DICT) { return 1; }
-    return 0;
+# True if `o` is a PTAG_DICT.
+fn bayan_pdf_obj_is_dict(o): bool {
+    if (o == 0) { return false; }
+    if (load64(o) == PTAG_DICT) { return true; }
+    return false;
 }
 
-# 1 if `o` is a PTAG_STREAM.
-fn bayan_pdf_obj_is_stream(o): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) == PTAG_STREAM) { return 1; }
-    return 0;
+# True if `o` is a PTAG_STREAM.
+fn bayan_pdf_obj_is_stream(o): bool {
+    if (o == 0) { return false; }
+    if (load64(o) == PTAG_STREAM) { return true; }
+    return false;
 }
 
-# 1 if `o` is a PTAG_REF (an unresolved `N G R`).
-fn bayan_pdf_obj_is_ref(o): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) == PTAG_REF) { return 1; }
-    return 0;
+# True if `o` is a PTAG_REF (an unresolved `N G R`).
+fn bayan_pdf_obj_is_ref(o): bool {
+    if (o == 0) { return false; }
+    if (load64(o) == PTAG_REF) { return true; }
+    return false;
 }
 
 # Boolean payload (0 or 1); 0 on any other tag.
@@ -1705,21 +1705,21 @@ fn bayan_pdf_obj_name(o): Str {
     return s;
 }
 
-# 1 if `o` is a name equal to `s`. The /Type /Catalog workhorse.
+# True if `o` is a name equal to `s`. The /Type /Catalog workhorse.
 #
 # `s` is a cstring — the same annotation bayan_json_v_obj_get_by_cstr carries,
 # and for the same reason. Names are ASCII identifiers in practice, so a
 # NUL-terminated comparand costs nothing; the payload side is still compared
 # with memeq over an explicit length, so a name containing NUL simply never
 # matches instead of matching a prefix.
-fn bayan_pdf_obj_name_eq(o, s: cstring): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) != PTAG_NAME) { return 0; }
+fn bayan_pdf_obj_name_eq(o, s: cstring): bool {
+    if (o == 0) { return false; }
+    if (load64(o) != PTAG_NAME) { return false; }
     var ns = load64(o + 8);
-    if (ns == 0) { return 0; }
+    if (ns == 0) { return false; }
     var n = strlen(s);
-    if (load64(ns + 8) != n) { return 0; }
-    return memeq(load64(ns), s, n);
+    if (load64(ns + 8) != n) { return false; }
+    return memeq(load64(ns), s, n) != 0;
 }
 
 # The raw decoded bytes of a PTAG_STR. BINARY, not UTF-8, and may contain NUL —
@@ -1733,12 +1733,12 @@ fn bayan_pdf_obj_bytes(o): Str {
     return s;
 }
 
-# 1 if the source form of this string was <hex> rather than a literal ( ... ).
-fn bayan_pdf_obj_is_hex(o): i64 {
-    if (o == 0) { return 0; }
-    if (load64(o) != PTAG_STR) { return 0; }
-    if (load64(o + 16) == 1) { return 1; }
-    return 0;
+# True if the source form of this string was <hex> rather than a literal ( ... ).
+fn bayan_pdf_obj_is_hex(o): bool {
+    if (o == 0) { return false; }
+    if (load64(o) != PTAG_STR) { return false; }
+    if (load64(o + 16) == 1) { return true; }
+    return false;
 }
 
 # Element count of an array, or 0 - 1 if `o` is not an array. The 0 - 1 makes
@@ -1926,8 +1926,8 @@ fn bayan_pdf_obj_dict_set(d, key: cstring, v): i64 {
 # compare by dictionary plus payload bytes. Strings additionally compare their
 # source form, because the round-trip contract is that serialise . parse is the
 # identity — this is the predicate that assertion is written against.
-fn bayan_pdf_obj_eq(x, y): i64 {
-    return _pdfo_eq_d(x, y, 0);
+fn bayan_pdf_obj_eq(x, y): bool {
+    return _pdfo_eq_d(x, y, 0) != 0;
 }
 
 # === _pdfz_ — stream filters ================================================
@@ -2162,14 +2162,14 @@ fn _pdfz_filter_supported(id): i64 {
     return 0;
 }
 
-# 1 if `id` is an image codec — a stream ending in one of these holds pixel
+# True if `id` is an image codec — a stream ending in one of these holds pixel
 # data this module never decodes, which is a different answer from "broken".
-fn _pdfz_filter_is_image(id): i64 {
-    if (id == _PDFZ_F_DCT)   { return 1; }
-    if (id == _PDFZ_F_JPX)   { return 1; }
-    if (id == _PDFZ_F_CCITT) { return 1; }
-    if (id == _PDFZ_F_JBIG2) { return 1; }
-    return 0;
+fn _pdfz_filter_is_image(id): bool {
+    if (id == _PDFZ_F_DCT)   { return true; }
+    if (id == _PDFZ_F_JPX)   { return true; }
+    if (id == _PDFZ_F_CCITT) { return true; }
+    if (id == _PDFZ_F_JBIG2) { return true; }
+    return false;
 }
 
 # --- Flate, through the installed hook --------------------------------------
@@ -5468,7 +5468,7 @@ fn _pdfp_decode_chain_a(a, doc, st): Str {
             _pdfe_doc_err(doc, "stream uses an unrecognised /Filter", 0 - 1);
             return 0;
         }
-        if (_pdfz_filter_is_image(id) == 1) {
+        if (_pdfz_filter_is_image(id)) {
             _pdfe_doc_err(doc,
               "stream is image data (DCT/JPX/CCITT/JBIG2) and is never decoded here",
               0 - 1);
@@ -6276,14 +6276,14 @@ fn bayan_pdf_version(doc): i64 {
     return load64(doc + 112);
 }
 
-# 1 when /Encrypt was present. `doc` of 0 asks about the LAST parse, which is
+# True when /Encrypt was present. `doc` of 0 asks about the LAST parse, which is
 # the spelling that matters: an encrypted file is always a fatal parse, so
 # there is no handle to ask.
-fn bayan_pdf_is_encrypted(doc): i64 {
-    if (doc == 0) { return _pdfp_last_enc; }
-    if (_pdfe_magic(doc, 0 - 1) == 0) { return 0; }
-    if ((load64(doc + 120) & _PDF_F_ENCRYPT) != 0) { return 1; }
-    return 0;
+fn bayan_pdf_is_encrypted(doc): bool {
+    if (doc == 0) { return _pdfp_last_enc != 0; }
+    if (_pdfe_magic(doc, 0 - 1) == 0) { return false; }
+    if ((load64(doc + 120) & _PDF_F_ENCRYPT) != 0) { return true; }
+    return false;
 }
 
 # Object count: the trailer /Size for a reader, the highest allocated number
@@ -6359,13 +6359,13 @@ fn bayan_pdf_stream_data(doc, st): Str {
     return bayan_pdf_stream_data_a(default_alloc(), doc, st);
 }
 
-# 1 when the filter chain TERMINATES in an image codec — DCTDecode, JPXDecode,
+# True when the filter chain TERMINATES in an image codec — DCTDecode, JPXDecode,
 # JBIG2Decode or CCITTFaxDecode. Those hold pixel data this module never
 # decodes, so asking for their bytes is a documented error rather than a crash,
 # and this is the predicate that lets a caller not ask.
-fn bayan_pdf_stream_is_image(doc, st): i64 {
-    if (_pdfe_magic(doc, 0 - 1) == 0) { return 0; }
-    if (_pdfo_tag(st) != PTAG_STREAM) { return 0; }
+fn bayan_pdf_stream_is_image(doc, st): bool {
+    if (_pdfe_magic(doc, 0 - 1) == 0) { return false; }
+    if (_pdfo_tag(st) != PTAG_STREAM) { return false; }
     var dict = _pdfo_a(st);
     var f = _pdfp_resolve_d(doc, bayan_pdf_obj_dict_get(dict, "Filter"), 0);
     var last = 0;
@@ -6374,12 +6374,12 @@ fn bayan_pdf_stream_is_image(doc, st): i64 {
     } elif (_pdfo_tag(f) == PTAG_ARR) {
         var v = _pdfo_vec(f);
         var n = vec_len(v);
-        if (n <= 0) { return 0; }
+        if (n <= 0) { return false; }
         last = _pdfp_resolve_d(doc, vec_get(v, n - 1), 0);
     } else {
-        return 0;
+        return false;
     }
-    if (_pdfo_tag(last) != PTAG_NAME) { return 0; }
+    if (_pdfo_tag(last) != PTAG_NAME) { return false; }
     return _pdfz_filter_is_image(_pdfz_filter_id(bayan_pdf_obj_name(last)));
 }
 

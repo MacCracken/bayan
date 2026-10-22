@@ -108,14 +108,14 @@ fn bayan_toml_section_pairs(s) : i64 { return load64(s + 8); }
 # fooled by content. TOML_K_UNKNOWN is what a hand-built pair gets: callers
 # that construct pairs themselves through bayan_toml_pair_new have no form to
 # report, and a guess there would be worse than an honest "unknown".
-var TOML_K_UNKNOWN  = 0;   # built by hand, or from a source bayan did not parse
-var TOML_K_BASIC    = 1;   # "..."
-var TOML_K_LITERAL  = 2;   # '...'
-var TOML_K_ML_BASIC = 3;   # """..."""
-var TOML_K_ML_LIT   = 4;   # '''...'''
-var TOML_K_ARRAY    = 5;   # [ ... ]
-var TOML_K_INLINE   = 6;   # { ... }
-var TOML_K_BARE     = 7;   # number, boolean, date — unquoted
+const TOML_K_UNKNOWN  = 0;   # built by hand, or from a source bayan did not parse
+const TOML_K_BASIC    = 1;   # "..."
+const TOML_K_LITERAL  = 2;   # '...'
+const TOML_K_ML_BASIC = 3;   # """..."""
+const TOML_K_ML_LIT   = 4;   # '''...'''
+const TOML_K_ARRAY    = 5;   # [ ... ]
+const TOML_K_INLINE   = 6;   # { ... }
+const TOML_K_BARE     = 7;   # number, boolean, date — unquoted
 
 # 1.5.4 — Allocator-as-first-arg pair constructor that records the value kind.
 # The pair is 24 bytes: { key, value, kind }.
@@ -157,27 +157,27 @@ fn bayan_toml_pair_value(p) : i64 { return load64(p + 8); }
 # 1.5.4 — Which syntactic form produced this pair's value (a TOML_K_* value).
 fn bayan_toml_pair_kind(p) : i64 { return load64(p + 16); }
 
-# 1.5.4 — 1 if this pair's value was written as an ARRAY. Unlike
+# 1.5.4 — true if this pair's value was written as an ARRAY. Unlike
 # bayan_toml_is_array, which sniffs the value bytes and cannot tell an array
 # from a string that starts with `[`, this is the parser's own answer.
-# A hand-built pair (TOML_K_UNKNOWN) reports 0.
-fn bayan_toml_pair_is_array(p) : i64 {
-    if (bayan_toml_pair_kind(p) == TOML_K_ARRAY) { return 1; }
-    return 0;
+# A hand-built pair (TOML_K_UNKNOWN) reports false.
+fn bayan_toml_pair_is_array(p): bool {
+    if (bayan_toml_pair_kind(p) == TOML_K_ARRAY) { return true; }
+    return false;
 }
 
-# 1.5.4 — 1 if this pair's value was written as an INLINE TABLE `{ ... }`.
-fn bayan_toml_pair_is_inline(p) : i64 {
-    if (bayan_toml_pair_kind(p) == TOML_K_INLINE) { return 1; }
-    return 0;
+# 1.5.4 — true if this pair's value was written as an INLINE TABLE `{ ... }`.
+fn bayan_toml_pair_is_inline(p): bool {
+    if (bayan_toml_pair_kind(p) == TOML_K_INLINE) { return true; }
+    return false;
 }
 
-# 1.5.4 — 1 if this pair's value was written as any of the four STRING forms.
-fn bayan_toml_pair_is_string(p) : i64 {
+# 1.5.4 — true if this pair's value was written as any of the four STRING forms.
+fn bayan_toml_pair_is_string(p): bool {
     var k = bayan_toml_pair_kind(p);
-    if (k == TOML_K_BASIC || k == TOML_K_LITERAL) { return 1; }
-    if (k == TOML_K_ML_BASIC || k == TOML_K_ML_LIT) { return 1; }
-    return 0;
+    if (k == TOML_K_BASIC || k == TOML_K_LITERAL) { return true; }
+    if (k == TOML_K_ML_BASIC || k == TOML_K_ML_LIT) { return true; }
+    return false;
 }
 
 # Skip whitespace in buffer, return new position
@@ -1602,13 +1602,13 @@ fn bayan_toml_array_parse(value): i64 {
 # Fixing it properly means recording the value's kind on the pair, which
 # changes the struct every consumer reads — filed with the other structural
 # gaps in docs/development/issues/archived/2026-08-28-toml-structural-subset-gaps.md.
-fn bayan_toml_is_array(value): i64 {
-    if (value == 0) { return 0; }
+fn bayan_toml_is_array(value): bool {
+    if (value == 0) { return false; }
     var buf = str_data(value);
     var n = str_len(value);
     var pos = _toml_arr_skip_ws(buf, 0, n);
-    if (pos < n && load8(buf + pos) == 91) { return 1; }
-    return 0;
+    if (pos < n && load8(buf + pos) == 91) { return true; }
+    return false;
 }
 
 # --- Inline tables (1.5.4) --------------------------------------------------
@@ -1690,18 +1690,18 @@ fn bayan_toml_inline_parse(value): i64 {
     return bayan_toml_inline_parse_a(default_alloc(), value);
 }
 
-# 1.5.4 — 1 if `value`'s first non-whitespace byte is `{`.
+# 1.5.4 — true if `value`'s first non-whitespace byte is `{`.
 #
 # Like bayan_toml_is_array this is a byte heuristic and can be fooled by a
 # STRING whose content starts with `{`. Prefer bayan_toml_pair_is_inline, which
 # reads the kind the parser recorded and cannot be.
-fn bayan_toml_is_inline(value): i64 {
-    if (value == 0) { return 0; }
+fn bayan_toml_is_inline(value): bool {
+    if (value == 0) { return false; }
     var buf = str_data(value);
     var n = str_len(value);
     var pos = _toml_arr_skip_ws(buf, 0, n);
-    if (pos < n && load8(buf + pos) == 123) { return 1; }
-    return 0;
+    if (pos < n && load8(buf + pos) == 123) { return true; }
+    return false;
 }
 
 # 1.5.4 — Look up `key` and decompose its value as an inline table.

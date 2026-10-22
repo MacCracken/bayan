@@ -202,6 +202,26 @@ jobs:
           fi
           echo "json typed-lookup naming clear"
 
+      # 1.10.0 typed the public names, and this keeps the next name typed too. A public constant
+      # (an upper-case name declared at column 0, the top level) is a `const`: a `var` cannot be a `case` label or a stack
+      # buffer's size, and it can be assigned. A public predicate (an `_is_` or `_has_` name, an
+      # `_eq`, `bayan_pdf_winansi_ok`, and their _compat aliases) returns `: bool`. tests/bayan.tcyr
+      # pins today's names; this catches a new one declared the old way.
+      - name: Typed public names — constants are const, predicates are bool
+        run: |
+          set -euo pipefail
+          fail=0
+          if grep -nE '^var[[:space:]]+[A-Z][A-Z0-9_]*[[:space:]]*(=|;|\[)' src/*.cyr; then
+            echo "::error::a public constant is declared var — declare it const"; fail=1
+          fi
+          if grep -nE '^fn[[:space:]]+([a-z][a-z0-9_]*_(is|has)_[a-z0-9_]*|[a-z][a-z0-9_]*_eq|bayan_pdf_winansi_ok)[[:space:]]*\(' src/*.cyr \
+               | grep -vE '\)[[:space:]]*:[[:space:]]*bool[[:space:]]*\{'; then
+            echo "::error::a public predicate does not return : bool"; fail=1
+          fi
+          test "$fail" -eq 0 || exit 1
+          echo "typed public names: $(grep -cE '^const [A-Z]' src/*.cyr | awk -F: '{s+=$2} END {print s}') public consts," \
+               "$(grep -cE '^fn [a-z][a-z0-9_]*\(.*\)[[:space:]]*:[[:space:]]*bool' src/*.cyr | awk -F: '{s+=$2} END {print s}') bool fns"
+
       # CI compiles x86_64 and aarch64, and the cx compiler is not in the
       # release toolchain, so no test compiles what a target with no
       # CYRIUS_ARCH_* macro compiles. Through 1.5.9 bayan_u64_mulmod had an x86

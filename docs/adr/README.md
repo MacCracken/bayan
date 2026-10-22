@@ -32,6 +32,7 @@ Decisions about bayan — what we chose, the context, and the consequences we ac
 | [0009](0009-toml-strings-are-decoded-in-the-parser.md) | TOML strings are decoded in the parser, not by an accessor | Accepted |
 | [0010](0010-markdown-parses-into-a-tree-of-its-own.md) | Markdown parses into a tree of its own | Accepted |
 | [0011](0011-markdown-raw-html-is-text.md) | Markdown's raw HTML is text, and its dangerous URLs are dropped | Accepted |
+| [0012](0012-public-constants-are-const-and-predicates-return-bool.md) | Public constants are `const`, and public predicates return `: bool` | Accepted |
 
 0001 and 0002 were written at 1.5.0, alongside `bayan_pdf_*`. They record the
 two decisions in that module a future reader is most likely to try to
@@ -54,3 +55,7 @@ answer to the question 0002 and 0008 answered, whether a new format reuses the
 json value tree, and says why markdown does not. 0011 records the cut-off the
 roadmap asked to have documented: the part of CommonMark bayan does not
 implement, and the safety reason for it.
+
+0012 was written at 1.10.0, with the typed names. It records the rule that decided which names were
+typed, by contract rather than by spelling, and so why a few functions whose value is 0 or 1 stay
+`i64`.

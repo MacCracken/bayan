@@ -1413,9 +1413,9 @@ fn sys_statfs(path, pathlen, buf): i64 { return syscall(SYS_STATFS, path, pathle
 # fifth, not a degraded answer.
 # ⛔ NO `SYS_FSTATFS` CONSTANT, on the v6.6.5 rule recorded above: agnos owns its syscall
 # space, Linux's 138 is absent from agnos's frozen contract entirely, and minting it here
-# would invite a raw `syscall(SYS_FSTATFS, …)` into an undefined kernel call AND redden
-# tests/gates/platform/agnos_abi_doc_parity.sh axis 2 ("the cyrius peer defines syscall
-# number(s) absent from the frozen contract").
+# would invite a raw `syscall(SYS_FSTATFS, …)` into an undefined kernel call AND define a
+# syscall number absent from the frozen contract. The cross-repo parity check against agnos's
+# contract is agnos's own CI's job since 6.7.16.
 # UPGRADE PATH: if agnos ever mints an fstatfs number, add the constant WITH its contract row
 # and replace this body with `syscall(SYS_FSTATFS, fd, buf)`. CHANGELOG [6.6.6]
 fn sys_fstatfs(fd, buf): i64 { return 0 - 38; }

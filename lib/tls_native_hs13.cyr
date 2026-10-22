@@ -310,13 +310,15 @@ fn _tn_client_offered_ext(ctx, et): i64 {
     return 0;
 }
 
-# 1 if RFC 8446 §4.2's table lets a ServerHello (`in_ee` 0) or EncryptedExtensions (`in_ee` 1)
+# 1 if RFC 8446 §4.2's table lets a ServerHello (`msg` 0) or EncryptedExtensions (`msg` 1)
 # carry extension type `et`, else 0. ServerHello: pre_shared_key (41), supported_versions,
 # key_share. EncryptedExtensions: server_name, max_fragment_length (1), supported_groups,
 # use_srtp (14), heartbeat (15), ALPN, client_certificate_type (19), server_certificate_type
-# (20), early_data (42). CHANGELOG [6.7.12]
-fn _tn_client_ext_allowed(et, in_ee): i64 {
-    if (in_ee == 0) {
+# (20), early_data (42). A TLS 1.2 ServerHello (`msg` 2) has no such table (RFC 5246 §7.4.1.4:
+# what the ClientHello carried, _tn_client_offered_ext): 1. CHANGELOG [6.7.12] [6.7.14]
+fn _tn_client_ext_allowed(et, msg): i64 {
+    if (msg == 2) { return 1; }
+    if (msg == 0) {
         if (et == 41) { return 1; }
         if (et == TLS_EXT_SUPPORTED_VERSIONS) { return 1; }
         if (et == TLS_EXT_KEY_SHARE) { return 1; }
@@ -334,19 +336,24 @@ fn _tn_client_ext_allowed(et, in_ee): i64 {
     return 0;
 }
 
-# The 1.3 client's walk of every extension in a ServerHello (`in_ee` 0) or EncryptedExtensions
-# (`in_ee` 1) block (`ep`, `total` bytes), the HelloRetryRequest walk's rule (RFC 8446 §4.2): one
-# our ClientHello did not carry (_tn_client_offered_ext — read from the bytes we sent, so a
-# pre_shared_key passes once the client offers one) is unsupported_extension; one we offered that
-# this message may not carry (_tn_client_ext_allowed) is illegal_parameter; a block that does not
-# frame is decode_error. TLS_OK, or the refusal (_tn_hs_refuse: the alert recorded, the ctx failed).
+# The client's walk of every extension in a 1.3 ServerHello (`msg` 0), an EncryptedExtensions
+# (`msg` 1) or a 1.2 ServerHello (`msg` 2) block (`ep`, `total` bytes), the HelloRetryRequest
+# walk's rule (RFC 8446 §4.2): one our ClientHello did not carry (_tn_client_offered_ext — read
+# from the bytes we sent, so a pre_shared_key passes once the client offers one) is
+# unsupported_extension; one we offered that this message may not carry (_tn_client_ext_allowed)
+# is illegal_parameter; a type the block already carried is illegal_parameter (RFC 8446 §4.2 /
+# RFC 5246 §7.4.1.4: no more than one extension of a type in a block — the HelloRetryRequest
+# walk's alert); a block that does not frame is decode_error. TLS_OK, or the refusal
+# (_tn_hs_refuse: the alert recorded, the ctx failed).
 # ⛔ 6.7.12 — WHY. The ServerHello parse looked up supported_versions and key_share and never read
 # the rest, and EncryptedExtensions was searched for ALPN alone ("lenient on malformed exts"), so a
-# server's unsolicited extension passed. CHANGELOG [6.7.12]
-fn _tn_client_ext_walk(ctx, ep, total, in_ee): i64 {
+# server's unsolicited extension passed. 6.7.14: a repeated type passed (_tn_find_ext takes the
+# first). CHANGELOG [6.7.12] [6.7.14]
+fn _tn_client_ext_walk(ctx, ep, total, msg): i64 {
     var q = 0;
     while (q < total) {
         if (q + 4 > total) { return _tn_hs_refuse(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
+        var at = q;
         var et = _tn_be16_r(ep + q);
         var el = _tn_be16_r(ep + q + 2);
         q = q + 4;
@@ -354,7 +361,10 @@ fn _tn_client_ext_walk(ctx, ep, total, in_ee): i64 {
         if (_tn_client_offered_ext(ctx, et) != 1) {
             return _tn_hs_refuse(ctx, TLS_AD_UNSUPPORTED_EXTENSION, TLS_ERR_HANDSHAKE_FAILED);
         }
-        if (_tn_client_ext_allowed(et, in_ee) != 1) {
+        if (_tn_client_ext_allowed(et, msg) != 1) {
+            return _tn_hs_refuse(ctx, TLS_AD_ILLEGAL_PARAMETER, TLS_ERR_HANDSHAKE_FAILED);
+        }
+        if (_tn_ext_seen_before(ep, at, et) == 1) {
             return _tn_hs_refuse(ctx, TLS_AD_ILLEGAL_PARAMETER, TLS_ERR_HANDSHAKE_FAILED);
         }
         q = q + el;
@@ -362,17 +372,112 @@ fn _tn_client_ext_walk(ctx, ep, total, in_ee): i64 {
     return TLS_OK;
 }
 
-# 1 if the server's ALPN extension data (`ad`, `al` bytes) names a protocol in our offer
-# (TLS_CTX_OFF_ALPN_OFFER: [be16 n][1-byte-length-prefixed names]), else 0. Data
-# _tn_store_alpn_selected would not store (malformed) answers 1: it selects nothing. RFC 7301 §3.2:
-# a protocol the client did not offer is illegal_parameter. CHANGELOG [6.7.12]
-fn _tn_alpn_offered(ctx, ad, al): i64 {
-    if (al < 3) { return 1; }
+# 1 if an extension of type `et` sits in the block `ep` before offset `upto`, else 0. The entries
+# before `upto` frame: _tn_client_ext_walk read them. CHANGELOG [6.7.14]
+fn _tn_ext_seen_before(ep, upto, et): i64 {
+    var q = 0;
+    while (q < upto) {
+        if (_tn_be16_r(ep + q) == et) { return 1; }
+        q = q + 4 + _tn_be16_r(ep + q + 2);
+    }
+    return 0;
+}
+
+# The servers' walk of a ClientHello's extension block (`ep`, `total` bytes), run once before any
+# lookup by the 1.2 parse (_tn_12_parse_client_hello) and the 1.3 parse (_tn_parse_client_hello):
+# 0 if the block does not frame (decode_error) — an entry's 4-byte header or its data outside the
+# block, or the last one not ending at `total`; else 2 if it names a type twice (illegal_parameter:
+# RFC 5246 §7.4.1.4 / RFC 8446 §4.2, no more than one extension of a type in a block — the client
+# walk's alert); else 1. Framing first: a block that repeats a type and does not frame is 0.
+# TLS_ERR_OOM when the type map of a long block cannot be allocated (_tn_ch_ext_types_once).
+# _tn_find_ext alone answered none of it: it stops at the first entry that overruns (its -1 was
+# read as "absent", 6.7.16's D32), its `pos + 4 <= ext_len` loop never reads a 1-3 byte tail after
+# the last whole extension (the 1.3 server negotiated: 6.7.16's D81, the user, 2026-10-20:
+# decode_error), and it takes the first of a repeated type (both servers negotiated on it: 6.7.16's
+# D82, the user, 2026-10-20: illegal_parameter). CHANGELOG [6.7.16]
+fn _tn_ch_ext_walk(ctx, ep, total): i64 {
+    var q = 0;
+    var n = 0;
+    while (q < total) {
+        if (q + 4 > total) { return 0; }
+        q = q + 4 + _tn_be16_r(ep + q + 2);
+        n = n + 1;
+    }
+    if (q != total) { return 0; }
+    if (n > 32) { return _tn_ch_ext_types_once(ctx, ep, total); }
+    q = 0;
+    while (q < total) {
+        if (_tn_ext_seen_before(ep, q, _tn_be16_r(ep + q)) == 1) { return 2; }
+        q = q + 4 + _tn_be16_r(ep + q + 2);
+    }
+    return 1;
+}
+
+# _tn_ch_ext_walk's repeat check for a framed block of more than 32 entries (`ep`, `total` bytes):
+# 2 if a type repeats, else 1; TLS_ERR_OOM when the map cannot be allocated. One bit per type (8 KB
+# from the ctx's allocator, taken only for such a block — a real client sends under 32), so the
+# check is one pass: _tn_ext_seen_before's scan of every earlier entry would cost a peer's
+# 16 KB ClientHello of ~4000 empty extensions ~8M reads (~0.1 s of the server's CPU, x86_64).
+# CHANGELOG [6.7.16]
+fn _tn_ch_ext_types_once(ctx, ep, total): i64 {
+    var map = _tn_alloc(ctx, 8192);
+    if (map == 0) { return TLS_ERR_OOM; }
+    memset(map, 0, 8192);
+    var q = 0;
+    while (q < total) {
+        var et = _tn_be16_r(ep + q);
+        var bp = map + (et >> 3);
+        var bit = 1 << (et & 7);
+        if ((load8(bp) & bit) != 0) { return 2; }
+        store8(bp, (load8(bp) & 0xFF) | bit);
+        q = q + 4 + _tn_be16_r(ep + q + 2);
+    }
+    return 1;
+}
+
+# 1 if the server's ALPN extension data (`ad`, `al` bytes) is exactly one non-empty protocol name
+# filling it — a ProtocolNameList whose length is `al` - 2, holding one name whose length byte
+# and bytes fill the list (RFC 7301 §3.1: the server's answer "MUST be restricted to a single
+# protocol name"; empty names are not allowed) — else 0 (the client refuses it with decode_error).
+# _tn_alpn_offered and _tn_store_alpn_selected read only a body this passes. CHANGELOG [6.7.14]
+fn _tn_alpn_answer_ok(ad, al): i64 {
+    if (al < 3) { return 0; }
     var list_len = _tn_be16_r(ad);
-    if (list_len + 2 > al) { return 1; }
+    if (list_len + 2 != al) { return 0; }
     var plen = load8(ad + 2) & 0xFF;
-    if (plen == 0) { return 1; }
-    if (plen + 1 > list_len) { return 1; }
+    if (plen == 0) { return 0; }
+    if (plen + 1 != list_len) { return 0; }
+    return 1;
+}
+
+# The client taking the server's ALPN answer from the extension block `ep` (`total` bytes, already
+# walked: _tn_client_ext_walk refused an ALPN extension we did not offer, and a second one) — the
+# 1.3 EncryptedExtensions and the 1.2 ServerHello. No ALPN extension: TLS_OK. One that is not
+# exactly one well-formed name (_tn_alpn_answer_ok): decode_error. A protocol we did not offer:
+# illegal_parameter (RFC 7301 §3.2). Else the protocol is stored (_tn_store_alpn_selected) and
+# TLS_OK. CHANGELOG [6.7.14]
+fn _tn_client_alpn_answer(ctx, ep, total): i64 {
+    var ap = 0;
+    var al = 0;
+    if (_tn_find_ext(ep, total, TLS_EXT_ALPN, &ap, &al) != 1) { return TLS_OK; }
+    if (_tn_alpn_answer_ok(ap, al) != 1) {
+        return _tn_hs_refuse(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE);
+    }
+    if (_tn_alpn_offered(ctx, ap, al) != 1) {
+        return _tn_hs_refuse(ctx, TLS_AD_ILLEGAL_PARAMETER, TLS_ERR_HANDSHAKE_FAILED);
+    }
+    _tn_store_alpn_selected(ctx, ap, al);
+    return TLS_OK;
+}
+
+# 1 if the server's ALPN extension data (`ad`, `al` bytes) names a protocol in our offer
+# (TLS_CTX_OFF_ALPN_OFFER: [be16 n][1-byte-length-prefixed names]), else 0. A body that is not
+# exactly one well-formed name (_tn_alpn_answer_ok) answers 0 — 6.7.12 answered 1 and read the
+# first name of a list of two. RFC 7301 §3.2: a protocol the client did not offer is
+# illegal_parameter. CHANGELOG [6.7.12] [6.7.14]
+fn _tn_alpn_offered(ctx, ad, al): i64 {
+    if (_tn_alpn_answer_ok(ad, al) != 1) { return 0; }
+    var plen = load8(ad + 2) & 0xFF;
     var off = load64(ctx + TLS_CTX_OFF_ALPN_OFFER);
     if (off == 0) { return 0; }
     var n = _tn_be16_r(off);
@@ -416,9 +521,10 @@ fn _tn_13_scheme_curve_ok(scheme, leaf): i64 {
 # (tls_native_client_process_hrr takes the first; a second is TLS_ERR_PROTOCOL); a
 # legacy_session_id_echo that is not our empty one, a cipher other than the HelloRetryRequest's, a
 # non-null compression method, a key_share on another group, a refused key, a DOWNGRD random
-# (illegal_parameter); no supported_versions (protocol_version); malformed (decode_error); an
-# extension we did not offer (unsupported_extension) or one a ServerHello may not carry
-# (illegal_parameter) — every extension is walked (_tn_client_ext_walk, 6.7.12).
+# (illegal_parameter); no supported_versions (protocol_version); malformed, a byte after the
+# extension block included (decode_error, 6.7.14); an extension we did not offer
+# (unsupported_extension), one a ServerHello may not carry or one carried twice
+# (illegal_parameter) — every extension is walked (_tn_client_ext_walk, 6.7.12; the repeat, 6.7.14).
 # ⛔ 6.6.15 — WHY. The 1.3 client offered and took x25519 alone and failed every HelloRetryRequest
 # (TLS_ERR_HANDSHAKE_FAILED): OpenSSL's `s_server -tls1_3 -groups P-256` / `P-384` refused it ("no
 # suitable key share", TLS_ERR_ALERT). It never refused an all-zero x25519 secret (RFC 8446 §7.4.2
@@ -477,9 +583,11 @@ fn tls_native_client_parse_server_hello(ctx, sh, sh_len): i64 {
     pos = pos + 1;
     var ext_total = _tn_be16_r(body + pos);
     pos = pos + 2;
-    if (pos + ext_total > blen) { return _tn_hs_refuse(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
+    # The block fills the rest of the message: a byte after it is decode_error (RFC 8446 §4: 6.7.12's
+    # `>` let it through). CHANGELOG [6.7.14]
+    if (pos + ext_total != blen) { return _tn_hs_refuse(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
     var ext_ptr = body + pos;
-    var xw = _tn_client_ext_walk(ctx, ext_ptr, ext_total, 0);   # every extension: offered, allowed here
+    var xw = _tn_client_ext_walk(ctx, ext_ptr, ext_total, 0);   # every extension: offered, allowed here, once
     if (xw != TLS_OK) { return xw; }
     var sv_dp = 0;
     var sv_dl = 0;
@@ -725,23 +833,18 @@ fn tls_native_client_recv_flight(ctx, record, record_len): i64 {
     if (mt != TLS_HS_ENCRYPTED_EXTENSIONS) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
     # EncryptedExtensions (RFC 8446 §4.3.1): extensions<0..2^16-1>, every one walked against our
     # ClientHello (_tn_client_ext_walk) — a block that does not frame is decode_error. It carries
-    # the server's ALPN selection, which must be a protocol we offered (RFC 7301 §3.2,
-    # illegal_parameter). ⛔ 6.7.12: this searched for ALPN alone, "lenient on malformed exts", and
-    # stored any protocol the server named. CHANGELOG [6.7.12]
+    # the server's ALPN selection, exactly one name we offered (_tn_client_alpn_answer: RFC 7301
+    # §3.1 decode_error, §3.2 illegal_parameter). ⛔ 6.7.12: this searched for ALPN alone, "lenient
+    # on malformed exts", and stored any protocol the server named. CHANGELOG [6.7.12] [6.7.14]
     var eebody = plain + pos + _TLS_HANDSHAKE_HEADER_LEN;
     var ee_ext_total = _tn_be16_r(eebody);             # inside the flight: Finished follows
-    # A block past the body — a body under 2 bytes included — is decode_error.
-    if (ee_ext_total + 2 > ml) { return _tn_hs_refuse(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
+    # The block fills the body exactly: one past it, one short of it (a byte after the block) and a
+    # body under 2 bytes are decode_error. CHANGELOG [6.7.14]
+    if (ee_ext_total + 2 != ml) { return _tn_hs_refuse(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
     var ew = _tn_client_ext_walk(ctx, eebody + 2, ee_ext_total, 1);
     if (ew != TLS_OK) { return ew; }
-    var ap = 0;
-    var al = 0;
-    if (_tn_find_ext(eebody + 2, ee_ext_total, TLS_EXT_ALPN, &ap, &al) == 1) {
-        if (_tn_alpn_offered(ctx, ap, al) != 1) {
-            return _tn_hs_refuse(ctx, TLS_AD_ILLEGAL_PARAMETER, TLS_ERR_HANDSHAKE_FAILED);
-        }
-        _tn_store_alpn_selected(ctx, ap, al);
-    }
+    var aw = _tn_client_alpn_answer(ctx, eebody + 2, ee_ext_total);
+    if (aw != TLS_OK) { return aw; }
     var ee_total = _TLS_HANDSHAKE_HEADER_LEN + ml;
     tls_native_transcript_update(ts, plain + pos, ee_total);
     pos = pos + ee_total;
@@ -1689,12 +1792,30 @@ fn _tn_parse_client_hello(ctx, body, body_len, server_prefs, n_prefs): i64 {
     pos = pos + cs_len;
     if (pos + 1 > body_len) { return _tn_hs_fail(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
     var comp_len = load8(body + pos) & 0xFF;
+    # legacy_compression_methods<1..2^8-1>: an empty list does not parse — decode_error, as the 1.2
+    # parse's (6.7.16's D32 / D83). Its value is read once the whole hello parses. CHANGELOG [6.7.16]
+    if (comp_len == 0) { return _tn_hs_fail(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
+    var comp = body + pos + 1;
     pos = pos + 1 + comp_len;
     if (pos + 2 > body_len) { return _tn_hs_fail(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
     var ext_total = _tn_be16_r(body + pos);
     pos = pos + 2;
-    if (pos + ext_total > body_len) { return _tn_hs_fail(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
+    # The block fills the rest of the ClientHello: a byte after it is decode_error, as in the 1.3
+    # client's ServerHello since 6.7.14 (`>` let it through). CHANGELOG [6.7.15]
+    if (pos + ext_total != body_len) { return _tn_hs_fail(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
     var ext_ptr = body + pos;
+    # Every entry frames and the last one ends the block, and no type repeats — walked once before
+    # any lookup, as in the 1.2 parse: a 1-3 byte tail after the last whole extension is
+    # decode_error (6.7.16's D81), a repeated type illegal_parameter (6.7.16's D82). Then, the
+    # whole hello parsed, legacy_compression_methods must be exactly the one null method: "any
+    # other value" is illegal_parameter (RFC 8446 §4.1.2; 6.7.16's D83 — it was skipped unread).
+    # CHANGELOG [6.7.16]
+    var xw = _tn_ch_ext_walk(ctx, ext_ptr, ext_total);
+    if (xw < 0) { return xw; }
+    if (xw == 0) { return _tn_hs_fail(ctx, TLS_AD_DECODE_ERROR, TLS_ERR_BAD_HANDSHAKE); }
+    if (comp_len != 1) { return _tn_hs_fail(ctx, TLS_AD_ILLEGAL_PARAMETER, TLS_ERR_HANDSHAKE_FAILED); }
+    if ((load8(comp) & 0xFF) != 0) { return _tn_hs_fail(ctx, TLS_AD_ILLEGAL_PARAMETER, TLS_ERR_HANDSHAKE_FAILED); }
+    if (xw == 2) { return _tn_hs_fail(ctx, TLS_AD_ILLEGAL_PARAMETER, TLS_ERR_HANDSHAKE_FAILED); }
     # ALPN (RFC 7301): negotiate now, before the key_share early-returns below —
     # this is the only point we hold the client's full extension block. Stores
     # the chosen protocol at TLS_CTX_OFF_ALPN_SEL for _tn_build_ee to emit.

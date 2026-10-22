@@ -171,7 +171,7 @@ fn str_builder_add_json_str(sb, s: Str): i64 {
 # `agnosys_json_emit_cstr_or_null` shape byte for byte, without its Str header allocation.
 # `#derive(Serialize)` writes a `: cstring` field through it. The Str is a 16-byte stack cell
 # passed by ADDRESS (`&t`): a `Str` local passed by name reaches an `s: Str` parameter as its
-# data word (issues/2026-10-12-inline-str-local-passed-to-str-param-wrong-value.md). CHANGELOG [6.7.10]
+# data word (issues/archived/2026-10-12-inline-str-local-passed-to-str-param-wrong-value.md). CHANGELOG [6.7.10]
 fn str_builder_add_json_cstr(sb, p): i64 {
     if (p == 0) { return str_builder_add_cstr(sb, "null"); }
     var t[16];
@@ -866,20 +866,22 @@ fn Str_data(self): i64 { return str_data(self); }
 fn Str_print(self): i64 { return str_print(self); }
 # Print string + newline to stdout
 fn Str_println(self): i64 { return str_println(self); }
-# Compare two Strs for equality
-fn Str_eq(self, other): i64 { return str_eq(self, other); }
+# Compare two Strs for equality. `other` (and `Str_cat`'s, the needle / prefix / suffix below) is typed `Str`,
+# so an inline `Str` argument passes its header and a string literal is passed as a `Str` (6.7.14, the user's
+# D18 (c): an untyped one took an inline Str's data word). CHANGELOG [6.7.14]
+fn Str_eq(self, other: Str): i64 { return str_eq(self, other); }
 # Concatenate two Strs (allocates new)
-fn Str_cat(self, other): Str { return str_cat(self, other); }
+fn Str_cat(self, other: Str): Str { return str_cat(self, other); }
 # Substring from start with given length
 fn Str_sub(self, start, len): Str { return str_sub(self, start, len); }
 # Deep copy of string
 fn Str_clone(self): Str { return str_clone(self); }
-# Check if string contains needle (C string)
-fn Str_contains(self, needle): i64 { return str_contains(self, needle); }
-# Check if string starts with prefix (C string)
-fn Str_starts_with(self, prefix): i64 { return str_starts_with(self, prefix); }
-# Check if string ends with suffix (C string)
-fn Str_ends_with(self, suffix): i64 { return str_ends_with(self, suffix); }
+# Check if string contains needle (a Str)
+fn Str_contains(self, needle: Str): i64 { return str_contains(self, needle); }
+# Check if string starts with prefix (a Str)
+fn Str_starts_with(self, prefix: Str): i64 { return str_starts_with(self, prefix); }
+# Check if string ends with suffix (a Str)
+fn Str_ends_with(self, suffix: Str): i64 { return str_ends_with(self, suffix); }
 # Find first occurrence of needle, return offset or -1
 fn Str_index_of(self, needle): i64 { return str_index_of(self, needle); }
 # Create Str from integer

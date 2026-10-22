@@ -2,6 +2,183 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.0] — 2026-10-22
+
+Minor release, the roadmap's 1.10.0 slot, with the toolchain pin moving **6.7.12 → 6.7.16**.
+**The public names are typed.** The 99 public constants are `const`. The 32 public predicates, and
+their 12 `_compat` aliases, return `: bool` ([ADR 0012](docs/adr/0012-public-constants-are-const-and-predicates-return-bool.md)).
+
+The roadmap listed 86 constants and 27 predicates by spelling. Typed by what they are, the set is
+larger: 13 more constants and 5 more predicates, named below.
+
+No value changed and no answer changed. A predicate returns what it returned before, and a bool
+reads as 1 or 0 wherever an integer is used. The sources and `dist/` still build on cyrius ≥ 6.7.9,
+checked there.
+
+> ### ⚠ What to re-check
+>
+> - **A public constant is a `const`.** `&NAME` and `NAME = ...` stop compiling ("cannot take the
+>   address of const", "cannot assign to const"). So does a program that declares one of these
+>   names itself: as a `var` it is "already declared as a top-level const", and as a `const`, even
+>   with the same value, it is "declared twice". None of the other 112 files in cyrius 6.7.16's
+>   `lib/` declares or uses any of the 99 names.
+> - **Two copies of the toml or the bigint module in one program are refused** (`const ... is
+>   declared twice`). Until now they built, with duplicate-fn warnings and the last definition
+>   winning. The routes to a second copy:
+>   - a sublib beside the full bundle;
+>   - two sublibs that share a module;
+>   - a vendored 1.10.0 bundle beside cyrius's `lib/bayan.cyr` (the 1.9.0 fold), which
+>     `lib/sigil.cyr`, `lib/ws.cyr`, `lib/ws_server.cyr` and `lib/yantra.cyr` include.
+>
+>   json, yaml, pdf and markdown were already refused this way, since 1.5.13 and 1.9.0. base64,
+>   csv, u128 and cyml still build twice.
+>   [Architecture note 002](docs/architecture/002-one-copy-of-each-module-per-program.md) has the
+>   measured table. Include one bundle that carries every module you need.
+> - **A predicate returns `: bool`, and no call site that worked before stops compiling.** Measured
+>   on 6.7.16, each of these still compiles and reads 1 or 0:
+>   - `== 1` and `== 0`
+>   - adding the answer to an integer
+>   - an `i64` local or parameter
+>   - `store64`
+>   - `return` from an `i64` function
+>
+>   The roadmap expected some integer use to break, and none does. What is new is that a
+>   predicate's answer can now be returned from your own `: bool` function and passed to a `: bool`
+>   parameter or local.
+> - **Nothing else changes.** No function was added, removed or renamed, and no signature changed
+>   but these return types.
+
+### Changed — the public names are typed
+
+- **99 public constants are `const`**, at their 1.9.0 values:
+  - json: `JTAG_*` (7), `JV_SIZE`, `JSON_PAIR_SIZE`, `JSON_K_*` (5), `JS_EV_*` (12)
+  - toml: `TOML_K_*` (8)
+  - markdown: `MD_K_*` (21), `MD_EXT_*` (6), `MD_ALIGN_*` (4)
+  - pdf: `PTAG_*` (10), `PDF_FONT_*` (15), `PDF_PAGE_*` (3), `PDF_MODE_*` (2), `PDF_WINANSI_*` (2),
+    `PDF_MAGIC`
+  - bigint: `U256_SIZE`
+
+  The roadmap's list missed `PTAG_*` (which `bayan_pdf_obj_tag` returns), `U256_SIZE`,
+  `JSON_PAIR_SIZE` and `JV_SIZE`. They are public in the same way.
+
+  A `const` is a constant expression, which 6.7.16 refuses a `var` as ("a const context takes only
+  constants"). So `switch (bayan_json_v_tag(v)) { case JTAG_INT: ... }`, a stack u256
+  `var b[U256_SIZE];` and `#assert` now compile. The constants have no storage: the smoke binary
+  is 659,472 → 654,856 bytes on 6.7.16.
+- **32 public predicates return `: bool`.**
+  - The 27 the roadmap named:
+    - `bayan_json_v_is_null`, `_bool`, `_int`, `_float`, `_str`, `_arr`, `_obj`
+    - `bayan_toml_pair_is_array`, `_inline`, `_string`, `bayan_toml_is_array`, `_inline`
+    - `bayan_u128_is_zero`, `bayan_u256_is_zero`
+    - `bayan_pdf_has_inflate`, `_deflate`, `bayan_pdf_font_is_monospace`
+    - `bayan_pdf_obj_is_num`, `_name`, `_string`, `_array`, `_dict`, `_stream`, `_ref`, `_hex`
+    - `bayan_pdf_is_encrypted`, `bayan_pdf_stream_is_image`
+  - Five whose contract is the same yes or no under another spelling: `bayan_u128_eq`,
+    `bayan_u256_eq`, `bayan_pdf_obj_eq` (its own comment calls it "the predicate"),
+    `bayan_pdf_obj_name_eq` and `bayan_pdf_winansi_ok`.
+  - The 12 `_compat` aliases of these are typed too, because ADR 0006 states anything said about
+    one name of the pair about the other: `json_v_is_*` (7), `toml_is_array`, `u128_is_zero`,
+    `u256_is_zero`, `u128_eq` and `u256_eq`.
+
+  Their bodies return `true` and `false`. Four return a computed answer, and each value already
+  was 0 or 1, so no answer moves:
+  - `bayan_pdf_is_encrypted(0)` returns `_pdfp_last_enc != 0`.
+  - `bayan_pdf_obj_name_eq` returns `memeq(..) != 0`.
+  - `bayan_pdf_obj_eq` returns `_pdfo_eq_d(..) != 0`.
+  - `bayan_pdf_stream_is_image` returns the private `_pdfz_filter_is_image`, now `: bool` too.
+- **What stays `i64`, though its value is 0 or 1** (ADR 0012 has the rule):
+  - `bayan_u256_cmp` is three-way.
+  - `bayan_cyml_split` reports a status and writes its outputs.
+  - `bayan_json_v_bool` reads a value.
+  - markdown's `_fenced`, `_list_ordered`, `_list_tight` and `_row_header` are field accessors that
+    share their family's contract, 0 for a node of another kind.
+- The predicates' comments say true and false. pdf's tag block is no longer described as "plain
+  vars". json's seven tag predicates are written over four lines each, as the other modules'
+  predicates are: `: bool` with `true` and `false` took the one-line form past lint's 120 columns.
+- **cyrius pin `6.7.12` → `6.7.16`.**
+  - `lib/` was re-vendored by `cyrius lib sync --full --relock`, then `cyrius deps` and
+    `deps --verify` (113 verified). 34 files changed. One of them is `lib/bayan.cyr`, cyrius's
+    fold, which now carries bayan **1.9.0**, byte-identical to 1.9.0's `dist/bayan.cyr`.
+  - `lib/` is byte-identical to the 6.7.16 **release**: installed through cyrius's `install.sh`
+    into an isolated home, with the SHA-256 checksum and the Ed25519 signature verified. Its
+    `cycc`, `cycc_aarch64`, `cycc_cx`, `cyrius`, `cyrfmt`, `cyrlint` and `cybs` are identical to
+    the local install.
+  - The 1.9.0 sources built and passed every x86_64, static and dist gate on 6.7.16 before any
+    change, with `dist/` unchanged.
+  - Of the stdlib changes in 6.7.13–6.7.16 to bayan's dependencies, bayan calls none:
+    `result.cyr`'s `ok_via` and `err_via` are now typed `: Result`; `str.cyr`'s `Str_*`
+    comparands are typed `: Str`; `io.cyr` adds `env_block`.
+  - **The floor stays 6.7.9.** `const` dates from 6.7.2 and `bool` from 6.7.3. See Tests.
+- **`dist/` regenerated** (`cyrius distlib --all`, all 11 bundles).
+  - `bayan.cyr`, `bayan-json`, `-yaml`, `-toml`, `-markdown`, `-pdf`, `-u128` and `-bigint` carry
+    the typed names.
+  - `bayan-base64`, `-csv` and `-cyml` change only their version header.
+  - No `.deps` sidecar changes, and a second regeneration changes nothing.
+- **CI: a `static` step holds the rule for the next name.** It refuses a top-level upper-case `var`
+  in `src/`, and an `_is_` / `_has_` / `_eq` function (or `bayan_pdf_winansi_ok`) that does not
+  return `: bool`. On this tree it reports 99 consts and 44 bool functions. A planted public `var`,
+  a planted `i64` canonical predicate and a planted `i64` alias each turned it red. The first draft
+  matched any line starting with whitespace and `var`, so it flagged markdown's locals named `L`;
+  it now matches column 0 only.
+
+### Tests
+
+- **`tests/bayan.tcyr`, three groups (1.10.0)**: 1,781 → 1,889 runtime asserts, plus 99
+  compile-time ones.
+  - **The constants.** There is one `#assert NAME == value` per constant, generated from the 99
+    `var` declarations of 1.9.0's `src/`. An `#assert` is a const context, so each line fails the
+    build if its name becomes a `var` again or its value moves.
+  - **Constant contexts.** A `switch` over the seven `JTAG_*` sends each tag of a parsed array to
+    its case. A `switch` over `MD_K_*` does the same for a document, its heading and its paragraph.
+    A stack u256 is sized by `U256_SIZE`.
+  - **The predicates.** Each of the 44 bool functions is passed to a `b: bool` parameter, which
+    6.7.16 refuses an `i64` for, and asked once for true and once for false. These include the
+    first rows for a **true** answer from `bayan_pdf_is_encrypted` and `bayan_pdf_stream_is_image`,
+    whose return paths changed:
+    - the writer's bytes with `/Encrypt` added to the trailer (which follows the cross-reference
+      table, so no offset moves) are refused, and `is_encrypted(0)` is then true; a clean parse
+      makes it false again;
+    - a stream whose `/Filter` chain ends in `DCTDecode` or `JBIG2Decode` is an image, and one that
+      ends in `FlateDecode` is not.
+  - **Integer uses.** Five rows check that the answer added to an integer, held in an untyped
+    `var`, stored with `store64`, and compared with `== 1` and `== 0` reads 1 or 0.
+- **`tests/bayan_raw_include.tcyr`** (+1, and one `#assert`): against `dist/bayan.cyr` with nothing
+  before it, a bundle predicate is accepted as a `bool` and `JTAG_INT` is a `const`. It is the
+  consumer's view that distlib carries both.
+- **Mutation pass, 12 mutants, each in a scratch copy of the tree; every one fails the build or the
+  suite:**
+  - an `i64` canonical predicate (`bayan_pdf_obj_eq`, `bayan_pdf_winansi_ok`) and an `i64` alias
+    (`u128_eq`);
+  - `JTAG_INT`, `U256_SIZE`, `MD_K_PARAGRAPH`, `MD_EXT_GFM` and `PDF_PAGE_LEGAL` back to `var`;
+  - `PDF_PAGE_LEGAL` moved to 3;
+  - `is_encrypted(0)` always false;
+  - `stream_is_image` always false, and reading the first filter instead of the last.
+
+  When the value rows were runtime `assert_eq`s, `MD_EXT_GFM` as a `var` passed the suite, and only
+  the CI step caught it. That is why they are `#assert`s.
+- **Every gate, on the 6.7.16 release.** Each of `ci.yml`'s six jobs ran in its own fresh tree on
+  the release installed in an isolated home: all green. aarch64 ran under qemu: suite, fuzz, bench,
+  both cost checks, and PDF bytes identical to x86_64's.
+- **The floor, on the 6.7.9 release** (isolated home, its own `lib/`), in a scratch copy pinned to
+  6.7.9:
+  - the build and every test file are warning-free, and smoke exits 42;
+  - `bayan_raw_include` builds `--no-deps`;
+  - 6.7.9's `distlib --all --check` accepts the 6.7.16-generated bundles;
+  - the consumer gate passes, and the aarch64 build is clean.
+- `docs/examples/pdf_report.cyr` builds warning-free, and its output passes `pdfcheck.py`.
+
+### Docs
+
+- **[ADR 0012](docs/adr/0012-public-constants-are-const-and-predicates-return-bool.md).** It covers
+  the rule (by contract, not spelling), what stays `i64` and why, and the alternatives: an `enum`
+  per group, the roadmap's spelling only, one module per release.
+- **[Architecture note 002](docs/architecture/002-one-copy-of-each-module-per-program.md).** A
+  module that declares a `const` can be in a program once. It has the measured table, the three
+  routes to a second copy, and why the modules that still build twice are the worse case, not the
+  safer one.
+- **The roadmap** drops the 1.10.0 slot. **`state.md`** is refreshed: Version, Toolchain, Source,
+  Tests, CI, Known gap 4 (the 6.7.16 snapshot carries 1.9.0), Consumers and Next.
+
 ## [1.9.0] — 2026-10-15
 
 Minor release, the roadmap's 1.9.0 slot. **`bayan_markdown_*`: CommonMark 0.31.2 to a node tree

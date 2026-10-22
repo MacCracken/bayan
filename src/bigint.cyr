@@ -15,7 +15,7 @@
 # Limb access (32 bytes = 4 × 8)
 # ================================================================
 
-var U256_SIZE = 32;
+const U256_SIZE = 32;
 
 # Create a zero u256
 fn bayan_u256_zero(): i64 {
@@ -58,13 +58,13 @@ fn bayan_u256_limb(a, i): i64 { return load64(a + i * 8); }
 # Set limb i of u256 to value v
 fn bayan_u256_set_limb(a, i, v): i64 { store64(a + i * 8, v); return 0; }
 
-# Check if zero
-fn bayan_u256_is_zero(a): i64 {
-    if (load64(a) != 0) { return 0; }
-    if (load64(a + 8) != 0) { return 0; }
-    if (load64(a + 16) != 0) { return 0; }
-    if (load64(a + 24) != 0) { return 0; }
-    return 1;
+# True if zero
+fn bayan_u256_is_zero(a): bool {
+    if (load64(a) != 0) { return false; }
+    if (load64(a + 8) != 0) { return false; }
+    if (load64(a + 16) != 0) { return false; }
+    if (load64(a + 24) != 0) { return false; }
+    return true;
 }
 
 # ================================================================
@@ -88,13 +88,13 @@ fn bayan_u256_cmp(a, b): i64 {
     return 0;
 }
 
-# Equality check
-fn bayan_u256_eq(a, b): i64 {
-    if (load64(a) != load64(b)) { return 0; }
-    if (load64(a + 8) != load64(b + 8)) { return 0; }
-    if (load64(a + 16) != load64(b + 16)) { return 0; }
-    if (load64(a + 24) != load64(b + 24)) { return 0; }
-    return 1;
+# True when all four limbs are equal
+fn bayan_u256_eq(a, b): bool {
+    if (load64(a) != load64(b)) { return false; }
+    if (load64(a + 8) != load64(b + 8)) { return false; }
+    if (load64(a + 16) != load64(b + 16)) { return false; }
+    if (load64(a + 24) != load64(b + 24)) { return false; }
+    return true;
 }
 
 # ================================================================

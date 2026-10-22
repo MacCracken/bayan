@@ -4971,4 +4971,345 @@ md_calls = 0;
 assert_eq(str_eq(bayan_markdown_to_html_a(MD_ONE, md_viaa), md_html), 1, "markdown: (and renders the same HTML)");
 assert_eq(md_calls, md_hn, "markdown: (to_html_a through its allocator too)");
 
+# =============================================================================
+# 1.10.0 — the public names are typed. Every public constant is a `const`, and every public
+# predicate (and its _compat alias) returns `: bool`. What a consumer can now write, and what it
+# can no longer write, is in the CHANGELOG; these rows pin both halves so neither drifts back.
+# =============================================================================
+
+test_group("typed names: every public constant is a const, with its 1.9.0 value (1.10.0)");
+# One #assert per name, generated from the 99 `var` declarations of 1.9.0's src/. An #assert is a
+# const context, so each line fails the BUILD if its name is a `var` again ("'X' is a variable - a
+# const context takes only constants") or if its value moved ("#assert failed"). The roadmap's list
+# counted 86; PTAG_*, U256_SIZE, JSON_PAIR_SIZE and JV_SIZE are the 13 it missed, public the same way.
+#assert JSON_PAIR_SIZE == 24, "typed names: JSON_PAIR_SIZE is 24, its 1.9.0 value, and a const";
+#assert JSON_K_TEXT == 0, "typed names: JSON_K_TEXT is 0, its 1.9.0 value, and a const";
+#assert JSON_K_STRING == 1, "typed names: JSON_K_STRING is 1, its 1.9.0 value, and a const";
+#assert JSON_K_BARE == 2, "typed names: JSON_K_BARE is 2, its 1.9.0 value, and a const";
+#assert JSON_K_OBJECT == 3, "typed names: JSON_K_OBJECT is 3, its 1.9.0 value, and a const";
+#assert JSON_K_ARRAY == 4, "typed names: JSON_K_ARRAY is 4, its 1.9.0 value, and a const";
+#assert JTAG_NULL == 0, "typed names: JTAG_NULL is 0, its 1.9.0 value, and a const";
+#assert JTAG_BOOL == 1, "typed names: JTAG_BOOL is 1, its 1.9.0 value, and a const";
+#assert JTAG_INT == 2, "typed names: JTAG_INT is 2, its 1.9.0 value, and a const";
+#assert JTAG_FLOAT == 3, "typed names: JTAG_FLOAT is 3, its 1.9.0 value, and a const";
+#assert JTAG_STR == 4, "typed names: JTAG_STR is 4, its 1.9.0 value, and a const";
+#assert JTAG_ARR == 5, "typed names: JTAG_ARR is 5, its 1.9.0 value, and a const";
+#assert JTAG_OBJ == 6, "typed names: JTAG_OBJ is 6, its 1.9.0 value, and a const";
+#assert JV_SIZE == 24, "typed names: JV_SIZE is 24, its 1.9.0 value, and a const";
+#assert JS_EV_OBJECT_START == 0, "typed names: JS_EV_OBJECT_START is 0, its 1.9.0 value, and a const";
+#assert JS_EV_OBJECT_END == 1, "typed names: JS_EV_OBJECT_END is 1, its 1.9.0 value, and a const";
+#assert JS_EV_ARRAY_START == 2, "typed names: JS_EV_ARRAY_START is 2, its 1.9.0 value, and a const";
+#assert JS_EV_ARRAY_END == 3, "typed names: JS_EV_ARRAY_END is 3, its 1.9.0 value, and a const";
+#assert JS_EV_KEY == 4, "typed names: JS_EV_KEY is 4, its 1.9.0 value, and a const";
+#assert JS_EV_STRING == 5, "typed names: JS_EV_STRING is 5, its 1.9.0 value, and a const";
+#assert JS_EV_INT == 6, "typed names: JS_EV_INT is 6, its 1.9.0 value, and a const";
+#assert JS_EV_FLOAT == 7, "typed names: JS_EV_FLOAT is 7, its 1.9.0 value, and a const";
+#assert JS_EV_BOOL == 8, "typed names: JS_EV_BOOL is 8, its 1.9.0 value, and a const";
+#assert JS_EV_NULL == 9, "typed names: JS_EV_NULL is 9, its 1.9.0 value, and a const";
+#assert JS_EV_ERROR == 10, "typed names: JS_EV_ERROR is 10, its 1.9.0 value, and a const";
+#assert JS_EV_COUNT == 11, "typed names: JS_EV_COUNT is 11, its 1.9.0 value, and a const";
+#assert TOML_K_UNKNOWN == 0, "typed names: TOML_K_UNKNOWN is 0, its 1.9.0 value, and a const";
+#assert TOML_K_BASIC == 1, "typed names: TOML_K_BASIC is 1, its 1.9.0 value, and a const";
+#assert TOML_K_LITERAL == 2, "typed names: TOML_K_LITERAL is 2, its 1.9.0 value, and a const";
+#assert TOML_K_ML_BASIC == 3, "typed names: TOML_K_ML_BASIC is 3, its 1.9.0 value, and a const";
+#assert TOML_K_ML_LIT == 4, "typed names: TOML_K_ML_LIT is 4, its 1.9.0 value, and a const";
+#assert TOML_K_ARRAY == 5, "typed names: TOML_K_ARRAY is 5, its 1.9.0 value, and a const";
+#assert TOML_K_INLINE == 6, "typed names: TOML_K_INLINE is 6, its 1.9.0 value, and a const";
+#assert TOML_K_BARE == 7, "typed names: TOML_K_BARE is 7, its 1.9.0 value, and a const";
+#assert MD_K_DOCUMENT == 1, "typed names: MD_K_DOCUMENT is 1, its 1.9.0 value, and a const";
+#assert MD_K_BLOCKQUOTE == 2, "typed names: MD_K_BLOCKQUOTE is 2, its 1.9.0 value, and a const";
+#assert MD_K_LIST == 3, "typed names: MD_K_LIST is 3, its 1.9.0 value, and a const";
+#assert MD_K_ITEM == 4, "typed names: MD_K_ITEM is 4, its 1.9.0 value, and a const";
+#assert MD_K_PARAGRAPH == 5, "typed names: MD_K_PARAGRAPH is 5, its 1.9.0 value, and a const";
+#assert MD_K_HEADING == 6, "typed names: MD_K_HEADING is 6, its 1.9.0 value, and a const";
+#assert MD_K_THEMATIC_BREAK == 7, "typed names: MD_K_THEMATIC_BREAK is 7, its 1.9.0 value, and a const";
+#assert MD_K_CODE_BLOCK == 8, "typed names: MD_K_CODE_BLOCK is 8, its 1.9.0 value, and a const";
+#assert MD_K_TABLE == 9, "typed names: MD_K_TABLE is 9, its 1.9.0 value, and a const";
+#assert MD_K_TABLE_ROW == 10, "typed names: MD_K_TABLE_ROW is 10, its 1.9.0 value, and a const";
+#assert MD_K_TABLE_CELL == 11, "typed names: MD_K_TABLE_CELL is 11, its 1.9.0 value, and a const";
+#assert MD_K_TEXT == 20, "typed names: MD_K_TEXT is 20, its 1.9.0 value, and a const";
+#assert MD_K_SOFTBREAK == 21, "typed names: MD_K_SOFTBREAK is 21, its 1.9.0 value, and a const";
+#assert MD_K_LINEBREAK == 22, "typed names: MD_K_LINEBREAK is 22, its 1.9.0 value, and a const";
+#assert MD_K_CODE == 23, "typed names: MD_K_CODE is 23, its 1.9.0 value, and a const";
+#assert MD_K_EMPH == 24, "typed names: MD_K_EMPH is 24, its 1.9.0 value, and a const";
+#assert MD_K_STRONG == 25, "typed names: MD_K_STRONG is 25, its 1.9.0 value, and a const";
+#assert MD_K_STRIKETHROUGH == 26, "typed names: MD_K_STRIKETHROUGH is 26, its 1.9.0 value, and a const";
+#assert MD_K_LINK == 27, "typed names: MD_K_LINK is 27, its 1.9.0 value, and a const";
+#assert MD_K_IMAGE == 28, "typed names: MD_K_IMAGE is 28, its 1.9.0 value, and a const";
+#assert MD_K_WIKILINK == 29, "typed names: MD_K_WIKILINK is 29, its 1.9.0 value, and a const";
+#assert MD_EXT_TABLES == 1, "typed names: MD_EXT_TABLES is 1, its 1.9.0 value, and a const";
+#assert MD_EXT_TASKLISTS == 2, "typed names: MD_EXT_TASKLISTS is 2, its 1.9.0 value, and a const";
+#assert MD_EXT_STRIKETHROUGH == 4, "typed names: MD_EXT_STRIKETHROUGH is 4, its 1.9.0 value, and a const";
+#assert MD_EXT_AUTOLINKS == 8, "typed names: MD_EXT_AUTOLINKS is 8, its 1.9.0 value, and a const";
+#assert MD_EXT_GFM == 15, "typed names: MD_EXT_GFM is 15, its 1.9.0 value, and a const";
+#assert MD_EXT_WIKILINKS == 16, "typed names: MD_EXT_WIKILINKS is 16, its 1.9.0 value, and a const";
+#assert MD_ALIGN_NONE == 0, "typed names: MD_ALIGN_NONE is 0, its 1.9.0 value, and a const";
+#assert MD_ALIGN_LEFT == 1, "typed names: MD_ALIGN_LEFT is 1, its 1.9.0 value, and a const";
+#assert MD_ALIGN_CENTER == 2, "typed names: MD_ALIGN_CENTER is 2, its 1.9.0 value, and a const";
+#assert MD_ALIGN_RIGHT == 3, "typed names: MD_ALIGN_RIGHT is 3, its 1.9.0 value, and a const";
+#assert PTAG_NULL == 0, "typed names: PTAG_NULL is 0, its 1.9.0 value, and a const";
+#assert PTAG_BOOL == 1, "typed names: PTAG_BOOL is 1, its 1.9.0 value, and a const";
+#assert PTAG_INT == 2, "typed names: PTAG_INT is 2, its 1.9.0 value, and a const";
+#assert PTAG_REAL == 3, "typed names: PTAG_REAL is 3, its 1.9.0 value, and a const";
+#assert PTAG_NAME == 4, "typed names: PTAG_NAME is 4, its 1.9.0 value, and a const";
+#assert PTAG_STR == 5, "typed names: PTAG_STR is 5, its 1.9.0 value, and a const";
+#assert PTAG_ARR == 6, "typed names: PTAG_ARR is 6, its 1.9.0 value, and a const";
+#assert PTAG_DICT == 7, "typed names: PTAG_DICT is 7, its 1.9.0 value, and a const";
+#assert PTAG_STREAM == 8, "typed names: PTAG_STREAM is 8, its 1.9.0 value, and a const";
+#assert PTAG_REF == 9, "typed names: PTAG_REF is 9, its 1.9.0 value, and a const";
+#assert PDF_FONT_HELVETICA == 0, "typed names: PDF_FONT_HELVETICA is 0, its 1.9.0 value, and a const";
+#assert PDF_FONT_HELVETICA_BOLD == 1, "typed names: PDF_FONT_HELVETICA_BOLD is 1, its 1.9.0 value, and a const";
+#assert PDF_FONT_HELVETICA_OBLIQUE == 2, "typed names: PDF_FONT_HELVETICA_OBLIQUE is 2, its 1.9.0 value, and a const";
+#assert PDF_FONT_HELVETICA_BOLDOBL == 3, "typed names: PDF_FONT_HELVETICA_BOLDOBL is 3, its 1.9.0 value, and a const";
+#assert PDF_FONT_TIMES_ROMAN == 4, "typed names: PDF_FONT_TIMES_ROMAN is 4, its 1.9.0 value, and a const";
+#assert PDF_FONT_TIMES_BOLD == 5, "typed names: PDF_FONT_TIMES_BOLD is 5, its 1.9.0 value, and a const";
+#assert PDF_FONT_TIMES_ITALIC == 6, "typed names: PDF_FONT_TIMES_ITALIC is 6, its 1.9.0 value, and a const";
+#assert PDF_FONT_TIMES_BOLDITALIC == 7, "typed names: PDF_FONT_TIMES_BOLDITALIC is 7, its 1.9.0 value, and a const";
+#assert PDF_FONT_COURIER == 8, "typed names: PDF_FONT_COURIER is 8, its 1.9.0 value, and a const";
+#assert PDF_FONT_COURIER_BOLD == 9, "typed names: PDF_FONT_COURIER_BOLD is 9, its 1.9.0 value, and a const";
+#assert PDF_FONT_COURIER_OBLIQUE == 10, "typed names: PDF_FONT_COURIER_OBLIQUE is 10, its 1.9.0 value, and a const";
+#assert PDF_FONT_COURIER_BOLDOBL == 11, "typed names: PDF_FONT_COURIER_BOLDOBL is 11, its 1.9.0 value, and a const";
+#assert PDF_FONT_SYMBOL == 12, "typed names: PDF_FONT_SYMBOL is 12, its 1.9.0 value, and a const";
+#assert PDF_FONT_ZAPFDINGBATS == 13, "typed names: PDF_FONT_ZAPFDINGBATS is 13, its 1.9.0 value, and a const";
+#assert PDF_FONT_COUNT == 14, "typed names: PDF_FONT_COUNT is 14, its 1.9.0 value, and a const";
+#assert PDF_PAGE_A4 == 0, "typed names: PDF_PAGE_A4 is 0, its 1.9.0 value, and a const";
+#assert PDF_PAGE_LETTER == 1, "typed names: PDF_PAGE_LETTER is 1, its 1.9.0 value, and a const";
+#assert PDF_PAGE_LEGAL == 2, "typed names: PDF_PAGE_LEGAL is 2, its 1.9.0 value, and a const";
+#assert PDF_MODE_WRITE == 0, "typed names: PDF_MODE_WRITE is 0, its 1.9.0 value, and a const";
+#assert PDF_MODE_READ == 1, "typed names: PDF_MODE_READ is 1, its 1.9.0 value, and a const";
+#assert PDF_WINANSI_STRICT == 0, "typed names: PDF_WINANSI_STRICT is 0, its 1.9.0 value, and a const";
+#assert PDF_WINANSI_SUBSTITUTE == 1, "typed names: PDF_WINANSI_SUBSTITUTE is 1, its 1.9.0 value, and a const";
+#assert PDF_MAGIC == 1112494662, "typed names: PDF_MAGIC is 1112494662, its 1.9.0 value, and a const";
+#assert U256_SIZE == 32, "typed names: U256_SIZE is 32, its 1.9.0 value, and a const";
+# A const is a constant expression and a var is not: a `case` label and a stack buffer's size take
+# one, and cyrius 6.7.16 refuses a var in either ("a const context takes only constants"). These
+# lines compile only because the names are const.
+fn _tn_tag(v): i64 {
+    switch (bayan_json_v_tag(v)) {
+        case JTAG_NULL: return 10;
+        case JTAG_BOOL: return 11;
+        case JTAG_INT: return 12;
+        case JTAG_FLOAT: return 13;
+        case JTAG_STR: return 14;
+        case JTAG_ARR: return 15;
+        case JTAG_OBJ: return 16;
+    }
+    return 0 - 1;
+}
+var tn_j = bayan_json_v_parse(str_from("[null, true, 1, 1.5, \"s\", [], {}]"));
+assert_neq(tn_j, 0, "typed names: the fixture parses");
+var tn_i = 0;
+var tn_sw = 0;
+while (tn_i < 7) {
+    if (_tn_tag(bayan_json_v_arr_get(tn_j, tn_i)) == 10 + tn_i) { tn_sw = tn_sw + 1; }
+    tn_i = tn_i + 1;
+}
+assert_eq(tn_sw, 7, "typed names: a switch over JTAG_* sends each tag to its case");
+fn _tn_kind(n): i64 {
+    switch (bayan_markdown_kind(n)) {
+        case MD_K_DOCUMENT: return 1;
+        case MD_K_HEADING: return 2;
+        case MD_K_PARAGRAPH: return 3;
+    }
+    return 0;
+}
+var tn_md = bayan_markdown_parse(str_from("# h\n\np\n"));
+assert_eq(_tn_kind(tn_md), 1, "typed names: a switch over MD_K_* (the document)");
+assert_eq(_tn_kind(bayan_markdown_first_child(tn_md)), 2, "typed names: (its heading)");
+assert_eq(_tn_kind(bayan_markdown_last_child(tn_md)), 3, "typed names: (its paragraph)");
+var tn_u256[U256_SIZE];
+bayan_u256_set_limb(&tn_u256, 0, 0);
+bayan_u256_set_limb(&tn_u256, 1, 0);
+bayan_u256_set_limb(&tn_u256, 2, 0);
+bayan_u256_set_limb(&tn_u256, 3, 7);
+assert_eq(bayan_u256_limb(&tn_u256, 3), 7, "typed names: a stack u256 sized by U256_SIZE");
+
+test_group("typed names: every public predicate is a bool (1.10.0)");
+# _tn_b takes a `b: bool`, and cyrius 6.7.16 refuses an i64 there ("cannot pass a value that is
+# not a bool to bool parameter"), so each call below compiles only while the predicate it is
+# handed returns `: bool`. Each predicate is asked once for true and once for false. This is also
+# the first row for a true answer from bayan_pdf_is_encrypted and bayan_pdf_stream_is_image,
+# whose return paths 1.10.0 changed.
+fn _tn_b(b: bool): i64 {
+    if (b) { return 1; }
+    return 0;
+}
+# json, by tag: element i of tn_j has tag i.
+var tn_null = bayan_json_v_arr_get(tn_j, 0);
+var tn_bool = bayan_json_v_arr_get(tn_j, 1);
+var tn_int = bayan_json_v_arr_get(tn_j, 2);
+var tn_flt = bayan_json_v_arr_get(tn_j, 3);
+var tn_str = bayan_json_v_arr_get(tn_j, 4);
+var tn_arr = bayan_json_v_arr_get(tn_j, 5);
+var tn_obj = bayan_json_v_arr_get(tn_j, 6);
+assert_eq(_tn_b(bayan_json_v_is_null(tn_null)), 1, "typed names: bayan_json_v_is_null, true");
+assert_eq(_tn_b(bayan_json_v_is_null(tn_int)), 0, "typed names: bayan_json_v_is_null, false");
+assert_eq(_tn_b(bayan_json_v_is_bool(tn_bool)), 1, "typed names: bayan_json_v_is_bool, true");
+assert_eq(_tn_b(bayan_json_v_is_bool(tn_null)), 0, "typed names: bayan_json_v_is_bool, false");
+assert_eq(_tn_b(bayan_json_v_is_int(tn_int)), 1, "typed names: bayan_json_v_is_int, true");
+assert_eq(_tn_b(bayan_json_v_is_int(tn_flt)), 0, "typed names: bayan_json_v_is_int, false");
+assert_eq(_tn_b(bayan_json_v_is_float(tn_flt)), 1, "typed names: bayan_json_v_is_float, true");
+assert_eq(_tn_b(bayan_json_v_is_float(tn_int)), 0, "typed names: bayan_json_v_is_float, false");
+assert_eq(_tn_b(bayan_json_v_is_str(tn_str)), 1, "typed names: bayan_json_v_is_str, true");
+assert_eq(_tn_b(bayan_json_v_is_str(0)), 0, "typed names: bayan_json_v_is_str, false (on 0)");
+assert_eq(_tn_b(bayan_json_v_is_arr(tn_arr)), 1, "typed names: bayan_json_v_is_arr, true");
+assert_eq(_tn_b(bayan_json_v_is_arr(tn_obj)), 0, "typed names: bayan_json_v_is_arr, false");
+assert_eq(_tn_b(bayan_json_v_is_obj(tn_obj)), 1, "typed names: bayan_json_v_is_obj, true");
+assert_eq(_tn_b(bayan_json_v_is_obj(tn_arr)), 0, "typed names: bayan_json_v_is_obj, false");
+assert_eq(_tn_b(json_v_is_null(tn_null)), 1, "typed names: alias json_v_is_null, true");
+assert_eq(_tn_b(json_v_is_null(tn_int)), 0, "typed names: alias json_v_is_null, false");
+assert_eq(_tn_b(json_v_is_bool(tn_bool)), 1, "typed names: alias json_v_is_bool, true");
+assert_eq(_tn_b(json_v_is_bool(tn_null)), 0, "typed names: alias json_v_is_bool, false");
+assert_eq(_tn_b(json_v_is_int(tn_int)), 1, "typed names: alias json_v_is_int, true");
+assert_eq(_tn_b(json_v_is_int(tn_flt)), 0, "typed names: alias json_v_is_int, false");
+assert_eq(_tn_b(json_v_is_float(tn_flt)), 1, "typed names: alias json_v_is_float, true");
+assert_eq(_tn_b(json_v_is_float(tn_int)), 0, "typed names: alias json_v_is_float, false");
+assert_eq(_tn_b(json_v_is_str(tn_str)), 1, "typed names: alias json_v_is_str, true");
+assert_eq(_tn_b(json_v_is_str(tn_arr)), 0, "typed names: alias json_v_is_str, false");
+assert_eq(_tn_b(json_v_is_arr(tn_arr)), 1, "typed names: alias json_v_is_arr, true");
+assert_eq(_tn_b(json_v_is_arr(tn_obj)), 0, "typed names: alias json_v_is_arr, false");
+assert_eq(_tn_b(json_v_is_obj(tn_obj)), 1, "typed names: alias json_v_is_obj, true");
+assert_eq(_tn_b(json_v_is_obj(tn_arr)), 0, "typed names: alias json_v_is_obj, false");
+# toml
+var tn_t = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("a = [1]\nt = { x = 1 }\ns = \"str\"\nn = 5\n")), 0));
+assert_eq(_tn_b(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "a"))), 1, "typed names: bayan_toml_pair_is_array, true");
+assert_eq(_tn_b(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "s"))), 0, "typed names: bayan_toml_pair_is_array, false");
+assert_eq(_tn_b(bayan_toml_pair_is_inline(bayan_toml_get_pair(tn_t, "t"))), 1, "typed names: bayan_toml_pair_is_inline, true");
+assert_eq(_tn_b(bayan_toml_pair_is_inline(bayan_toml_get_pair(tn_t, "a"))), 0, "typed names: bayan_toml_pair_is_inline, false");
+assert_eq(_tn_b(bayan_toml_pair_is_string(bayan_toml_get_pair(tn_t, "s"))), 1, "typed names: bayan_toml_pair_is_string, true");
+assert_eq(_tn_b(bayan_toml_pair_is_string(bayan_toml_get_pair(tn_t, "n"))), 0, "typed names: bayan_toml_pair_is_string, false");
+assert_eq(_tn_b(bayan_toml_is_array(bayan_toml_get(tn_t, "a"))), 1, "typed names: bayan_toml_is_array, true");
+assert_eq(_tn_b(bayan_toml_is_array(bayan_toml_get(tn_t, "n"))), 0, "typed names: bayan_toml_is_array, false");
+assert_eq(_tn_b(bayan_toml_is_inline(bayan_toml_get(tn_t, "t"))), 1, "typed names: bayan_toml_is_inline, true");
+assert_eq(_tn_b(bayan_toml_is_inline(bayan_toml_get(tn_t, "n"))), 0, "typed names: bayan_toml_is_inline, false");
+assert_eq(_tn_b(toml_is_array(bayan_toml_get(tn_t, "a"))), 1, "typed names: alias toml_is_array, true");
+assert_eq(_tn_b(toml_is_array(bayan_toml_get(tn_t, "n"))), 0, "typed names: alias toml_is_array, false");
+# u128 and u256
+var tn_z128[16];
+var tn_f128[16];
+bayan_u128_set(&tn_z128, 0, 0);
+bayan_u128_set(&tn_f128, 5, 1);
+assert_eq(_tn_b(bayan_u128_is_zero(&tn_z128)), 1, "typed names: bayan_u128_is_zero, true");
+assert_eq(_tn_b(bayan_u128_is_zero(&tn_f128)), 0, "typed names: bayan_u128_is_zero, false");
+assert_eq(_tn_b(bayan_u128_eq(&tn_f128, &tn_f128)), 1, "typed names: bayan_u128_eq, true");
+assert_eq(_tn_b(bayan_u128_eq(&tn_f128, &tn_z128)), 0, "typed names: bayan_u128_eq, false");
+assert_eq(_tn_b(u128_is_zero(&tn_z128)), 1, "typed names: alias u128_is_zero, true");
+assert_eq(_tn_b(u128_is_zero(&tn_f128)), 0, "typed names: alias u128_is_zero, false");
+assert_eq(_tn_b(u128_eq(&tn_z128, &tn_z128)), 1, "typed names: alias u128_eq, true");
+assert_eq(_tn_b(u128_eq(&tn_z128, &tn_f128)), 0, "typed names: alias u128_eq, false");
+var tn_z256 = bayan_u256_zero();
+var tn_f256 = bayan_u256_from(9);
+assert_eq(_tn_b(bayan_u256_is_zero(tn_z256)), 1, "typed names: bayan_u256_is_zero, true");
+assert_eq(_tn_b(bayan_u256_is_zero(tn_f256)), 0, "typed names: bayan_u256_is_zero, false");
+assert_eq(_tn_b(bayan_u256_eq(tn_f256, bayan_u256_from(9))), 1, "typed names: bayan_u256_eq, true");
+assert_eq(_tn_b(bayan_u256_eq(tn_f256, tn_z256)), 0, "typed names: bayan_u256_eq, false");
+assert_eq(_tn_b(u256_is_zero(tn_z256)), 1, "typed names: alias u256_is_zero, true");
+assert_eq(_tn_b(u256_is_zero(tn_f256)), 0, "typed names: alias u256_is_zero, false");
+assert_eq(_tn_b(u256_eq(tn_z256, bayan_u256_zero())), 1, "typed names: alias u256_eq, true");
+assert_eq(_tn_b(u256_eq(tn_z256, tn_f256)), 0, "typed names: alias u256_eq, false");
+# pdf: the hooks (installed and removed again, so the rest of the file sees none)
+fn _tn_hook(a, b, c, d): i64 { return 0; }
+bayan_pdf_set_inflate(&_tn_hook);
+bayan_pdf_set_deflate(&_tn_hook);
+assert_eq(_tn_b(bayan_pdf_has_inflate()), 1, "typed names: bayan_pdf_has_inflate, true");
+assert_eq(_tn_b(bayan_pdf_has_deflate()), 1, "typed names: bayan_pdf_has_deflate, true");
+bayan_pdf_set_inflate(0);
+bayan_pdf_set_deflate(0);
+assert_eq(_tn_b(bayan_pdf_has_inflate()), 0, "typed names: bayan_pdf_has_inflate, false");
+assert_eq(_tn_b(bayan_pdf_has_deflate()), 0, "typed names: bayan_pdf_has_deflate, false");
+assert_eq(_tn_b(bayan_pdf_font_is_monospace(PDF_FONT_COURIER_BOLDOBL)), 1, "typed names: bayan_pdf_font_is_monospace, true");
+assert_eq(_tn_b(bayan_pdf_font_is_monospace(PDF_FONT_TIMES_ROMAN)), 0, "typed names: bayan_pdf_font_is_monospace, false");
+assert_eq(_tn_b(bayan_pdf_winansi_ok(str_from("caf\xc3\xa9"))), 1, "typed names: bayan_pdf_winansi_ok, true");
+assert_eq(_tn_b(bayan_pdf_winansi_ok(str_from("\xe4\xb8\x80"))), 0, "typed names: bayan_pdf_winansi_ok, false");
+# pdf: the object predicates, each true on its own kind and false on another
+var tn_pi = bayan_pdf_obj_int_new(3);
+var tn_pn = bayan_pdf_obj_name_new("Type");
+var tn_ps = bayan_pdf_obj_string_new(str_from("lit"));
+var tn_ph = bayan_pdf_obj_hex_new(str_from("hex"));
+var tn_pa = bayan_pdf_obj_array_new();
+var tn_pd = bayan_pdf_obj_dict_new();
+var tn_pst = bayan_pdf_obj_stream_new(bayan_pdf_obj_dict_new(), str_from("q"));
+var tn_pr = bayan_pdf_obj_ref_new(1, 0);
+assert_eq(_tn_b(bayan_pdf_obj_is_num(tn_pi)), 1, "typed names: bayan_pdf_obj_is_num, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_num(tn_pn)), 0, "typed names: bayan_pdf_obj_is_num, false");
+assert_eq(_tn_b(bayan_pdf_obj_is_name(tn_pn)), 1, "typed names: bayan_pdf_obj_is_name, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_name(tn_ps)), 0, "typed names: bayan_pdf_obj_is_name, false");
+assert_eq(_tn_b(bayan_pdf_obj_is_string(tn_ps)), 1, "typed names: bayan_pdf_obj_is_string, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_string(tn_pn)), 0, "typed names: bayan_pdf_obj_is_string, false");
+assert_eq(_tn_b(bayan_pdf_obj_is_array(tn_pa)), 1, "typed names: bayan_pdf_obj_is_array, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_array(tn_pd)), 0, "typed names: bayan_pdf_obj_is_array, false");
+assert_eq(_tn_b(bayan_pdf_obj_is_dict(tn_pd)), 1, "typed names: bayan_pdf_obj_is_dict, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_dict(tn_pst)), 0, "typed names: bayan_pdf_obj_is_dict, false");
+assert_eq(_tn_b(bayan_pdf_obj_is_stream(tn_pst)), 1, "typed names: bayan_pdf_obj_is_stream, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_stream(tn_pd)), 0, "typed names: bayan_pdf_obj_is_stream, false");
+assert_eq(_tn_b(bayan_pdf_obj_is_ref(tn_pr)), 1, "typed names: bayan_pdf_obj_is_ref, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_ref(tn_pi)), 0, "typed names: bayan_pdf_obj_is_ref, false");
+assert_eq(_tn_b(bayan_pdf_obj_is_hex(tn_ph)), 1, "typed names: bayan_pdf_obj_is_hex, true");
+assert_eq(_tn_b(bayan_pdf_obj_is_hex(tn_ps)), 0, "typed names: bayan_pdf_obj_is_hex, false");
+assert_eq(_tn_b(bayan_pdf_obj_name_eq(tn_pn, "Type")), 1, "typed names: bayan_pdf_obj_name_eq, true");
+assert_eq(_tn_b(bayan_pdf_obj_name_eq(tn_pn, "Typ")), 0, "typed names: bayan_pdf_obj_name_eq, false (a prefix)");
+assert_eq(_tn_b(bayan_pdf_obj_eq(tn_pi, bayan_pdf_obj_int_new(3))), 1, "typed names: bayan_pdf_obj_eq, true");
+assert_eq(_tn_b(bayan_pdf_obj_eq(tn_pi, bayan_pdf_obj_int_new(4))), 0, "typed names: bayan_pdf_obj_eq, false");
+# pdf: a stream is an image when its filter chain ENDS in an image codec.
+var tn_doc = bayan_pdf_new();
+fn _tn_stream(f): i64 {
+    var d = bayan_pdf_obj_dict_new();
+    if (f != 0) { bayan_pdf_obj_dict_set(d, "Filter", f); }
+    return bayan_pdf_obj_stream_new(d, str_from("q"));
+}
+var tn_chain = bayan_pdf_obj_array_new();
+bayan_pdf_obj_array_push(tn_chain, bayan_pdf_obj_name_new("FlateDecode"));
+bayan_pdf_obj_array_push(tn_chain, bayan_pdf_obj_name_new("DCTDecode"));
+var tn_flate = bayan_pdf_obj_array_new();
+bayan_pdf_obj_array_push(tn_flate, bayan_pdf_obj_name_new("DCTDecode"));
+bayan_pdf_obj_array_push(tn_flate, bayan_pdf_obj_name_new("FlateDecode"));
+assert_eq(_tn_b(bayan_pdf_stream_is_image(tn_doc, _tn_stream(bayan_pdf_obj_name_new("DCTDecode")))), 1,
+  "typed names: bayan_pdf_stream_is_image, true (/DCTDecode)");
+assert_eq(_tn_b(bayan_pdf_stream_is_image(tn_doc, _tn_stream(bayan_pdf_obj_name_new("JBIG2Decode")))), 1,
+  "typed names: bayan_pdf_stream_is_image, true (/JBIG2Decode)");
+assert_eq(_tn_b(bayan_pdf_stream_is_image(tn_doc, _tn_stream(tn_chain))), 1,
+  "typed names: bayan_pdf_stream_is_image, true ([/FlateDecode /DCTDecode] ends in one)");
+assert_eq(_tn_b(bayan_pdf_stream_is_image(tn_doc, _tn_stream(tn_flate))), 0,
+  "typed names: bayan_pdf_stream_is_image, false ([/DCTDecode /FlateDecode] does not)");
+assert_eq(_tn_b(bayan_pdf_stream_is_image(tn_doc, _tn_stream(bayan_pdf_obj_name_new("FlateDecode")))), 0,
+  "typed names: bayan_pdf_stream_is_image, false (/FlateDecode)");
+assert_eq(_tn_b(bayan_pdf_stream_is_image(tn_doc, _tn_stream(0))), 0,
+  "typed names: bayan_pdf_stream_is_image, false (no /Filter)");
+assert_eq(_tn_b(bayan_pdf_stream_is_image(0, _tn_stream(bayan_pdf_obj_name_new("DCTDecode")))), 0,
+  "typed names: bayan_pdf_stream_is_image, false (no document)");
+# pdf: an encrypted file is a refused parse, so bayan_pdf_is_encrypted(0) asks about the last one.
+# The writer's own bytes with /Encrypt added to the trailer, which follows the cross-reference
+# table, so no offset moves.
+var tn_w = bayan_pdf_new();
+bayan_pdf_add_page(tn_w, 612000, 792000);
+var tn_bytes = bayan_pdf_to_bytes(tn_w);
+var tn_at = str_index_of_cstr(tn_bytes, "trailer\n<< ");
+assert_gt(tn_at, 0, "typed names: the writer's trailer is where the fixture expects it");
+var tn_sb = str_builder_new();
+str_builder_add(tn_sb, str_sub(tn_bytes, 0, tn_at + 11));
+str_builder_add_cstr(tn_sb, "/Encrypt 1 0 R ");
+str_builder_add(tn_sb, str_sub(tn_bytes, tn_at + 11, str_len(tn_bytes) - tn_at - 11));
+var tn_enc = str_builder_build(tn_sb);
+assert_eq(bayan_pdf_parse(tn_enc), 0, "typed names: a trailer with /Encrypt is refused");
+assert_eq(_tn_b(bayan_pdf_is_encrypted(0)), 1, "typed names: bayan_pdf_is_encrypted(0), true after it");
+var tn_clean = bayan_pdf_parse(tn_bytes);
+assert_neq(tn_clean, 0, "typed names: the same bytes without /Encrypt parse");
+assert_eq(_tn_b(bayan_pdf_is_encrypted(0)), 0, "typed names: bayan_pdf_is_encrypted(0), false after that");
+assert_eq(_tn_b(bayan_pdf_is_encrypted(tn_clean)), 0, "typed names: bayan_pdf_is_encrypted(doc), false");
+
+test_group("typed names: a bool still reads as 1 or 0 where an integer is used (1.10.0)");
+# The other half of the claim: a consumer that counts, adds or compares a predicate's answer as an
+# integer keeps compiling, and reads the 1 and 0 it read before. Every assert_eq above passes a bool
+# to an i64 parameter; these are the other integer uses.
+var tn_count = 0;
+tn_count = tn_count + bayan_json_v_is_int(tn_int) + bayan_json_v_is_int(tn_flt);
+assert_eq(tn_count, 1, "typed names: added to an integer, true is 1 and false is 0");
+var tn_held = bayan_u128_is_zero(&tn_z128);
+assert_eq(tn_held, 1, "typed names: held in an untyped var");
+var tn_slot[8];
+store64(&tn_slot, bayan_pdf_obj_is_ref(tn_pr));
+assert_eq(load64(&tn_slot), 1, "typed names: stored with store64");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "a")) == 1, 1, "typed names: compared with == 1");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "s")) == 0, 1, "typed names: compared with == 0");
+
 var r = assert_summary();

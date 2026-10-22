@@ -265,13 +265,7 @@ fn _async_poll(rt, timeout): i64 {
             syscall(SYS_EPOLL_CTL, epfd, 2, wfd, 0);   # EPOLL_CTL_DEL
         } else {
             var rev[16];
-            store32(&rev, rem);
-            #ifdef CYRIUS_ARCH_AARCH64
-            store64(&rev + 8, wfd);
-            #endif
-            #ifndef CYRIUS_ARCH_AARCH64
-            store64(&rev + 4, wfd);
-            #endif
+            epoll_event_set(&rev, rem, wfd);
             syscall(SYS_EPOLL_CTL, epfd, 3, wfd, &rev);   # EPOLL_CTL_MOD
         }
         ei = ei + 1;
@@ -386,20 +380,14 @@ fn _async_wait_events(rt, fd, events): i64 {
     store64(cur + 16, TASK_WAITING); # park
     var mask = _async_fd_mask(rt, fd);
     var ev[16];
-    store32(&ev, mask);              # EPOLLIN (1) / EPOLLOUT (4) / union
     # v6.5.26 — epoll_data now carries the FD, not the task pointer. With a task pointer
     # an fd could identify exactly ONE waiter, which is the whole reason two concurrent
     # directions on one fd (or two tasks on one listener) were inexpressible. The fd is
     # the stable key; _async_step resolves it back to every matching parked task.
-    # Offset is ABI-dependent: x86_64 packs the struct (EPOLL_PACKED → data @4); aarch64
-    # leaves it unpacked so the u64 aligns to @8. The wake read in _async_step must use
-    # the same offset. (CHANGELOG [6.4.42])
-    #ifdef CYRIUS_ARCH_AARCH64
-    store64(&ev + 8, fd);
-    #endif
-    #ifndef CYRIUS_ARCH_AARCH64
-    store64(&ev + 4, fd);
-    #endif
+    # The mask is EPOLLIN (1) / EPOLLOUT (4) / the union. The data offset is the peer's
+    # (x86_64 packs the struct, data @4; aarch64 does not, data @8): epoll_event_set writes
+    # it where _async_step's epoll_event_data reads it. CHANGELOG [6.7.14]
+    epoll_event_set(&ev, mask, fd);
     # ⛔ CHECK THE RETURN. EPOLL_CTL_ADD on an fd already in the set returns -EEXIST, and
     # ignoring that is exactly how the second waiter used to be lost: it parked, its fd was
     # never (re)registered with its event bit, and nothing ever woke it. On -EEXIST the fd
@@ -1233,13 +1221,7 @@ fn async_timeout(fp, arg, ms): i64 {
     var epfd = syscall(SYS_EPOLL_CREATE1, 0);
     if (epfd >= 0) {
         var ev[16];
-        store32(&ev, 1);
-        #ifdef CYRIUS_ARCH_AARCH64
-        store64(&ev + 8, rfd);        # epoll_data @8 on aarch64 (unpacked); @4 on x86 (v6.4.42)
-        #endif
-        #ifndef CYRIUS_ARCH_AARCH64
-        store64(&ev + 4, rfd);
-        #endif
+        epoll_event_set(&ev, 1, rfd);  # EPOLLIN, data = the read end, in the peer's layout
         var nr = 0;
         if (syscall(SYS_EPOLL_CTL, epfd, 1, rfd, &ev) >= 0) {
             var revents[16];

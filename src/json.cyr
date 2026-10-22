@@ -32,7 +32,7 @@ enum JsonError {
 }
 
 # JSON pair: { key: Str, value: Str, kind } — 24 bytes as of 1.7.0, 16 before.
-var JSON_PAIR_SIZE = 24;
+const JSON_PAIR_SIZE = 24;
 
 # --- Value kinds (1.7.0) ---------------------------------------------------
 #
@@ -49,11 +49,11 @@ var JSON_PAIR_SIZE = 24;
 # which bayan_json_build escapes, and the value is written as a string, as it
 # always was. The other kinds come from bayan_json_parse, whose keys and values
 # are raw source bytes: the builder writes them as they were read.
-var JSON_K_TEXT   = 0;   # built by hand: text, escaped and quoted on output
-var JSON_K_STRING = 1;   # a string; the value is its body, escapes as written
-var JSON_K_BARE   = 2;   # a number, true, false or null, as written
-var JSON_K_OBJECT = 3;   # an object, its whole raw span
-var JSON_K_ARRAY  = 4;   # an array, its whole raw span
+const JSON_K_TEXT   = 0;   # built by hand: text, escaped and quoted on output
+const JSON_K_STRING = 1;   # a string; the value is its body, escapes as written
+const JSON_K_BARE   = 2;   # a number, true, false or null, as written
+const JSON_K_OBJECT = 3;   # an object, its whole raw span
+const JSON_K_ARRAY  = 4;   # an array, its whole raw span
 
 # 1.7.0 — Allocator-as-first-arg pair constructor that records the value's kind
 # (a JSON_K_* value). Any kind but JSON_K_TEXT says that the key and value are
@@ -561,15 +561,15 @@ fn bayan_json_parse_file_r(path): i64 {
 # Errors: parse failures set _json_err_msg (cstr) and _json_err_pos
 # (input byte offset). bayan_json_v_parse* returns 0 on error.
 
-var JTAG_NULL  = 0;
-var JTAG_BOOL  = 1;
-var JTAG_INT   = 2;
-var JTAG_FLOAT = 3;
-var JTAG_STR   = 4;
-var JTAG_ARR   = 5;
-var JTAG_OBJ   = 6;
+const JTAG_NULL  = 0;
+const JTAG_BOOL  = 1;
+const JTAG_INT   = 2;
+const JTAG_FLOAT = 3;
+const JTAG_STR   = 4;
+const JTAG_ARR   = 5;
+const JTAG_OBJ   = 6;
 
-var JV_SIZE = 24;
+const JV_SIZE = 24;
 
 # Legacy single-threaded last-error slots. As of v1.0.3 the parser keys off a
 # per-call state struct (see "Reentrant parser state" below), so these are
@@ -770,20 +770,48 @@ fn bayan_json_v_tag(v): i64 {
     return load64(v);
 }
 
-# Tag predicates — return 1 if v has the given tag, else 0. All return 0 on null v.
-fn bayan_json_v_is_null(v): i64 { if (v == 0) { return 0; } if (load64(v) == JTAG_NULL)  { return 1; } return 0; }
+# Tag predicates — true if v has the given tag, else false. All are false on null v.
+fn bayan_json_v_is_null(v): bool {
+    if (v == 0) { return false; }
+    if (load64(v) == JTAG_NULL) { return true; }
+    return false;
+}
 # True if v is a JTAG_BOOL value.
-fn bayan_json_v_is_bool(v): i64 { if (v == 0) { return 0; } if (load64(v) == JTAG_BOOL)  { return 1; } return 0; }
+fn bayan_json_v_is_bool(v): bool {
+    if (v == 0) { return false; }
+    if (load64(v) == JTAG_BOOL) { return true; }
+    return false;
+}
 # True if v is a JTAG_INT value.
-fn bayan_json_v_is_int(v): i64 { if (v == 0) { return 0; } if (load64(v) == JTAG_INT)   { return 1; } return 0; }
+fn bayan_json_v_is_int(v): bool {
+    if (v == 0) { return false; }
+    if (load64(v) == JTAG_INT) { return true; }
+    return false;
+}
 # True if v is a JTAG_FLOAT value.
-fn bayan_json_v_is_float(v): i64 { if (v == 0) { return 0; } if (load64(v) == JTAG_FLOAT) { return 1; } return 0; }
+fn bayan_json_v_is_float(v): bool {
+    if (v == 0) { return false; }
+    if (load64(v) == JTAG_FLOAT) { return true; }
+    return false;
+}
 # True if v is a JTAG_STR value.
-fn bayan_json_v_is_str(v): i64 { if (v == 0) { return 0; } if (load64(v) == JTAG_STR)   { return 1; } return 0; }
+fn bayan_json_v_is_str(v): bool {
+    if (v == 0) { return false; }
+    if (load64(v) == JTAG_STR) { return true; }
+    return false;
+}
 # True if v is a JTAG_ARR value.
-fn bayan_json_v_is_arr(v): i64 { if (v == 0) { return 0; } if (load64(v) == JTAG_ARR)   { return 1; } return 0; }
+fn bayan_json_v_is_arr(v): bool {
+    if (v == 0) { return false; }
+    if (load64(v) == JTAG_ARR) { return true; }
+    return false;
+}
 # True if v is a JTAG_OBJ value.
-fn bayan_json_v_is_obj(v): i64 { if (v == 0) { return 0; } if (load64(v) == JTAG_OBJ)   { return 1; } return 0; }
+fn bayan_json_v_is_obj(v): bool {
+    if (v == 0) { return false; }
+    if (load64(v) == JTAG_OBJ) { return true; }
+    return false;
+}
 
 # === Value accessors (INT/FLOAT coercion) ===
 
@@ -1847,18 +1875,18 @@ fn bayan_json_v_build_pretty_a(a, v, indent): i64 {
 # streaming parser is reentrant too. This keeps the streaming surface ~210 LOC
 # instead of ~400.
 
-var JS_EV_OBJECT_START = 0;
-var JS_EV_OBJECT_END   = 1;
-var JS_EV_ARRAY_START  = 2;
-var JS_EV_ARRAY_END    = 3;
-var JS_EV_KEY          = 4;
-var JS_EV_STRING       = 5;
-var JS_EV_INT          = 6;
-var JS_EV_FLOAT        = 7;
-var JS_EV_BOOL         = 8;
-var JS_EV_NULL         = 9;
-var JS_EV_ERROR        = 10;
-var JS_EV_COUNT        = 11;
+const JS_EV_OBJECT_START = 0;
+const JS_EV_OBJECT_END   = 1;
+const JS_EV_ARRAY_START  = 2;
+const JS_EV_ARRAY_END    = 3;
+const JS_EV_KEY          = 4;
+const JS_EV_STRING       = 5;
+const JS_EV_INT          = 6;
+const JS_EV_FLOAT        = 7;
+const JS_EV_BOOL         = 8;
+const JS_EV_NULL         = 9;
+const JS_EV_ERROR        = 10;
+const JS_EV_COUNT        = 11;
 
 var _JS_HANDLER_SIZE = 96;
 

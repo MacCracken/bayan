@@ -40,41 +40,41 @@
 # failure's message, written after the parse, for callers that want it.
 
 # --- Public kinds --------------------------------------------------------------------------------
-var MD_K_DOCUMENT       = 1;
-var MD_K_BLOCKQUOTE     = 2;
-var MD_K_LIST           = 3;    # ordered or not: bayan_markdown_list_ordered
-var MD_K_ITEM           = 4;
-var MD_K_PARAGRAPH      = 5;
-var MD_K_HEADING        = 6;    # level 1..6: bayan_markdown_level
-var MD_K_THEMATIC_BREAK = 7;
-var MD_K_CODE_BLOCK     = 8;    # literal: bayan_markdown_text; info string: bayan_markdown_info
-var MD_K_TABLE          = 9;    # MD_EXT_TABLES
-var MD_K_TABLE_ROW      = 10;   # the header row: bayan_markdown_row_header
-var MD_K_TABLE_CELL     = 11;   # alignment: bayan_markdown_align
-var MD_K_TEXT           = 20;
-var MD_K_SOFTBREAK      = 21;
-var MD_K_LINEBREAK      = 22;
-var MD_K_CODE           = 23;
-var MD_K_EMPH           = 24;
-var MD_K_STRONG         = 25;
-var MD_K_STRIKETHROUGH  = 26;   # MD_EXT_STRIKETHROUGH
-var MD_K_LINK           = 27;   # bayan_markdown_url, bayan_markdown_title
-var MD_K_IMAGE          = 28;
-var MD_K_WIKILINK       = 29;   # MD_EXT_WIKILINKS: the target is bayan_markdown_url
+const MD_K_DOCUMENT       = 1;
+const MD_K_BLOCKQUOTE     = 2;
+const MD_K_LIST           = 3;    # ordered or not: bayan_markdown_list_ordered
+const MD_K_ITEM           = 4;
+const MD_K_PARAGRAPH      = 5;
+const MD_K_HEADING        = 6;    # level 1..6: bayan_markdown_level
+const MD_K_THEMATIC_BREAK = 7;
+const MD_K_CODE_BLOCK     = 8;    # literal: bayan_markdown_text; info string: bayan_markdown_info
+const MD_K_TABLE          = 9;    # MD_EXT_TABLES
+const MD_K_TABLE_ROW      = 10;   # the header row: bayan_markdown_row_header
+const MD_K_TABLE_CELL     = 11;   # alignment: bayan_markdown_align
+const MD_K_TEXT           = 20;
+const MD_K_SOFTBREAK      = 21;
+const MD_K_LINEBREAK      = 22;
+const MD_K_CODE           = 23;
+const MD_K_EMPH           = 24;
+const MD_K_STRONG         = 25;
+const MD_K_STRIKETHROUGH  = 26;   # MD_EXT_STRIKETHROUGH
+const MD_K_LINK           = 27;   # bayan_markdown_url, bayan_markdown_title
+const MD_K_IMAGE          = 28;
+const MD_K_WIKILINK       = 29;   # MD_EXT_WIKILINKS: the target is bayan_markdown_url
 
 # --- Extension flags -----------------------------------------------------------------------------
-var MD_EXT_TABLES        = 1;
-var MD_EXT_TASKLISTS     = 2;
-var MD_EXT_STRIKETHROUGH = 4;
-var MD_EXT_AUTOLINKS     = 8;
-var MD_EXT_GFM           = 15;
-var MD_EXT_WIKILINKS     = 16;
+const MD_EXT_TABLES        = 1;
+const MD_EXT_TASKLISTS     = 2;
+const MD_EXT_STRIKETHROUGH = 4;
+const MD_EXT_AUTOLINKS     = 8;
+const MD_EXT_GFM           = 15;
+const MD_EXT_WIKILINKS     = 16;
 
 # --- Table cell alignment ------------------------------------------------------------------------
-var MD_ALIGN_NONE   = 0;
-var MD_ALIGN_LEFT   = 1;
-var MD_ALIGN_CENTER = 2;
-var MD_ALIGN_RIGHT  = 3;
+const MD_ALIGN_NONE   = 0;
+const MD_ALIGN_LEFT   = 1;
+const MD_ALIGN_CENTER = 2;
+const MD_ALIGN_RIGHT  = 3;
 
 const _MD_MAX_DEPTH = 128;
 

@@ -25,4 +25,14 @@ var md = bayan_markdown_to_html(bayan_markdown_parse(str_from("*\xe1\xba\x9e* [x
 assert_eq(str_eq_cstr(md, "<p><em>\xe1\xba\x9e</em> <a href=\"/u\">x</a></p>\n"), 1,
   "raw include: bayan_markdown parses and renders, folding the label");
 
+# 1.10.0: the bundle carries the typed names as src/ declares them, which is what a consumer
+# compiles against. _ri_b takes a `b: bool`, so the call compiles only while the bundle's predicate
+# returns `: bool`; the #assert is a const context, so it compiles only while JTAG_INT is a const.
+fn _ri_b(b: bool): i64 {
+    if (b) { return 1; }
+    return 0;
+}
+assert_eq(_ri_b(bayan_json_v_is_int(bayan_json_v_int_new(1))), 1, "raw include: the bundle's predicates return bool");
+#assert JTAG_INT == 2, "raw include: the bundle's JTAG_INT is a const";
+
 var r = assert_summary();

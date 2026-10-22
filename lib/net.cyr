@@ -290,6 +290,7 @@ fn _net_wsa_io_err(): i64 {
 
 # ioctlsocket(FIONBIO): 1 = non-blocking, 0 = blocking. 0 or -WSAGetLastError.
 fn _net_wsa_nbio(fd, on): i64 {
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     var v[8];
     store64(&v, on);
     if (syscall(0xF049, fd, 0x8004667E, &v) != 0) { return _net_wsa_err(); }   # FIONBIO
@@ -306,6 +307,7 @@ fn _net_wsa_nbio(fd, on): i64 {
 # is the same sys_write as before (the peer routes a tagged fd to #48). CHANGELOG [6.6.16]
 fn _net_os_send(fd, buf, len): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     if (len > 0x7FFFFFFF) { len = 0x7FFFFFFF; }    # send() takes an int length; a short write is legal
     var n = syscall(0xF047, fd, buf, len, 0);
     if (n < 0) { return _net_wsa_io_err(); }
@@ -319,6 +321,7 @@ fn _net_os_send(fd, buf, len): i64 {
 # Receive up to `len` bytes from socket `fd`: the count (0 = the peer closed), or -errno.
 fn _net_os_recv(fd, buf, len): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     if (len > 0x7FFFFFFF) { len = 0x7FFFFFFF; }
     var n = syscall(0xF048, fd, buf, len, 0);
     if (n < 0) { return _net_wsa_io_err(); }
@@ -333,6 +336,7 @@ fn _net_os_recv(fd, buf, len): i64 {
 # CloseHandle (sys_close) on one is documented as undefined and skips Winsock's teardown.
 fn _net_os_close(fd): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     return _net_wsa_rc(syscall(0xF023, fd));
     #endif
     #ifndef CYRIUS_TARGET_WIN
@@ -363,6 +367,7 @@ fn _net_os_socket(type): i64 {
 # bind(fd, sa, salen): 0 or -errno.
 fn _net_os_bind(fd, sa, salen): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     return _net_wsa_rc(syscall(0xF025, fd, sa, salen));
     #endif
     #ifndef CYRIUS_TARGET_WIN
@@ -373,6 +378,7 @@ fn _net_os_bind(fd, sa, salen): i64 {
 # connect(fd, sa, salen), blocking: 0 or -errno.
 fn _net_os_connect(fd, sa, salen): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     return _net_wsa_rc(syscall(0xF028, fd, sa, salen));
     #endif
     #ifndef CYRIUS_TARGET_WIN
@@ -383,6 +389,7 @@ fn _net_os_connect(fd, sa, salen): i64 {
 # listen(fd, backlog): 0 or -errno.
 fn _net_os_listen(fd, backlog): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     return _net_wsa_rc(syscall(0xF033, fd, backlog));
     #endif
     #ifndef CYRIUS_TARGET_WIN
@@ -400,6 +407,7 @@ fn _net_os_listen(fd, backlog): i64 {
 # Linux and agnos are unchanged: no extra syscall. CHANGELOG [6.6.16]
 fn _net_os_accept(fd): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     var c = syscall(0xF045, fd, 0, 0);
     if (c == 0 - 1) {                                          # INVALID_SOCKET
         var e = _net_wsa_err();
@@ -441,6 +449,7 @@ fn _net_os_accept(fd): i64 {
 # values (the SockOpt / IpOpt enums above).
 fn _net_os_setopt(fd, level, name, val, vallen): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     return _net_wsa_rc(syscall(0xF032, fd, level, name, val, vallen));
     #endif
     #ifndef CYRIUS_TARGET_WIN
@@ -452,6 +461,7 @@ fn _net_os_setopt(fd, level, name, val, vallen): i64 {
 # SD_BOTH on Windows): 0 or -errno.
 fn _net_os_shutdown(fd, how): i64 {
     #ifdef CYRIUS_TARGET_WIN
+    if (_win_fd_aliases(fd) == 1) { return 0 - 9; }    # never a descriptor (6.7.16)
     if (syscall(0xF046, fd, how) != 0) { return _net_wsa_err(); }
     return 0;
     #endif
@@ -815,14 +825,17 @@ fn sock_recv(fd, buf, len) : Result {
 # payload-carrying enum in the language does this. Changing that representation touches 24 enum
 # declarations and 516 construction sites. See lib/result.cyr's `ok_via` header.
 # Send on a socket, boxing the Result through the caller's allocator. Returns Ok(n)/Err(errno).
-fn sock_send_a(a, fd, buf, len): i64 {
+# Both `_a` forms are declared `: Result`, what they return (lib/result.cyr's ok_via / err_via,
+# 6.7.13's D37): `cyrius header` printed `cyr_val` for the pair, and callers compile
+# byte-identical. CHANGELOG [6.7.14]
+fn sock_send_a(a, fd, buf, len): Result {
     var n = _net_os_send(fd, buf, len);
     if (n < 0) { return err_via(a, 0 - n); }
     return ok_via(a, n);
 }
 
 # Receive from a socket, boxing the Result through the caller's allocator. Ok(n)/Err(errno).
-fn sock_recv_a(a, fd, buf, len): i64 {
+fn sock_recv_a(a, fd, buf, len): Result {
     var n = _net_os_recv(fd, buf, len);
     if (n < 0) { return err_via(a, 0 - n); }
     return ok_via(a, n);
@@ -1092,6 +1105,7 @@ fn net_connect_sa_nb(fd, sa, salen, timeout_ms): i64 {
 # ⚠ WSAPoll before Windows 10 2004 does not report a REFUSED non-blocking connect: it waits out
 # the timeout, so on those builds a refusal reads as _NET_CONN_NB_TIMEOUT. CHANGELOG [6.6.11]
 fn _net_win_connect_nb(fd, sa, salen, timeout_ms): i64 {
+    if (_win_fd_aliases(fd) == 1) { return _NET_CONN_NB_ERR; }   # never a descriptor (6.7.16)
     if (_net_wsa_nbio(fd, 1) != 0) { return _NET_CONN_NB_ERR; }
     var result = _NET_CONN_NB_ERR;
     var cr = _net_wsa_rc(syscall(0xF028, fd, sa, salen));  # connect

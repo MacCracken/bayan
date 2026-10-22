@@ -228,7 +228,10 @@ var TLS_HASH_SHA384_LEN = 48;
 # itself is 16 bytes (algo + ctx-pointer) plus the heap-alloc'd
 # hash ctx.
 var TLS_TRANSCRIPT_STATE_LEN = 16;
-var TLS_SHA256_CTX_LEN = 144;
+const _TLS_SHA256_CTX_LEN = 144;
+# Read-only mirror of `_TLS_SHA256_CTX_LEN`: lib/ reads the const; a write changes nothing
+# (6.7.12's D16). CHANGELOG [6.7.14]
+var TLS_SHA256_CTX_LEN = _TLS_SHA256_CTX_LEN;
 const _TLS_SHA384_CTX_LEN = 208;
 # Read-only mirror of `_TLS_SHA384_CTX_LEN`: lib/ reads the const; a write changes nothing (D16). CHANGELOG [6.7.12]
 var TLS_SHA384_CTX_LEN = _TLS_SHA384_CTX_LEN;
@@ -253,8 +256,8 @@ fn tls_native_transcript_init_in(a, hash_algo): i64 {
     if (state == 0) { return 0; }
     var hctx = 0;
     if (hash_algo == TLS_HASH_SHA256) {
-        if (a == 0) { hctx = alloc(TLS_SHA256_CTX_LEN); }
-        if (a != 0) { hctx = alloc_via(a, TLS_SHA256_CTX_LEN); }
+        if (a == 0) { hctx = alloc(_TLS_SHA256_CTX_LEN); }
+        if (a != 0) { hctx = alloc_via(a, _TLS_SHA256_CTX_LEN); }
         if (hctx == 0) { return 0; }
         sha256_init_into(hctx);
     }
@@ -305,7 +308,7 @@ fn tls_native_transcript_digest(state, digest_out): i64 {
     # leak on the global bump. Consumed by sha*_finalize before return.
     var clone[_TLS_SHA384_CTX_LEN];
     if (algo == TLS_HASH_SHA256) {
-        memcpy(&clone, hctx, TLS_SHA256_CTX_LEN);
+        memcpy(&clone, hctx, _TLS_SHA256_CTX_LEN);
         sha256_finalize(&clone, digest_out);
         return TLS_HASH_SHA256_LEN;
     }
