@@ -22,20 +22,8 @@
 > 1.10.0 (2026-10-22) shipped its slot whole and removed it, with the pin move to 6.7.16. Typed by
 > what they are rather than by spelling, the names were 99 constants and 32 predicates, not 86 and
 > 27 (ADR 0012). No name collided with another fold in 6.7.16's `lib/`.
-
-## 1.11.0 — minor: TOML into the tagged tree; one lookup key type
-
-- **`bayan_toml_v_parse`** into json's value tree, the way yaml already parses. 1.5.4 gave dotted
-  keys and inline tables real answers inside the flat model, so this is less urgent than it was. It
-  is still the right shape for the surface, and it is the answer to the next item.
-- **The two flat lookups disagree on their key type** (Known gap 7). `bayan_json_get` needs a
-  `Str`, `bayan_toml_get` a cstring, and the wrong one is a silent "not found". The fix is
-  ADR 0004's: name the key type in the function and deprecate the bare name. `bayan_toml_get`'s key
-  should also carry `: cstring`, so the named-`Str` diagnostic can fire.
-- **The two subset edges the flat model cannot express** (Known gap 1). A dotted key whose quoted
-  segment contains a dot (`a."b.c".d`) joins into a name indistinguishable from `a.b.c.d`, and a
-  `[[array-of-tables]]` under a dotted parent is not merged with a same-named sibling. A tree keeps
-  the segments apart, so both get an answer there. In the flat API they stay documented.
+> 1.11.0 (2026-10-22) shipped its slot whole and removed it: TOML into the tree, strict by tomllib's
+> answers (ADR 0013), and the flat lookups' typed names (ADR 0014).
 
 ## 1.12.0 — the frozen surface
 

@@ -3,7 +3,8 @@
 # deprecated-lookup.sh — build tests/deprecated_lookup.cyr expecting EXACTLY its
 # deprecation warnings, then run it.
 #
-# The program pins the answers of bayan's two deprecated lookups (see its header).
+# The program pins the answers of bayan's deprecated lookups (see its header): the two of
+# 1.5.10, and the flat lookups and their aliases deprecated at 1.11.0.
 # From cyrius 6.6.16 every reference to a deprecated fn warns, so it cannot go
 # through scripts/no-warnings.sh. The expectation is exact, not a pattern
 # allowance: one warning per call of a deprecated name, on that call's line,
@@ -21,8 +22,18 @@ mkdir -p "$OUT"
 
 SRC=tests/deprecated_lookup.cyr
 BIN="$OUT/deprecated-lookup${ARCH:+-a64}"
-DEPRECATED="bayan_json_v_obj_get json_v_obj_get"
-MSG="use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key"
+# Each deprecated name and the exact advice its warning must carry: the typed names to use.
+declare -A MSG=(
+    [bayan_json_v_obj_get]="use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key"
+    [json_v_obj_get]="use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key"
+)
+for base in json_get json_get_int toml_get toml_get_pair toml_count toml_get_sections toml_get_inline toml_get_array; do
+    MSG[bayan_${base}]="use bayan_${base}_by_cstr (C-string/literal key) or bayan_${base}_by_str (Str key)"
+done
+for base in json_get json_get_int toml_get toml_get_sections toml_get_array; do
+    MSG[${base}]="use bayan_${base}_by_cstr (C-string/literal key) or bayan_${base}_by_str (Str key)"
+done
+DEPRECATED="${!MSG[*]}"
 
 # Expected: "<line> <name>" for every call of a deprecated name outside a comment.
 want=$(grep -noE '[A-Za-z0-9_]+\(' "$SRC" | grep -v '^[0-9]*:#' | while IFS=: read -r n tok; do
@@ -45,7 +56,7 @@ have=$(printf '%s\n' "$warns" | grep . | while IFS= read -r w; do
     line=${rest%%:*}
     name=$(printf '%s\n' "$w" | sed -n "s/^warning:[^:]*:[0-9]*:[0-9]*: '\([A-Za-z0-9_]*\)' is deprecated: .*/\1/p")
     msg=$(printf '%s\n' "$w" | sed -n "s/^warning:[^:]*:[0-9]*:[0-9]*: '[A-Za-z0-9_]*' is deprecated: //p")
-    if [ -n "$name" ] && [ "$msg" = "$MSG" ]; then echo "$line $name"; else echo "UNEXPECTED $w"; fi
+    if [ -n "$name" ] && [ -n "${MSG[$name]-}" ] && [ "$msg" = "${MSG[$name]}" ]; then echo "$line $name"; else echo "UNEXPECTED $w"; fi
 done | sort)
 
 if [ "$have" != "$want" ]; then

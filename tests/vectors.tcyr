@@ -17,6 +17,7 @@
 #   python3 scripts/gen-csv-vectors.py     tests/fixtures/csv
 #   python3 scripts/gen-yaml-vectors.py    tests/fixtures/yaml
 #   python3 scripts/gen-markdown-vectors.py tests/fixtures/markdown
+#   python3 scripts/gen-toml-tree-vectors.py tests/fixtures/toml
 #
 # 1.5.3 adds a third set for the same reason the first two exist. src/toml.cyr
 # returned the RAW bytes between the quotes for six releases — escapes
@@ -43,6 +44,7 @@ include "src/toml.cyr"
 include "src/csv.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
+include "src/toml_tree.cyr"
 include "src/markdown_entities.cyr"
 include "src/markdown.cyr"
 
@@ -512,18 +514,18 @@ fn run_toml(): i64 {
             # always sections[0] as of 1.5.4.
             store8(tbuf + tn, 0);
             store8(kbuf + kn, 0);
-            var tsecs = bayan_toml_get_sections(secs, tbuf);
+            var tsecs = bayan_toml_get_sections_by_cstr(secs, tbuf);
             if (vec_len(tsecs) > 0) {
-                got = bayan_toml_get(bayan_toml_section_pairs(vec_get(tsecs, 0)), kbuf);
+                got = bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(tsecs, 0)), kbuf);
             }
         }
         elif (vec_len(secs) > 0) {
             var pairs = bayan_toml_section_pairs(vec_get(secs, 0));
             if (kind == 65) {
-                var els = bayan_toml_get_array(pairs, "x");
+                var els = bayan_toml_get_array_by_cstr(pairs, "x");
                 if (els != 0) { if (vec_len(els) > 0) { got = vec_get(els, 0); } }
             } else {
-                got = bayan_toml_get(pairs, "x");
+                got = bayan_toml_get_by_cstr(pairs, "x");
             }
         }
 
@@ -815,6 +817,197 @@ fn run_markdown_all(): i64 {
     return 42;
 }
 
+# =============================================================================
+# toml into the tree against Python's tomllib (1.11.0)
+# =============================================================================
+#
+# <hex document> TAB <expected>: `E` when tomllib refuses the document (or bayan cannot hold what
+# it returns: an integer past i64, nesting past 128), else the tree in the canonical form
+# scripts/gen-toml-tree-vectors.py documents. This writes bayan's tree in that form with its own
+# serializer, so nothing in src/ judges itself.
+
+var g_ttv = 0;
+var g_ttv_ok = 0;
+var g_ttv_bad = 0;
+var g_ttv_shown = 0;
+var TT_HEX = "0123456789abcdef";
+
+fn tt_hex(sb, p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        str_builder_add_byte(sb, load8(TT_HEX + (c >> 4)));
+        str_builder_add_byte(sb, load8(TT_HEX + (c & 15)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# A validated TOML time at p, HH:MM:SS[.fraction], as tomllib's value reads: HH:MM:SS.ffffff, the
+# fraction cut or padded to six digits. Returns the end of the time.
+fn tt_time(sb, p, end): i64 {
+    var i = 0;
+    while (i < 8) { str_builder_add_byte(sb, load8(p + i)); i = i + 1; }
+    str_builder_add_byte(sb, 46);
+    var q = p + 8;
+    var nd = 0;
+    if (q < end && load8(q) == 46) {
+        q = q + 1;
+        while (q < end && load8(q) >= 48 && load8(q) <= 57) {
+            if (nd < 6) {
+                str_builder_add_byte(sb, load8(q));
+                nd = nd + 1;
+            }
+            q = q + 1;
+        }
+    }
+    while (nd < 6) {
+        str_builder_add_byte(sb, 48);
+        nd = nd + 1;
+    }
+    return q;
+}
+
+# D<kind>:<value> for a date or time cell: `T` between date and time, the offset as +HH:MM.
+fn tt_dt(sb, v): i64 {
+    var k = bayan_toml_v_datetime_kind(v);
+    var s = bayan_json_v_str(v);
+    var p = str_data(s);
+    var end = p + str_len(s);
+    str_builder_add_byte(sb, 68);
+    str_builder_add_byte(sb, 48 + k);
+    str_builder_add_byte(sb, 58);
+    if (k == TOML_DT_TIME) {
+        tt_time(sb, p, end);
+        return 0;
+    }
+    var i = 0;
+    while (i < 10) { str_builder_add_byte(sb, load8(p + i)); i = i + 1; }
+    if (k == TOML_DT_DATE) { return 0; }
+    str_builder_add_byte(sb, 84);
+    var q = tt_time(sb, p + 11, end);
+    if (k == TOML_DT_LOCAL) { return 0; }
+    var o = load8(q);
+    var zero = 0;
+    if (o == 90 || o == 122) { zero = 1; }
+    elif (load8(q + 1) == 48 && load8(q + 2) == 48 && load8(q + 4) == 48 && load8(q + 5) == 48) { zero = 1; }
+    if (zero == 1) {
+        str_builder_add_cstr(sb, "+00:00");
+        return 0;
+    }
+    i = 0;
+    while (i < 6) { str_builder_add_byte(sb, load8(q + i)); i = i + 1; }
+    return 0;
+}
+
+fn tt_ser(sb, v): i64 {
+    var t = load64(v);
+    if (t == JTAG_BOOL) {
+        if (bayan_json_v_bool(v) == 1) { str_builder_add_cstr(sb, "B1"); }
+        else { str_builder_add_cstr(sb, "B0"); }
+    } elif (t == JTAG_INT) {
+        str_builder_add_byte(sb, 73);
+        var nb[24];
+        var nl = fmt_int_buf(bayan_json_v_int(v), &nb);
+        var j = 0;
+        while (j < nl) { str_builder_add_byte(sb, load8(&nb + j)); j = j + 1; }
+    } elif (t == JTAG_FLOAT) {
+        str_builder_add_byte(sb, 70);
+        var bits = bayan_json_v_float(v);
+        var sh = 60;
+        while (sh >= 0) {
+            str_builder_add_byte(sb, load8(TT_HEX + ((bits >> sh) & 15)));
+            sh = sh - 4;
+        }
+    } elif (t == JTAG_STR) {
+        if (bayan_toml_v_datetime_kind(v) != 0) { tt_dt(sb, v); }
+        else {
+            str_builder_add_byte(sb, 83);
+            var s = bayan_json_v_str(v);
+            tt_hex(sb, str_data(s), str_len(s));
+        }
+    } elif (t == JTAG_ARR) {
+        str_builder_add_byte(sb, 91);
+        var n = bayan_json_v_arr_len(v);
+        var i = 0;
+        while (i < n) {
+            tt_ser(sb, bayan_json_v_arr_get(v, i));
+            str_builder_add_byte(sb, 59);
+            i = i + 1;
+        }
+        str_builder_add_byte(sb, 93);
+    } elif (t == JTAG_OBJ) {
+        str_builder_add_byte(sb, 123);
+        var m = bayan_json_v_obj_len(v);
+        var k = 0;
+        while (k < m) {
+            var key = bayan_json_v_obj_key(v, k);
+            tt_hex(sb, str_data(key), str_len(key));
+            str_builder_add_byte(sb, 61);
+            tt_ser(sb, bayan_json_v_obj_val(v, k));
+            str_builder_add_byte(sb, 59);
+            k = k + 1;
+        }
+        str_builder_add_byte(sb, 125);
+    } else {
+        str_builder_add_cstr(sb, "?");
+    }
+    return 0;
+}
+
+fn run_toml_tree(): i64 {
+    alloc_init();
+    var cap = 4 << 20;
+    var buf = alloc(cap);
+    if (buf == 0) { t_say("cannot allocate the toml tree vector buffer\n"); return 1; }
+    var len = file_read_all("tests/fixtures/toml/tree.vec", buf, cap);
+    if (len <= 0) { t_say("cannot read tests/fixtures/toml/tree.vec\n"); return 1; }
+    if (len >= cap) { t_say("tests/fixtures/toml/tree.vec outgrew its buffer\n"); return 1; }
+    var dbuf = alloc(1 << 20);
+    var pos = 0;
+    while (pos < len) {
+        var tab = pos;
+        while (tab < len && load8(buf + tab) != 9) { tab = tab + 1; }
+        var nout[8];
+        t_hexfield(buf, pos, tab, dbuf, &nout);
+        var dn = load64(&nout);
+        var ws = buf + tab + 1;
+        pos = tab + 1;
+        while (pos < len && load8(buf + pos) != 10) { pos = pos + 1; }
+        var wn = buf + pos - ws;
+        pos = pos + 1;
+        var v = bayan_toml_v_parse_buf(dbuf, dn);
+        var sb = str_builder_new();
+        if (v == 0) { str_builder_add_byte(sb, 69); }
+        else {
+            tt_ser(sb, v);
+            g_ttv_ok = g_ttv_ok + 1;
+        }
+        var got = str_builder_build(sb);
+        g_ttv = g_ttv + 1;
+        var ok = 0;
+        if (str_len(got) == wn) {
+            if (memeq(str_data(got), ws, wn) == 1) { ok = 1; }
+        }
+        if (ok == 0) {
+            g_ttv_bad = g_ttv_bad + 1;
+            if (g_ttv_shown < 5) {
+                g_ttv_shown = g_ttv_shown + 1;
+                t_say("    vector "); t_num(g_ttv); t_say("\n      doc  ["); t_dump(dbuf, dn);
+                t_say("]\n      want ["); t_dump(ws, wn); t_say("]\n      got  [");
+                t_dump(str_data(got), str_len(got));
+                if (v == 0) { t_say("] "); t_say(bayan_toml_v_last_error()); }
+                else { t_say("]"); }
+                t_say("\n");
+            }
+        }
+    }
+    t_say("toml tree vectors: "); t_num(g_ttv); t_say(" ("); t_num(g_ttv_ok);
+    t_say(" parsed)   wrong: "); t_num(g_ttv_bad); t_say("\n");
+    if (g_ttv_bad > 0) { return 1; }
+    return 42;
+}
+
 test_group("vectors: u128 against Python's arbitrary-precision integers");
 var uv = run_u128();
 assert_eq(uv, 42, "u128: the vector file loaded and every check ran");
@@ -858,5 +1051,12 @@ assert_eq(mvv, 42, "markdown: the vector files loaded and every check ran");
 assert_gt(g_mv, 660, "markdown: the expected number of vectors actually ran");
 assert_gt(g_mv_wiki, 580, "markdown: (and the CommonMark ones again with wiki links on)");
 assert_eq(g_mv_bad, 0, "markdown: zero disagreements with the suites");
+
+test_group("vectors: toml into the tree against Python's tomllib (1.11.0)");
+var ttvv = run_toml_tree();
+assert_eq(ttvv, 42, "toml tree: the vector file loaded and every check ran");
+assert_gt(g_ttv, 3400, "toml tree: the expected number of vectors actually ran");
+assert_gt(g_ttv_ok, 2000, "toml tree: (over two thousand of them parse; the rest are refused)");
+assert_eq(g_ttv_bad, 0, "toml tree: zero disagreements with the oracle");
 
 var r = assert_summary();

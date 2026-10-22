@@ -50,7 +50,9 @@ programs = ["tests/deprecated_lookup.cyr"]
 # (PDF reals have no exponent form, so bayan_f64_to_json is unusable), so it
 # depends on neither json.cyr nor dtoa.cyr; `markdown.cyr` (1.9.0) needs only
 # `markdown_entities.cyr`, its generated HTML5 entity table, before it, and
-# builds its own node tree (docs/adr/0010); `_compat.cyr` (back-compat aliases
+# builds its own node tree (docs/adr/0010); `toml_tree.cyr` (1.11.0) must come after
+# `json.cyr` — it builds json's value tree with its constructors and parser state, as yaml does —
+# and shares nothing with `toml.cyr`; `_compat.cyr` (back-compat aliases
 # forwarding the legacy json_*/u256_* names to the canonical bayan_* API)
 # MUST be last — its aliases reference every bayan_* symbol.
 [lib]
@@ -64,6 +66,7 @@ modules = [
     "src/dtoa.cyr",
     "src/json.cyr",
     "src/yaml.cyr",
+    "src/toml_tree.cyr",
     "src/pdf.cyr",
     "src/markdown_entities.cyr",
     "src/markdown.cyr",
@@ -103,6 +106,17 @@ modules = [
 [lib.toml]
 modules = [
     "src/toml.cyr",
+]
+
+# toml-tree — TOML 1.0.0 into json's tagged value tree: bayan_toml_v_* (1.11.0, ADR 0013).
+# Carries json.cyr (the tree, its constructors and parser state) and dtoa.cyr before it, as yaml
+# does; NOT toml.cyr, whose flat parser it shares nothing with. So bayan-toml stays the flat
+# parser alone, and a program that wants both includes both: they declare no name twice.
+[lib.toml-tree]
+modules = [
+    "src/dtoa.cyr",
+    "src/json.cyr",
+    "src/toml_tree.cyr",
 ]
 
 # cyml — cyrius manifest format (header/entries + ${...} expansion).

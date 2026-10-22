@@ -36,12 +36,14 @@ short on purpose.
 | `pdf`    | `bayan_pdf_*`    | PDF writer + reader: pages, standard-14 fonts with real AFM metrics, text and graphics operators, metric word wrap, xref tables **and** 1.5 xref streams, object streams, text extraction |
 | `json`   | `bayan_json_*`   | parser + tagged value tree + builder + streaming + JSON-pointer |
 | `yaml`   | `bayan_yaml_*`   | pragmatic YAML subset into json's value tree, plus frontmatter split |
+| `toml_tree` | `bayan_toml_v_*` | TOML 1.0.0 into json's value tree, strict: it accepts and refuses what Python's `tomllib` does (1.11.0) |
 | `toml`   | `bayan_toml_*`   | tables + key/value parse, quoted and dotted keys, inline tables, spec-correct string decoding (basic, literal, both multi-line forms), escape/unescape helpers, array-value access, per-value kind |
 | `cyml`   | `bayan_cyml_*`   | Cyrius config (entries/docs, env expansion) |
 | `csv`    | `bayan_csv_*`    | line parse / escape / write |
 | `base64` | `bayan_base64_*` | standard + URL alphabet, encode/decode |
 | `bigint` | `bayan_u256_*`   | 256-bit unsigned int (add/sub/mul/mod, modular arithmetic, hex) |
 | `u128`   | `bayan_u128_*`   | 128-bit unsigned int (full arithmetic + bitwise + divmod) |
+| `markdown` | `bayan_markdown_*` | CommonMark 0.31.2 to a node tree and HTML, with GFM's tables, task lists, strikethrough and autolinks, and wiki links, behind flags (1.9.0) |
 | `dtoa`   | `bayan_f64_*`    | f64 ⇄ decimal: Grisu2 out, correctly rounded parse in (1.5.7; the stdlib's `f64_parse_n` behind bayan's lenient NaN / Inf front from 1.5.14), used by `json` |
 
 ### Per-format sublibs
@@ -51,7 +53,8 @@ closure of one format's entry points, for consumers that want one parser
 without the full bundle's footprint. Each ships a `.deps` sidecar listing
 the stdlib leaves it needs. `bayan-pdf` is a single-module closure: it
 carries its own object graph and number emitter, so neither `json` nor
-`dtoa` rides along.
+`dtoa` rides along. `bayan-yaml` and `bayan-toml-tree` carry `json`, the
+tree they parse into; `bayan-toml` is the flat TOML parser alone.
 
 ### Back-compat aliases
 

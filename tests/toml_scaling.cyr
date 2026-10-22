@@ -1,0 +1,154 @@
+# tests/toml_scaling.cyr — bayan_toml_v_parse's cost must grow with its input, not with its square
+# (1.11.0).
+#
+# A TOML parser has to find a key's table, and refuse a duplicate, on every line. Done by walking
+# the table's pairs, that is O(n) a line and O(n^2) a document: 100,000 keys in one table would cost
+# 5 * 10^9 comparisons, from 1.5 MB of input anyone can send. bayan_toml_v_parse indexes every key
+# in a hash table instead (src/toml_tree.cyr, "The key index"), and a wrong answer cannot show that
+# the index is gone or broken: every vector still agrees with tomllib, only slower. So the cost is
+# checked here, by markdown_scaling.cyr's method.
+#
+# Each row times one family at two sizes, eight times apart, in the same process: the FASTEST of
+# several runs at each, since load can slow a run down but never speed one up. The row's figure is
+# the time ratio over the input ratio: about 1 for a linear path, about 8 for a quadratic one. A
+# row fails above 3, three attempts running.
+#
+#   cyrius build tests/toml_scaling.cyr build/toml-scaling && ./build/toml-scaling
+#   cyrius build --aarch64 tests/toml_scaling.cyr build/toml-scaling-a64
+#   qemu-aarch64 build/toml-scaling-a64
+#
+# Exit code = the number of rows over the limit.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/math.cyr"
+include "lib/mmap.cyr"
+include "lib/chrono.cyr"
+
+include "src/dtoa.cyr"
+include "src/json.cyr"
+include "src/toml_tree.cyr"
+
+var LIMIT10 = 30;       # the limit, x10: 3.0
+var ROUNDS = 5;
+const CAP = 16777216;
+var g_buf = 0;
+
+fn say(m: cstring): i64 { print(m, strlen(m)); return 0; }
+
+fn put(at, s): i64 {
+    var n = strlen(s);
+    memcpy(g_buf + at, s, n);
+    return at + n;
+}
+
+fn put_int(at, v): i64 {
+    var b[24];
+    var l = fmt_int_buf(v, &b);
+    memcpy(g_buf + at, &b, l);
+    return at + l;
+}
+
+# Family f at size k into g_buf; its length.
+fn build(f, k): i64 {
+    var n = 0;
+    var i = 0;
+    if (f == 0) {                       # k keys in the root table
+        while (i < k) { n = put(n, "k"); n = put_int(n, i); n = put(n, " = 1\n"); i = i + 1; }
+    } elif (f == 1) {                   # k tables
+        while (i < k) { n = put(n, "[t"); n = put_int(n, i); n = put(n, "]\nx = 1\n"); i = i + 1; }
+    } elif (f == 2) {                   # k tables in one array of tables
+        while (i < k) { n = put(n, "[[a]]\nx = 1\n"); i = i + 1; }
+    } elif (f == 3) {                   # k dotted keys through one table
+        while (i < k) { n = put(n, "a.k"); n = put_int(n, i); n = put(n, " = 1\n"); i = i + 1; }
+    } elif (f == 4) {                   # k sub-tables of one table, by header
+        while (i < k) { n = put(n, "[a.k"); n = put_int(n, i); n = put(n, "]\n"); i = i + 1; }
+    } elif (f == 5) {                   # one array of k values
+        n = put(n, "a = [");
+        while (i < k) { n = put(n, "1, "); i = i + 1; }
+        n = put(n, "]\n");
+    } elif (f == 6) {                   # one inline table of k keys
+        n = put(n, "a = {");
+        while (i < k) { n = put(n, "k"); n = put_int(n, i); n = put(n, " = 1, "); i = i + 1; }
+        n = put(n, "z = 0}\n");
+    } else {                            # one string of k escapes
+        n = put(n, "a = \"");
+        while (i < k) { n = put(n, "\\n\\u00e9x"); i = i + 1; }
+        n = put(n, "\"\n");
+    }
+    return n;
+}
+
+# The fastest of ROUNDS parses of g_buf[0..n), in ns. A parse that fails is a failed row.
+fn best(n): i64 {
+    var b = 0;
+    var r = 0;
+    while (r < ROUNDS) {
+        alloc_reset();
+        var t0 = clock_now_ns();
+        var d = bayan_toml_v_parse_buf_a(default_alloc(), g_buf, n);
+        var dt = clock_now_ns() - t0;
+        if (d == 0) {
+            say("  the document did not parse: ");
+            say(bayan_toml_v_last_error());
+            say("\n");
+            return 0 - 1;
+        }
+        if (r == 0 || dt < b) { b = dt; }
+        r = r + 1;
+    }
+    if (b < 1) { b = 1; }
+    return b;
+}
+
+# One measurement of family f: 1 when over the limit.
+fn attempt(f, label: cstring, k1, k2): i64 {
+    var n1 = build(f, k1);
+    var t1 = best(n1);
+    var n2 = build(f, k2);
+    var t2 = best(n2);
+    if (t1 < 0 || t2 < 0) { return 1; }
+    var x10 = (t2 * 10 * n1) / (t1 * n2);       # (t2 / t1) / (n2 / n1), one decimal
+    var over = 0;
+    if (x10 > LIMIT10) { over = 1; }
+    if (over == 1) { say("  SLOW  "); } else { say("  ok    "); }
+    say(label);
+    fmt_int(x10 / 10); say("."); fmt_int(x10 % 10); say(" (");
+    fmt_int(n1); say(" bytes in "); fmt_int(t1 / 1000); say(" us, ");
+    fmt_int(n2); say(" in "); fmt_int(t2 / 1000); say(" us), limit 3.0\n");
+    return over;
+}
+
+fn row(f, label: cstring, k1, k2): i64 {
+    var a = 0;
+    while (a < 3) {
+        if (attempt(f, label, k1, k2) == 0) { return 0; }
+        a = a + 1;
+    }
+    return 1;
+}
+
+fn main(): i64 {
+    alloc_init();
+    g_buf = mmap_anon(CAP);
+    if (g_buf == 0) { say("toml scaling: mmap failed\n"); return 99; }
+    say("bayan_toml_v_parse: time ratio over input ratio, between two sizes of each input\n");
+    var slow = 0;
+    slow = slow + row(0, "keys in the root table     ", 5000, 40000);
+    slow = slow + row(1, "tables                     ", 5000, 40000);
+    slow = slow + row(2, "array-of-tables elements   ", 5000, 40000);
+    slow = slow + row(3, "dotted keys, one table     ", 5000, 40000);
+    slow = slow + row(4, "sub-table headers          ", 5000, 40000);
+    slow = slow + row(5, "array values               ", 20000, 160000);
+    slow = slow + row(6, "inline-table keys          ", 5000, 40000);
+    slow = slow + row(7, "string escapes             ", 20000, 160000);
+    return slow;
+}
+
+var r = main();
+syscall(SYS_EXIT, r);

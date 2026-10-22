@@ -33,6 +33,8 @@ Decisions about bayan — what we chose, the context, and the consequences we ac
 | [0010](0010-markdown-parses-into-a-tree-of-its-own.md) | Markdown parses into a tree of its own | Accepted |
 | [0011](0011-markdown-raw-html-is-text.md) | Markdown's raw HTML is text, and its dangerous URLs are dropped | Accepted |
 | [0012](0012-public-constants-are-const-and-predicates-return-bool.md) | Public constants are `const`, and public predicates return `: bool` | Accepted |
+| [0013](0013-toml-parses-into-the-json-value-tree-strictly.md) | TOML parses into the JSON value tree, strictly, by tomllib's answers | Accepted |
+| [0014](0014-the-flat-lookups-name-their-key-type.md) | The flat lookups name their key type too; the bare names are deprecated | Accepted |
 
 0001 and 0002 were written at 1.5.0, alongside `bayan_pdf_*`. They record the
 two decisions in that module a future reader is most likely to try to
@@ -59,3 +61,8 @@ implement, and the safety reason for it.
 0012 was written at 1.10.0, with the typed names. It records the rule that decided which names were
 typed, by contract rather than by spelling, and so why a few functions whose value is 0 or 1 stay
 `i64`.
+
+0013 and 0014 were written at 1.11.0. 0013 is the fourth answer to whether a format reuses the json
+value tree, after 0002, 0008 and 0010: TOML does, strictly, with tomllib as its oracle, and a date
+is a string that remembers its kind. 0014 applies 0004's decision to the flat lookups, with the
+6.7.16 measurement that the `: cstring` diagnostic now reaches every spelling 0004 found silent.

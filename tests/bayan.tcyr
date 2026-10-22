@@ -28,6 +28,7 @@ include "src/cyml.cyr"
 include "src/dtoa.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
+include "src/toml_tree.cyr"
 include "src/pdf.cyr"
 include "src/markdown_entities.cyr"
 include "src/markdown.cyr"
@@ -246,15 +247,15 @@ var tdoc = "title = \"cfg\"\nmk = \"\"\"\ncargo build \\\n  --release\n\"\"\"\nl
 var tsecs = bayan_toml_parse(str_from(tdoc));
 assert_eq(vec_len(tsecs) >= 1, 1, "toml: parsed a section");
 var tp = bayan_toml_section_pairs(vec_get(tsecs, 0));
-var mk = bayan_toml_get(tp, "mk");
+var mk = bayan_toml_get_by_cstr(tp, "mk");
 assert_eq(mk != 0, 1, "toml: \"\"\" key present");
 assert_eq(str_len(mk) > 0, 1, "toml: \"\"\" body not dropped (the fix)");
 assert_eq(str_eq_cstr(mk, "cargo build --release\n"), 1, "toml: \"\"\" line-ending backslash folds the newline + indent (1.5.3)");
-assert_eq(str_eq_cstr(bayan_toml_get(tp, "lit"), "raw$stuff\n"), 1, "toml: ''' body verbatim INCLUDING the trailing newline (1.5.3)");
-assert_eq(str_eq_cstr(bayan_toml_get(tp, "title"), "cfg"), 1, "toml: single-line \" before a triple");
-assert_eq(str_eq_cstr(bayan_toml_get(tp, "after"), "tail"), 1, "toml: key after a triple parses");
-assert_eq(str_eq_cstr(bayan_toml_get(tp, "q"), "a\"b\"c"), 1, "toml: embedded \" inside \"\"\" preserved");
-var ev = bayan_toml_get(tp, "e");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(tp, "lit"), "raw$stuff\n"), 1, "toml: ''' body verbatim INCLUDING the trailing newline (1.5.3)");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(tp, "title"), "cfg"), 1, "toml: single-line \" before a triple");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(tp, "after"), "tail"), 1, "toml: key after a triple parses");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(tp, "q"), "a\"b\"c"), 1, "toml: embedded \" inside \"\"\" preserved");
+var ev = bayan_toml_get_by_cstr(tp, "e");
 assert_eq(ev != 0, 1, "toml: empty-string key present");
 assert_eq(str_len(ev), 0, "toml: \"\" stays empty single-line, not mis-read as triple");
 
@@ -269,15 +270,15 @@ test_group("toml: basic-string escapes are DECODED (1.5.3 — mneme 2026-08-22)"
 var e3doc = "q = \"say \\\"hi\\\"\"\nbs = \"C:\\\\tmp\"\ntb = \"a\\tb\"\nnl = \"a\\nb\"\ncr = \"a\\rb\"\nff = \"a\\fb\"\nbp = \"a\\bb\"\nu4 = \"\\u00e9!\"\nu8 = \"\\U0001F600!\"\n";
 var e3s = bayan_toml_parse(str_from(e3doc));
 var e3p = bayan_toml_section_pairs(vec_get(e3s, 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "q"), "say \"hi\""), 1, "toml: escaped quote");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "bs"), "C:\\tmp"), 1, "toml: escaped backslash");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "tb"), "a\tb"), 1, "toml: tab escape");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "nl"), "a\nb"), 1, "toml: newline escape");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "cr"), "a\rb"), 1, "toml: carriage-return escape");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "ff"), "a\fb"), 1, "toml: form-feed escape");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "bp"), "a\bb"), 1, "toml: backspace escape");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "u4"), "\xC3\xA9!"), 1, "toml: 4-hex escape -> UTF-8 e-acute");
-assert_eq(str_eq_cstr(bayan_toml_get(e3p, "u8"), "\xF0\x9F\x98\x80!"), 1, "toml: 8-hex escape -> UTF-8 astral (TOML-only form)");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "q"), "say \"hi\""), 1, "toml: escaped quote");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "bs"), "C:\\tmp"), 1, "toml: escaped backslash");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "tb"), "a\tb"), 1, "toml: tab escape");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "nl"), "a\nb"), 1, "toml: newline escape");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "cr"), "a\rb"), 1, "toml: carriage-return escape");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "ff"), "a\fb"), 1, "toml: form-feed escape");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "bp"), "a\bb"), 1, "toml: backspace escape");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "u4"), "\xC3\xA9!"), 1, "toml: 4-hex escape -> UTF-8 e-acute");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3p, "u8"), "\xF0\x9F\x98\x80!"), 1, "toml: 8-hex escape -> UTF-8 astral (TOML-only form)");
 
 # TOML has no `\/` escape (JSON does), and tomllib REJECTS a document
 # containing one — so this expectation is bayan POLICY, stated here, not an
@@ -286,23 +287,23 @@ assert_eq(str_eq_cstr(bayan_toml_get(e3p, "u8"), "\xF0\x9F\x98\x80!"), 1, "toml:
 # what was written, and a mis-escaped path is a recoverable annoyance
 # instead of silent data loss.
 var e3sl = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\/b\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3sl, "x"), "a\\/b"), 1, "toml: unknown escape preserved verbatim");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3sl, "x"), "a\\/b"), 1, "toml: unknown escape preserved verbatim");
 
 # Degenerate escapes. None may read out of bounds, emit invalid UTF-8, or
 # lose the rest of the value — a lone surrogate in particular must never
 # reach _toml_emit_utf8, which would encode it as valid-looking CESU-8.
 var e3h1 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\uZZZZb\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3h1, "x"), "a\\uZZZZb"), 1, "toml: bad hex digits");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3h1, "x"), "a\\uZZZZb"), 1, "toml: bad hex digits");
 var e3h2 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\u00\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3h2, "x"), "a\\u00"), 1, "toml: too few hex digits before the closing quote");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3h2, "x"), "a\\u00"), 1, "toml: too few hex digits before the closing quote");
 var e3h3 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\ud800b\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3h3, "x"), "a\\ud800b"), 1, "toml: lone surrogate is never encoded");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3h3, "x"), "a\\ud800b"), 1, "toml: lone surrogate is never encoded");
 var e3h4 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\U0011FFFFb\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3h4, "x"), "a\\U0011FFFFb"), 1, "toml: codepoint past U+10FFFF");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3h4, "x"), "a\\U0011FFFFb"), 1, "toml: codepoint past U+10FFFF");
 var e3h5 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\\\\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3h5, "x"), "a\\"), 1, "toml: trailing escaped backslash is a real escape");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3h5, "x"), "a\\"), 1, "toml: trailing escaped backslash is a real escape");
 var e3h6 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"a\\\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(e3h6, "x"), ""), 1, "toml: a lone trailing backslash leaves the string unterminated");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(e3h6, "x"), ""), 1, "toml: a lone trailing backslash leaves the string unterminated");
 
 test_group("toml: single-line LITERAL strings '...' (1.5.3)");
 # There was no '...' branch at all before 1.5.3: a literal string fell
@@ -312,12 +313,12 @@ test_group("toml: single-line LITERAL strings '...' (1.5.3)");
 # A literal string has no escapes, so nothing here is decoded.
 var l3doc = "a = 'C:\\tmp'\nb = 'hello'\nc = ''\nd = 'say \"hi\"'\ne = 'tail'\n";
 var l3p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from(l3doc)), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(l3p, "a"), "C:\\tmp"), 1, "toml: a backslash in '...' is an ordinary byte");
-assert_eq(str_eq_cstr(bayan_toml_get(l3p, "b"), "hello"), 1, "toml: quotes are stripped, body kept");
-assert_eq(str_eq_cstr(bayan_toml_get(l3p, "c"), ""), 1, "toml: '' is empty, not two bytes");
-assert_eq(str_eq_cstr(bayan_toml_get(l3p, "d"), "say \"hi\""), 1, "toml: a double quote inside '...' is an ordinary byte");
-assert_eq(str_eq_cstr(bayan_toml_get(l3p, "e"), "tail"), 1, "toml: the key after a literal string still parses");
-assert_eq(str_len(bayan_toml_get(l3p, "c")), 0, "toml: '' has length 0");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(l3p, "a"), "C:\\tmp"), 1, "toml: a backslash in '...' is an ordinary byte");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(l3p, "b"), "hello"), 1, "toml: quotes are stripped, body kept");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(l3p, "c"), ""), 1, "toml: '' is empty, not two bytes");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(l3p, "d"), "say \"hi\""), 1, "toml: a double quote inside '...' is an ordinary byte");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(l3p, "e"), "tail"), 1, "toml: the key after a literal string still parses");
+assert_eq(str_len(bayan_toml_get_by_cstr(l3p, "c")), 0, "toml: '' has length 0");
 
 test_group("toml: multi-line string conformance (1.5.3)");
 # Four separate defects, each measured against `tomllib`:
@@ -332,14 +333,14 @@ test_group("toml: multi-line string conformance (1.5.3)");
 #      indent) was not implemented, so the backslash survived into the value.
 var m3doc = "a = \"\"\"he said \\\"hi\\\"\"\"\"\nb = \"\"\"he said \"hi\"\"\"\"\nc = '''a''''\nd = \"\"\"\nline1\n\"\"\"\ne = \"\"\"\nline1\"\"\"\nf = \"\"\"\\\n     foo \\\n     bar\"\"\"\ng = \"\"\"\"\"\"\nh = '''raw \\n stays'''\n";
 var m3p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from(m3doc)), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(m3p, "a"), "he said \"hi\""), 1, "toml: escaped quote adjacent to the closer (mneme repro 2)");
-assert_eq(str_eq_cstr(bayan_toml_get(m3p, "b"), "he said \"hi\""), 1, "toml: the closer is the LAST three of a quote run");
-assert_eq(str_eq_cstr(bayan_toml_get(m3p, "c"), "a'"), 1, "toml: the same run rule applies to '''");
-assert_eq(str_eq_cstr(bayan_toml_get(m3p, "d"), "line1\n"), 1, "toml: a trailing newline is part of the value");
-assert_eq(str_eq_cstr(bayan_toml_get(m3p, "e"), "line1"), 1, "toml: ...and absent when the source has none");
-assert_eq(str_eq_cstr(bayan_toml_get(m3p, "f"), "foo bar"), 1, "toml: the line-ending backslash folds newline + indent");
-assert_eq(str_eq_cstr(bayan_toml_get(m3p, "h"), "raw \\n stays"), 1, "toml: a ''' body is verbatim — literals decode nothing");
-assert_eq(str_len(bayan_toml_get(m3p, "g")), 0, "toml: an empty multi-line string is empty");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3p, "a"), "he said \"hi\""), 1, "toml: escaped quote adjacent to the closer (mneme repro 2)");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3p, "b"), "he said \"hi\""), 1, "toml: the closer is the LAST three of a quote run");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3p, "c"), "a'"), 1, "toml: the same run rule applies to '''");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3p, "d"), "line1\n"), 1, "toml: a trailing newline is part of the value");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3p, "e"), "line1"), 1, "toml: ...and absent when the source has none");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3p, "f"), "foo bar"), 1, "toml: the line-ending backslash folds newline + indent");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3p, "h"), "raw \\n stays"), 1, "toml: a ''' body is verbatim — literals decode nothing");
+assert_eq(str_len(bayan_toml_get_by_cstr(m3p, "g")), 0, "toml: an empty multi-line string is empty");
 # Case `a` above does NOT actually isolate the delimiter scan's backslash rule:
 # with the rule removed, the last-3-of-the-run rule lands on the same body by
 # coincidence and the value still comes out right. Mutation testing found that;
@@ -347,18 +348,18 @@ assert_eq(str_len(bayan_toml_get(m3p, "g")), 0, "toml: an empty multi-line strin
 # rule the scan sees the escaped quote plus the two raw ones as a closing run
 # and the body stops at `a\`, which the run rule cannot rescue.
 var m3b = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"\"\"a\\\"\"\"b\"\"\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(m3b, "x"), "a\"\"\"b"), 1, "toml: an escaped quote before two raw ones is not a closing run");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3b, "x"), "a\"\"\"b"), 1, "toml: an escaped quote before two raw ones is not a closing run");
 # CRLF after the opening delimiter is trimmed as a UNIT (1.5.3). A file
 # written on Windows used to keep a stray leading CR in every """ value.
 var m3c = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"\"\"\r\nline1\"\"\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(m3c, "x"), "line1"), 1, "toml: CRLF after the opening delimiter is trimmed");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3c, "x"), "line1"), 1, "toml: CRLF after the opening delimiter is trimmed");
 # A raw CRLF INSIDE the body normalises to LF — a different code path from the
 # opening-delimiter trim above, and a deliberate choice: TOML lets a parser
 # normalise newlines, and every mainstream implementation does. An ESCAPED \r
 # is NOT normalised, because the author asked for that byte by name.
 var m3n = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = \"\"\"a\r\nb\"\"\"\ny = \"\"\"a\\r\\nb\"\"\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(m3n, "x"), "a\nb"), 1, "toml: a raw CRLF in a multi-line body normalises to LF");
-assert_eq(str_eq_cstr(bayan_toml_get(m3n, "y"), "a\r\nb"), 1, "toml: an ESCAPED \\r survives normalisation");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3n, "x"), "a\nb"), 1, "toml: a raw CRLF in a multi-line body normalises to LF");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(m3n, "y"), "a\r\nb"), 1, "toml: an ESCAPED \\r survives normalisation");
 
 # 1.5.1 stopped an unterminated string swallowing the next line; the
 # BACKSLASH-ESCAPED newline was the hole left in that rule, because the scan
@@ -367,8 +368,8 @@ assert_eq(str_eq_cstr(bayan_toml_get(m3n, "y"), "a\r\nb"), 1, "toml: an ESCAPED 
 # removing a security-relevant key two lines later.
 var xn = bayan_toml_parse(str_from("a = \"oops\\\nadmin = false\nb = \"x\"\nc = 1\n"));
 var xnp = bayan_toml_section_pairs(vec_get(xn, 0));
-assert_eq(bayan_toml_get(xnp, "admin") != 0, 1, "toml: an escaped newline does not delete the next key");
-assert_eq(str_eq_cstr(bayan_toml_get(xnp, "c"), "1"), 1, "toml: parsing resynchronises after it");
+assert_eq(bayan_toml_get_by_cstr(xnp, "admin") != 0, 1, "toml: an escaped newline does not delete the next key");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(xnp, "c"), "1"), 1, "toml: parsing resynchronises after it");
 # _toml_parse_str and _toml_str_end BOTH have to stop at the escaped newline,
 # and the document above cannot tell them apart: with the guard removed from
 # _toml_parse_str alone, the scan crosses one line and is then stopped by the
@@ -379,15 +380,15 @@ assert_eq(str_eq_cstr(bayan_toml_get(xnp, "c"), "1"), 1, "toml: parsing resynchr
 # nothing if it holds.
 var xn2 = bayan_toml_parse(str_from("a = \"oops\\\nzzz\"\nadmin = false\nc = 1\n"));
 var xn2p = bayan_toml_section_pairs(vec_get(xn2, 0));
-assert_eq(str_len(bayan_toml_get(xn2p, "a")), 0, "toml: an escaped newline leaves the value unterminated, not spliced");
-assert_eq(str_eq_cstr(bayan_toml_get(xn2p, "c"), "1"), 1, "toml: and the keys after it still parse");
+assert_eq(str_len(bayan_toml_get_by_cstr(xn2p, "a")), 0, "toml: an escaped newline leaves the value unterminated, not spliced");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(xn2p, "c"), "1"), 1, "toml: and the keys after it still parse");
 
 test_group("toml: array elements follow the same escape rules (1.5.3)");
 # The issue named bayan_toml_get_array among the affected entry points, so
 # the element splitter decodes a basic-quoted element and leaves a
 # literal-quoted one verbatim, exactly as the scalar parsers do.
 var a3p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("xs = [\"a\\\"b\", 'c\\d', \"plain\"]\n")), 0));
-var a3 = bayan_toml_get_array(a3p, "xs");
+var a3 = bayan_toml_get_array_by_cstr(a3p, "xs");
 assert_eq(vec_len(a3), 3, "toml: the array splits into 3 elements");
 # Three separate loops track quote state over an array — the VALUE capture in
 # bayan_toml_parse, the element splitter, and the content-end walk in
@@ -399,8 +400,8 @@ assert_eq(vec_len(a3), 3, "toml: the array splits into 3 elements");
 # KEY still exists. (Found by mutation testing: without this, reverting the
 # capture fix alone left the whole suite green.)
 var a3c = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("xs = [\"a\\\"b\"]\nafter = \"tail\"\nn = 7\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(a3c, "after"), "tail"), 1, "toml: an escaped quote in an array does not swallow the next key");
-assert_eq(str_eq_cstr(bayan_toml_get(a3c, "n"), "7"), 1, "toml: ...or the one after that");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(a3c, "after"), "tail"), 1, "toml: an escaped quote in an array does not swallow the next key");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(a3c, "n"), "7"), 1, "toml: ...or the one after that");
 assert_eq(str_eq_cstr(vec_get(a3, 0), "a\"b"), 1, "toml: a basic element is decoded");
 assert_eq(str_eq_cstr(vec_get(a3, 1), "c\\d"), 1, "toml: a literal element is verbatim");
 assert_eq(str_eq_cstr(vec_get(a3, 2), "plain"), 1, "toml: an escape-free element is unchanged");
@@ -423,7 +424,7 @@ str_builder_add(rt_sb, str_from("k = \""));
 str_builder_add(rt_sb, esc_out);
 str_builder_add(rt_sb, str_from("\"\n"));
 var rt_p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_builder_build(rt_sb)), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(rt_p, "k"), esc_in), 1, "toml: escape -> parse round-trips to the original bytes");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(rt_p, "k"), esc_in), 1, "toml: escape -> parse round-trips to the original bytes");
 # Python agrees the escaped form is valid TOML carrying the same value;
 # the generator for this file asserted it before writing the line.
 # C0 controls and DEL take the 4-hex form.
@@ -449,9 +450,9 @@ var zc_src = str_from("plain = \"nothing to decode\"\nesc = \"has \\\"one\\\"\"\
 var zc_p = bayan_toml_section_pairs(vec_get(bayan_toml_parse(zc_src), 0));
 var zc_lo = str_data(zc_src);
 var zc_hi = zc_lo + str_len(zc_src);
-var zc_v = str_data(bayan_toml_get(zc_p, "plain"));
+var zc_v = str_data(bayan_toml_get_by_cstr(zc_p, "plain"));
 assert_eq((zc_v >= zc_lo) && (zc_v < zc_hi), 1, "toml: an escape-free value is still a view into the source");
-var zc_e = str_data(bayan_toml_get(zc_p, "esc"));
+var zc_e = str_data(bayan_toml_get_by_cstr(zc_p, "esc"));
 assert_eq((zc_e >= zc_lo) && (zc_e < zc_hi), 0, "toml: a decoded value is a fresh copy, not a view");
 
 test_group("toml: the value arms return the VALUE and nothing else (1.5.3)");
@@ -464,19 +465,19 @@ test_group("toml: the value arms return the VALUE and nothing else (1.5.3)");
 #    `8080 # default`. A consumer converting that to an integer got a
 #    different number.
 var vc1 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("port = 8080 # default\nname = 5#c\nk = \"a # b\"\na = [1, 2] # c\nz = 9\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(vc1, "port"), "8080"), 1, "toml: an inline comment is not part of the value");
-assert_eq(str_eq_cstr(bayan_toml_get(vc1, "name"), "5"), 1, "toml: ...with or without a space before the #");
-assert_eq(str_eq_cstr(bayan_toml_get(vc1, "k"), "a # b"), 1, "toml: a # INSIDE a string is an ordinary byte");
-assert_eq(str_eq_cstr(bayan_toml_get(vc1, "a"), "[1, 2]"), 1, "toml: a # after an array value is not captured");
-assert_eq(str_eq_cstr(bayan_toml_get(vc1, "z"), "9"), 1, "toml: and the following keys still parse");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc1, "port"), "8080"), 1, "toml: an inline comment is not part of the value");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc1, "name"), "5"), 1, "toml: ...with or without a space before the #");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc1, "k"), "a # b"), 1, "toml: a # INSIDE a string is an ordinary byte");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc1, "a"), "[1, 2]"), 1, "toml: a # after an array value is not captured");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc1, "z"), "9"), 1, "toml: and the following keys still parse");
 
 # 2. CRLF. The trailing-trim removed SPACES only, so every unquoted value in a
 #    file written on Windows carried a stray CR — invisible when printed and
 #    unequal to the obvious literal. Tabs were never trimmed either.
 var vc2 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("flag = true\r\nport = 80\r\nn = 5\t\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(vc2, "flag"), "true"), 1, "toml: a CRLF line ending leaves no CR on the value");
-assert_eq(str_eq_cstr(bayan_toml_get(vc2, "port"), "80"), 1, "toml: ...on any of them");
-assert_eq(str_eq_cstr(bayan_toml_get(vc2, "n"), "5"), 1, "toml: a trailing tab is trimmed too");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc2, "flag"), "true"), 1, "toml: a CRLF line ending leaves no CR on the value");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc2, "port"), "80"), 1, "toml: ...on any of them");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc2, "n"), "5"), 1, "toml: a trailing tab is trimmed too");
 
 # 3. A line beginning with `=` pushed a pair with a ZERO-LENGTH key that every
 #    later lookup had to walk past. tomllib rejects the document; bayan has no
@@ -484,15 +485,15 @@ assert_eq(str_eq_cstr(bayan_toml_get(vc2, "n"), "5"), 1, "toml: a trailing tab i
 #    for every other malformed line.
 var vc3 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("= 5\nk = 1\n")), 0));
 assert_eq(vec_len(vc3), 1, "toml: a keyless `= value` line produces no pair");
-assert_eq(str_eq_cstr(bayan_toml_get(vc3, "k"), "1"), 1, "toml: and the real key is unaffected");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc3, "k"), "1"), 1, "toml: and the real key is unaffected");
 
 # 4. Document-swallowing, the shape 1.5.1 called the worst one this can take.
 #    Two scanners that fix did not reach: the array capture (a quote opened
 #    inside `[` ran to the end of the FILE) and the table-header name scan (an
 #    unclosed `[abc` made every following line part of the section name).
 var vc4 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("a = [\"oops\nadmin = false\nb = 1\n")), 0));
-assert_eq(bayan_toml_get(vc4, "admin") != 0, 1, "toml: an unterminated quote in an array does not delete the next key");
-assert_eq(str_eq_cstr(bayan_toml_get(vc4, "b"), "1"), 1, "toml: ...nor the one after that");
+assert_eq(bayan_toml_get_by_cstr(vc4, "admin") != 0, 1, "toml: an unterminated quote in an array does not delete the next key");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(vc4, "b"), "1"), 1, "toml: ...nor the one after that");
 # sections[0] is the ROOT table as of 1.5.4 — always present, even empty — so
 # a header is at index 1. Before that, a file opening with `[a]` made
 # sections[0] the section `a`, and a consumer reading sections[0] as "the root
@@ -526,9 +527,9 @@ test_group("toml: the 1.5.3 value-arm fixes did not break the values they pass o
 # in that arm too, and it is the one unquoted value carrying arbitrary string
 # bytes. `srv = { host = "a#b" }` truncated to `{ host = "a`.
 var ic = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("srv = { host = \"a#b\", port = 1 }\nlt = { p = 'x#y' }\nafter = 9\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(ic, "srv"), "{ host = \"a#b\", port = 1 }"), 1, "toml: a # inside a quoted string in an inline table is not a comment");
-assert_eq(str_eq_cstr(bayan_toml_get(ic, "lt"), "{ p = 'x#y' }"), 1, "toml: ...in a literal-quoted one either");
-assert_eq(str_eq_cstr(bayan_toml_get(ic, "after"), "9"), 1, "toml: and the following key is unaffected");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(ic, "srv"), "{ host = \"a#b\", port = 1 }"), 1, "toml: a # inside a quoted string in an inline table is not a comment");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(ic, "lt"), "{ p = 'x#y' }"), 1, "toml: ...in a literal-quoted one either");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(ic, "after"), "9"), 1, "toml: and the following key is unaffected");
 
 # The array capture's newline rule has to know about TRIPLE quotes. The
 # single-quote state machine toggles three times across `"""`, so it believed
@@ -543,26 +544,26 @@ assert_eq(str_eq_cstr(bayan_toml_get(ic, "after"), "9"), 1, "toml: and the follo
 # far more dangerous shape than the swallowing bug the newline rule was added
 # to fix. Expected values are tomllib's.
 var ml1 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = [\"\"\"\na\"\"\"]\nzz = \"s\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(ml1, "x"), "[\"\"\"\na\"\"\"]"), 1, "toml: an array holding a multi-line string is captured WHOLE");
-assert_eq(str_eq_cstr(bayan_toml_get(ml1, "zz"), "s"), 1, "toml: and the key after it survives");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(ml1, "x"), "[\"\"\"\na\"\"\"]"), 1, "toml: an array holding a multi-line string is captured WHOLE");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(ml1, "zz"), "s"), 1, "toml: and the key after it survives");
 var ml2 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("x = ['''\na=''', \"b\"]\nzz = \"s\"\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(ml2, "zz"), "s"), 1, "toml: same for a ''' element containing a `=`");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(ml2, "zz"), "s"), 1, "toml: same for a ''' element containing a `=`");
 var forge = bayan_toml_parse(str_from("files = [\"\"\"\n[boom]\nevil = 1\n\"\"\"]\nreal = \"yes\"\n\n[app]\nname = \"x\"\n"));
 assert_eq(vec_len(forge), 2, "toml: a [header] inside a string does NOT forge a section");
 var f0 = bayan_toml_section_pairs(vec_get(forge, 0));
-assert_eq(str_eq_cstr(bayan_toml_get(f0, "real"), "yes"), 1, "toml: the root key stays in the root table");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(f0, "real"), "yes"), 1, "toml: the root key stays in the root table");
 assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(forge, 1)), "app"), 1, "toml: and the real section is still the second one");
-assert_eq(bayan_toml_get(f0, "evil"), 0, "toml: nothing from inside the string leaked out as a pair");
+assert_eq(bayan_toml_get_by_cstr(f0, "evil"), 0, "toml: nothing from inside the string leaked out as a pair");
 
 # The newline rule it replaced must still do its job: a SINGLE-quoted element
 # left open still stops at the newline rather than eating the document.
 var ut = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("a = [\"oops\nadmin = false\nb = 1\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(ut, "admin"), "false"), 1, "toml: an unterminated single quote in an array still stops at the newline");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(ut, "admin"), "false"), 1, "toml: an unterminated single quote in an array still stops at the newline");
 # And ordinary arrays are untouched by the triple-quote tracking.
 var oa = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("n = [1, 2, 3] # c\ns = [\"a\", 'b]c']\ne = [\"\"\"\"\"\", 1]\nzz = 4\n")), 0));
-assert_eq(vec_len(bayan_toml_get_array(oa, "n")), 3, "toml: a plain array still splits into 3");
-assert_eq(str_eq_cstr(vec_get(bayan_toml_get_array(oa, "s"), 1), "b]c"), 1, "toml: a ] inside a literal element is still preserved");
-assert_eq(str_eq_cstr(bayan_toml_get(oa, "zz"), "4"), 1, "toml: an empty multi-line element does not derail the capture");
+assert_eq(vec_len(bayan_toml_get_array_by_cstr(oa, "n")), 3, "toml: a plain array still splits into 3");
+assert_eq(str_eq_cstr(vec_get(bayan_toml_get_array_by_cstr(oa, "s"), 1), "b]c"), 1, "toml: a ] inside a literal element is still preserved");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(oa, "zz"), "4"), 1, "toml: an empty multi-line element does not derail the capture");
 
 test_group("cyml: both fixed read caps are gone (1.5.4)");
 # src/cyml.cyr carried the project's last two fixed read buffers, and both
@@ -634,11 +635,11 @@ test_group("toml: quoted keys (1.5.4)");
 # missed. A `"` key is decoded like a basic string; a `'` key is verbatim.
 var q4 = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("\"key one\" = 1\n\"key\" = 2\n'lit key' = 3\n\"esc\\tkey\" = 4\nplain = 5\n")), 0));
 assert_eq(vec_len(q4), 5, "toml: all five keys parse");
-assert_eq(str_eq_cstr(bayan_toml_get(q4, "key one"), "1"), 1, "toml: a quoted key containing a space");
-assert_eq(str_eq_cstr(bayan_toml_get(q4, "key"), "2"), 1, "toml: a quoted key without one loses its quotes");
-assert_eq(str_eq_cstr(bayan_toml_get(q4, "lit key"), "3"), 1, "toml: a literal-quoted key");
-assert_eq(str_eq_cstr(bayan_toml_get(q4, "esc\tkey"), "4"), 1, "toml: escapes in a quoted key are decoded");
-assert_eq(str_eq_cstr(bayan_toml_get(q4, "plain"), "5"), 1, "toml: and a bare key still works");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(q4, "key one"), "1"), 1, "toml: a quoted key containing a space");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(q4, "key"), "2"), 1, "toml: a quoted key without one loses its quotes");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(q4, "lit key"), "3"), 1, "toml: a literal-quoted key");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(q4, "esc\tkey"), "4"), 1, "toml: escapes in a quoted key are decoded");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(q4, "plain"), "5"), 1, "toml: and a bare key still works");
 
 test_group("toml: dotted keys name a table (1.5.4)");
 # `a.b.c = 1` now lands in section `a.b` as key `c` — identical to what
@@ -647,21 +648,21 @@ test_group("toml: dotted keys name a table (1.5.4)");
 # reason quoted keys were. Inside `[t]`, `a.b = 1` lands in `t.a`.
 var dk = bayan_toml_parse(str_from("a.b.c = 1\na . b = 2\nd = 3\n"));
 assert_eq(str_len(bayan_toml_section_name(vec_get(dk, 0))), 0, "toml: sections[0] is the root");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(dk, 0)), "d"), "3"), 1, "toml: an undotted key stays in the root");
-var dk_ab = bayan_toml_get_sections(dk, "a.b");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(dk, 0)), "d"), "3"), 1, "toml: an undotted key stays in the root");
+var dk_ab = bayan_toml_get_sections_by_cstr(dk, "a.b");
 assert_eq(vec_len(dk_ab), 1, "toml: a.b.c created the table a.b");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(dk_ab, 0)), "c"), "1"), 1, "toml: with c as its key");
-var dk_a = bayan_toml_get_sections(dk, "a");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(dk_ab, 0)), "c"), "1"), 1, "toml: with c as its key");
+var dk_a = bayan_toml_get_sections_by_cstr(dk, "a");
 assert_eq(vec_len(dk_a), 1, "toml: the spaced form a . b = 2 is no longer discarded");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(dk_a, 0)), "b"), "2"), 1, "toml: and names the table a with key b");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(dk_a, 0)), "b"), "2"), 1, "toml: and names the table a with key b");
 # Under a header the dotted table is nested beneath it.
 var dk2 = bayan_toml_parse(str_from("[t]\na.b = 1\nx = 2\n"));
-assert_eq(vec_len(bayan_toml_get_sections(dk2, "t.a")), 1, "toml: `a.b = 1` inside [t] names t.a");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections(dk2, "t.a"), 0)), "b"), "1"), 1, "toml: with b as its key");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections(dk2, "t"), 0)), "x"), "2"), 1, "toml: and [t]'s own key is unaffected");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(dk2, "t.a")), 1, "toml: `a.b = 1` inside [t] names t.a");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections_by_cstr(dk2, "t.a"), 0)), "b"), "1"), 1, "toml: with b as its key");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections_by_cstr(dk2, "t"), 0)), "x"), "2"), 1, "toml: and [t]'s own key is unaffected");
 # A quoted segment inside a dotted path is unquoted before joining.
 var dk3 = bayan_toml_parse(str_from("a.\"b c\".d = 9\n"));
-assert_eq(vec_len(bayan_toml_get_sections(dk3, "a.b c")), 1, "toml: a quoted dotted segment is unquoted in the table name");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(dk3, "a.b c")), 1, "toml: a quoted dotted segment is unquoted in the table name");
 
 test_group("toml: inline tables (1.5.4)");
 # `k = { a = 1 }` was captured verbatim with no accessor and was not listed
@@ -674,29 +675,29 @@ test_group("toml: inline tables (1.5.4)");
 # _toml_parse_value_a the top-level parser uses, so escapes, quoted keys and
 # nested arrays decode identically inside an inline table and outside one.
 var it = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("pts = [ { x = 1, y = 2 }, { x = 3, y = 4 } ]\nsrv = { host = \"a#b\", port = 8080 }\nnest = { a = { b = 2 }, c = [1, 2] }\nzz = 1\n")), 0));
-var it_pts = bayan_toml_get_array(it, "pts");
+var it_pts = bayan_toml_get_array_by_cstr(it, "pts");
 assert_eq(vec_len(it_pts), 2, "toml: an array of inline tables splits on the OUTER commas only");
 var it_p1 = bayan_toml_inline_parse(vec_get(it_pts, 1));
 assert_eq(vec_len(it_p1), 2, "toml: and each element decomposes into its pairs");
-assert_eq(str_eq_cstr(bayan_toml_get(it_p1, "x"), "3"), 1, "toml: pts[1].x == 3");
-assert_eq(str_eq_cstr(bayan_toml_get(it_p1, "y"), "4"), 1, "toml: pts[1].y == 4");
-var it_srv = bayan_toml_get_inline(it, "srv");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(it_p1, "x"), "3"), 1, "toml: pts[1].x == 3");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(it_p1, "y"), "4"), 1, "toml: pts[1].y == 4");
+var it_srv = bayan_toml_get_inline_by_cstr(it, "srv");
 assert_eq(vec_len(it_srv), 2, "toml: get_inline decomposes a scalar inline table");
-assert_eq(str_eq_cstr(bayan_toml_get(it_srv, "host"), "a#b"), 1, "toml: a # inside a quoted value is not a comment");
-assert_eq(str_eq_cstr(bayan_toml_get(it_srv, "port"), "8080"), 1, "toml: and the bare value after it stops at the comma");
-var it_nest = bayan_toml_get_inline(it, "nest");
-assert_eq(str_eq_cstr(bayan_toml_get(it_nest, "a"), "{ b = 2 }"), 1, "toml: a nested inline table is kept whole for re-parsing");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_inline_parse(bayan_toml_get(it_nest, "a")), "b"), "2"), 1, "toml: ...and re-parses");
-assert_eq(str_eq_cstr(bayan_toml_get(it_nest, "c"), "[1, 2]"), 1, "toml: an array inside an inline table is kept whole");
-assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get(it_nest, "c"))), 2, "toml: ...and splits");
-assert_eq(str_eq_cstr(bayan_toml_get(it, "zz"), "1"), 1, "toml: the key after an inline table is unaffected");
-assert_eq(bayan_toml_is_inline(bayan_toml_get(it, "srv")), 1, "toml: is_inline sniffs a brace");
-assert_eq(bayan_toml_is_inline(bayan_toml_get(it, "zz")), 0, "toml: and a bare value is not one");
-assert_eq(bayan_toml_get_inline(it, "nope"), 0, "toml: get_inline on an absent key -> 0");
-assert_eq(vec_len(bayan_toml_inline_parse(bayan_toml_get(it, "zz"))), 0, "toml: inline_parse of a non-table -> empty vec");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(it_srv, "host"), "a#b"), 1, "toml: a # inside a quoted value is not a comment");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(it_srv, "port"), "8080"), 1, "toml: and the bare value after it stops at the comma");
+var it_nest = bayan_toml_get_inline_by_cstr(it, "nest");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(it_nest, "a"), "{ b = 2 }"), 1, "toml: a nested inline table is kept whole for re-parsing");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_inline_parse(bayan_toml_get_by_cstr(it_nest, "a")), "b"), "2"), 1, "toml: ...and re-parses");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(it_nest, "c"), "[1, 2]"), 1, "toml: an array inside an inline table is kept whole");
+assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get_by_cstr(it_nest, "c"))), 2, "toml: ...and splits");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(it, "zz"), "1"), 1, "toml: the key after an inline table is unaffected");
+assert_eq(bayan_toml_is_inline(bayan_toml_get_by_cstr(it, "srv")), 1, "toml: is_inline sniffs a brace");
+assert_eq(bayan_toml_is_inline(bayan_toml_get_by_cstr(it, "zz")), 0, "toml: and a bare value is not one");
+assert_eq(bayan_toml_get_inline_by_cstr(it, "nope"), 0, "toml: get_inline on an absent key -> 0");
+assert_eq(vec_len(bayan_toml_inline_parse(bayan_toml_get_by_cstr(it, "zz"))), 0, "toml: inline_parse of a non-table -> empty vec");
 assert_eq(vec_len(bayan_toml_inline_parse(0)), 0, "toml: inline_parse of 0 -> empty vec");
 var it_ar = arena_allocator(16384);
-assert_eq(vec_len(bayan_toml_inline_parse_a(it_ar, bayan_toml_get(it, "srv"))), 2, "toml: inline_parse_a threads an arena");
+assert_eq(vec_len(bayan_toml_inline_parse_a(it_ar, bayan_toml_get_by_cstr(it, "srv"))), 2, "toml: inline_parse_a threads an arena");
 
 test_group("toml: empty tables and the root table (1.5.4)");
 # An empty table used to VANISH, which shifted the index of every later
@@ -711,10 +712,10 @@ assert_eq(str_len(bayan_toml_section_name(vec_get(et, 0))), 0, "toml: sections[0
 assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(et, 1)), "a"), 1, "toml: the empty table is emitted");
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(et, 1))), 0, "toml: with zero pairs");
 var aot = bayan_toml_parse(str_from("[[s]]\nname = \"a\"\n[[s]]\n[[s]]\nname = \"c\"\n"));
-var aot_s = bayan_toml_get_sections(aot, "s");
+var aot_s = bayan_toml_get_sections_by_cstr(aot, "s");
 assert_eq(vec_len(aot_s), 3, "toml: three [[s]] blocks give THREE sections, empty middle included");
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(aot_s, 1))), 0, "toml: the middle one is empty");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(aot_s, 2)), "name"), "c"), 1, "toml: so s[2] is the THIRD record, not the second");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(aot_s, 2)), "name"), "c"), 1, "toml: so s[2] is the THIRD record, not the second");
 
 test_group("toml: duplicate keys take the LAST value (1.5.4)");
 # This returned the FIRST match until 1.5.4, which no other TOML
@@ -725,10 +726,10 @@ test_group("toml: duplicate keys take the LAST value (1.5.4)");
 # lets a caller that wants the spec's "duplicate is an error" enforce it,
 # since this parser has no error channel to report one through.
 var du = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("secure = true\nsecure = false\nsolo = 1\n")), 0));
-assert_eq(str_eq_cstr(bayan_toml_get(du, "secure"), "false"), 1, "toml: the LAST value wins");
-assert_eq(bayan_toml_count(du, "secure"), 2, "toml: count sees both");
-assert_eq(bayan_toml_count(du, "solo"), 1, "toml: and one for a unique key");
-assert_eq(bayan_toml_count(du, "absent"), 0, "toml: zero for an absent one");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(du, "secure"), "false"), 1, "toml: the LAST value wins");
+assert_eq(bayan_toml_count_by_cstr(du, "secure"), 2, "toml: count sees both");
+assert_eq(bayan_toml_count_by_cstr(du, "solo"), 1, "toml: and one for a unique key");
+assert_eq(bayan_toml_count_by_cstr(du, "absent"), 0, "toml: zero for an absent one");
 assert_eq(vec_len(du), 3, "toml: both pairs are still stored");
 
 test_group("toml: the parser records the value KIND (1.5.4)");
@@ -738,20 +739,20 @@ test_group("toml: the parser records the value KIND (1.5.4)");
 # that made it concrete. The kind is the parser's own answer and cannot be
 # fooled by content; the heuristic is kept, and documented as one.
 var vk = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("format = '[ $host ]($style)'\nbas = \"x\"\nml = \"\"\"y\"\"\"\nmll = '''z'''\narr = [1, 2]\ntbl = { a = 1 }\nnum = 42\n")), 0));
-assert_eq(bayan_toml_is_array(bayan_toml_get(vk, "format")), 1, "toml: the byte heuristic still says ARRAY for a bracketed string");
-assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(vk, "format")), 0, "toml: the recorded kind says it is not");
-assert_eq(bayan_toml_pair_is_string(bayan_toml_get_pair(vk, "format")), 1, "toml: it says STRING");
-assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "format")), TOML_K_LITERAL, "toml: specifically a literal string");
-assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "bas")), TOML_K_BASIC, "toml: kind BASIC");
-assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "ml")), TOML_K_ML_BASIC, "toml: kind ML_BASIC");
-assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "mll")), TOML_K_ML_LIT, "toml: kind ML_LIT");
-assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "arr")), TOML_K_ARRAY, "toml: kind ARRAY");
-assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "tbl")), TOML_K_INLINE, "toml: kind INLINE");
-assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair(vk, "num")), TOML_K_BARE, "toml: kind BARE");
-assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(vk, "arr")), 1, "toml: pair_is_array on a real array");
-assert_eq(bayan_toml_pair_is_inline(bayan_toml_get_pair(vk, "tbl")), 1, "toml: pair_is_inline on a real inline table");
-assert_eq(bayan_toml_pair_is_inline(bayan_toml_get_pair(vk, "arr")), 0, "toml: and not on an array");
-assert_eq(bayan_toml_get_pair(vk, "absent"), 0, "toml: get_pair on an absent key -> 0");
+assert_eq(bayan_toml_is_array(bayan_toml_get_by_cstr(vk, "format")), 1, "toml: the byte heuristic still says ARRAY for a bracketed string");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair_by_cstr(vk, "format")), 0, "toml: the recorded kind says it is not");
+assert_eq(bayan_toml_pair_is_string(bayan_toml_get_pair_by_cstr(vk, "format")), 1, "toml: it says STRING");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair_by_cstr(vk, "format")), TOML_K_LITERAL, "toml: specifically a literal string");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair_by_cstr(vk, "bas")), TOML_K_BASIC, "toml: kind BASIC");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair_by_cstr(vk, "ml")), TOML_K_ML_BASIC, "toml: kind ML_BASIC");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair_by_cstr(vk, "mll")), TOML_K_ML_LIT, "toml: kind ML_LIT");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair_by_cstr(vk, "arr")), TOML_K_ARRAY, "toml: kind ARRAY");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair_by_cstr(vk, "tbl")), TOML_K_INLINE, "toml: kind INLINE");
+assert_eq(bayan_toml_pair_kind(bayan_toml_get_pair_by_cstr(vk, "num")), TOML_K_BARE, "toml: kind BARE");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair_by_cstr(vk, "arr")), 1, "toml: pair_is_array on a real array");
+assert_eq(bayan_toml_pair_is_inline(bayan_toml_get_pair_by_cstr(vk, "tbl")), 1, "toml: pair_is_inline on a real inline table");
+assert_eq(bayan_toml_pair_is_inline(bayan_toml_get_pair_by_cstr(vk, "arr")), 0, "toml: and not on an array");
+assert_eq(bayan_toml_get_pair_by_cstr(vk, "absent"), 0, "toml: get_pair on an absent key -> 0");
 # A HAND-BUILT pair reports UNKNOWN. A caller supplying only a key and a
 # value has not said what form the value took, and a guess would be worse
 # than an honest "unknown".
@@ -769,10 +770,10 @@ test_group("toml: table header names are trimmed and unquoted (1.5.4)");
 # bayan_toml_get_sections("a") silently returned nothing — an empty vec
 # rather than an error, which is the worst way to be told.
 var hn = bayan_toml_parse(str_from("[ a ]\nx = 1\n[ \"b c\" ]\ny = 2\n[ 'd' ]\nz = 3\n"));
-assert_eq(vec_len(bayan_toml_get_sections(hn, "a")), 1, "toml: [ a ] is the section a");
-assert_eq(vec_len(bayan_toml_get_sections(hn, "b c")), 1, "toml: [ \"b c\" ] is the section b c, unquoted");
-assert_eq(vec_len(bayan_toml_get_sections(hn, "d")), 1, "toml: [ 'd' ] too");
-assert_eq(str_eq_cstr(bayan_toml_get(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections(hn, "b c"), 0)), "y"), "2"), 1, "toml: and its pairs are intact");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(hn, "a")), 1, "toml: [ a ] is the section a");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(hn, "b c")), 1, "toml: [ \"b c\" ] is the section b c, unquoted");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(hn, "d")), 1, "toml: [ 'd' ] too");
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(bayan_toml_get_sections_by_cstr(hn, "b c"), 0)), "y"), "2"), 1, "toml: and its pairs are intact");
 
 test_group("toml: no value may escape its source buffer (1.5.3)");
 # A property, not an example. bayan_toml_parse hands back Strs that VIEW the
@@ -866,28 +867,28 @@ var asecs = bayan_toml_parse(str_from(adoc));
 var ap = bayan_toml_section_pairs(vec_get(asecs, 0));
 
 # is_array discriminates a `[...]` value from a plain scalar.
-assert_eq(bayan_toml_is_array(bayan_toml_get(ap, "nums")), 1, "toml: nums is array");
-assert_eq(bayan_toml_is_array(bayan_toml_get(ap, "name")), 0, "toml: name (scalar) is not array");
+assert_eq(bayan_toml_is_array(bayan_toml_get_by_cstr(ap, "nums")), 1, "toml: nums is array");
+assert_eq(bayan_toml_is_array(bayan_toml_get_by_cstr(ap, "name")), 0, "toml: name (scalar) is not array");
 
 # Bare integer elements: comma-split + whitespace-trimmed.
-var nums = bayan_toml_array_parse(bayan_toml_get(ap, "nums"));
+var nums = bayan_toml_array_parse(bayan_toml_get_by_cstr(ap, "nums"));
 assert_eq(vec_len(nums), 3, "toml: nums has 3 elements");
 assert_eq(str_eq_cstr(vec_get(nums, 0), "1"), 1, "toml: nums[0] == 1");
 assert_eq(str_eq_cstr(vec_get(nums, 2), "3"), 1, "toml: nums[2] == 3");
 
 # Quoted string elements: one quote layer stripped, body verbatim.
-var strs = bayan_toml_get_array(ap, "strs");
+var strs = bayan_toml_get_array_by_cstr(ap, "strs");
 assert_eq(vec_len(strs), 3, "toml: strs has 3 elements");
 assert_eq(str_eq_cstr(vec_get(strs, 1), "b"), 1, "toml: strs[1] == b (quotes stripped)");
 
 # Literal ('...') strings containing ']' — quote-aware capture, not truncated.
-var lit = bayan_toml_get_array(ap, "lit");
+var lit = bayan_toml_get_array_by_cstr(ap, "lit");
 assert_eq(vec_len(lit), 2, "toml: lit has 2 elements");
 assert_eq(str_eq_cstr(vec_get(lit, 0), "x]y"), 1, "toml: lit[0] == x]y (']' inside '' preserved)");
 assert_eq(str_eq_cstr(vec_get(lit, 1), "z"), 1, "toml: lit[1] == z");
 
 # Nested arrays returned whole; re-parse one recursively.
-var nested = bayan_toml_get_array(ap, "nested");
+var nested = bayan_toml_get_array_by_cstr(ap, "nested");
 assert_eq(vec_len(nested), 2, "toml: nested has 2 elements");
 assert_eq(str_eq_cstr(vec_get(nested, 0), "[1, 2]"), 1, "toml: nested[0] whole == [1, 2]");
 var inner = bayan_toml_array_parse(vec_get(nested, 1));
@@ -895,15 +896,15 @@ assert_eq(vec_len(inner), 2, "toml: nested[1] re-parses to 2 elements");
 assert_eq(str_eq_cstr(vec_get(inner, 1), "4"), 1, "toml: nested[1][1] == 4");
 
 # Empty array -> zero elements.
-assert_eq(vec_len(bayan_toml_get_array(ap, "empty")), 0, "toml: empty array has 0 elements");
+assert_eq(vec_len(bayan_toml_get_array_by_cstr(ap, "empty")), 0, "toml: empty array has 0 elements");
 
 # Trailing comma -> no phantom empty element.
-var trail = bayan_toml_get_array(ap, "trail");
+var trail = bayan_toml_get_array_by_cstr(ap, "trail");
 assert_eq(vec_len(trail), 2, "toml: trailing comma yields 2 (no empty tail)");
 assert_eq(str_eq_cstr(vec_get(trail, 1), "20"), 1, "toml: trail[1] == 20");
 
 # Multi-line array with inline comments: comments skipped, values intact.
-var ml = bayan_toml_get_array(ap, "ml");
+var ml = bayan_toml_get_array_by_cstr(ap, "ml");
 assert_eq(vec_len(ml), 2, "toml: multi-line array has 2 elements");
 assert_eq(str_eq_cstr(vec_get(ml, 0), "100"), 1, "toml: ml[0] == 100 (inline comment stripped)");
 assert_eq(str_eq_cstr(vec_get(ml, 1), "200"), 1, "toml: ml[1] == 200");
@@ -920,12 +921,12 @@ assert_eq(vec_len(nc0), 2, "toml: nc[0] re-parses to 2 (nested ] not dropped by 
 assert_eq(str_eq_cstr(vec_get(nc0, 1), "2"), 1, "toml: nc[0][1] == 2 (content after inline comment kept)");
 
 # Absent key -> get_array returns 0; a non-array scalar -> empty vec.
-assert_eq(bayan_toml_get_array(ap, "nope"), 0, "toml: get_array absent key -> 0");
-assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get(ap, "name"))), 0, "toml: array_parse of scalar -> empty vec");
+assert_eq(bayan_toml_get_array_by_cstr(ap, "nope"), 0, "toml: get_array absent key -> 0");
+assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get_by_cstr(ap, "name"))), 0, "toml: array_parse of scalar -> empty vec");
 
 # Back-compat alias parity.
-assert_eq(vec_len(toml_array_parse(bayan_toml_get(ap, "nums"))), 3, "toml: alias toml_array_parse parity");
-assert_eq(toml_is_array(bayan_toml_get(ap, "nums")), 1, "toml: alias toml_is_array parity");
+assert_eq(vec_len(toml_array_parse(bayan_toml_get_by_cstr(ap, "nums"))), 3, "toml: alias toml_array_parse parity");
+assert_eq(toml_is_array(bayan_toml_get_by_cstr(ap, "nums")), 1, "toml: alias toml_is_array parity");
 
 test_group("yaml: parse into the shared tagged value tree (v1.2.0)");
 # bayan_yaml_parse* produces the SAME JTAG_* node graph as the JSON value
@@ -2033,7 +2034,7 @@ test_group("json: the flat parser honours escapes (was key injection)");
 var je_doc = "{\"note\":\"hi\\\"there\",\"admin\":\"false\"}";
 var je_pairs = bayan_json_parse(str_from(je_doc));
 assert_eq(vec_len(je_pairs), 2, "json: an escaped quote does not split the value into a key");
-assert_neq(bayan_json_get(je_pairs, str_from("admin")), 0,
+assert_neq(bayan_json_get_by_str(je_pairs, str_from("admin")), 0,
   "json: the key after an escaped quote survives");
 
 test_group("json: a JSON-pointer index cannot wrap into range");
@@ -2099,8 +2100,8 @@ test_group("toml: an unterminated string cannot swallow the next line");
 # malformed line absorbed the ones after it and silently deleted their keys.
 var tu_secs = bayan_toml_parse(str_from("a = \"oops\nadmin = false\nb = \"x\"\nc = 1\n"));
 var tu_pairs = bayan_toml_section_pairs(vec_get(tu_secs, 0));
-assert_neq(bayan_toml_get(tu_pairs, "admin"), 0, "toml: the key after an unterminated string survives");
-assert_neq(bayan_toml_get(tu_pairs, "c"), 0, "toml: and the one after that");
+assert_neq(bayan_toml_get_by_cstr(tu_pairs, "admin"), 0, "toml: the key after an unterminated string survives");
+assert_neq(bayan_toml_get_by_cstr(tu_pairs, "c"), 0, "toml: and the one after that");
 var tu_ok = bayan_toml_parse(str_from("name = \"demo\"\nport = 8080\n"));
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(tu_ok, 0))), 2, "toml: well-formed input is unaffected");
 
@@ -2491,24 +2492,24 @@ var t_root = bayan_toml_section_pairs(vec_get(t_secs, 0));
 assert_eq(vec_len(t_root), 4, "toml: the root section's pairs");
 assert_eq(str_len(bayan_toml_section_name(vec_get(t_secs, 0))), 0, "toml: the root section is unnamed");
 assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(t_secs, 1)), "server"), 1, "toml: a named section");
-assert_eq(vec_len(bayan_toml_get_sections(t_secs, "item")), 2, "toml: both [[item]] tables are found");
-assert_eq(vec_len(bayan_toml_get_sections(t_secs, "absent")), 0, "toml: an absent section name gives none");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(t_secs, "item")), 2, "toml: both [[item]] tables are found");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(t_secs, "absent")), 0, "toml: an absent section name gives none");
 # bayan_toml_get takes a CSTRING (it compares with str_eq_cstr); passing a Str
 # yields a silent not-found. See Known gaps 9.
-assert_neq(bayan_toml_get(t_root, "name"), 0, "toml: get finds a key");
-assert_eq(bayan_toml_get(t_root, "nope"), 0, "toml: and returns 0 for one that is absent");
+assert_neq(bayan_toml_get_by_cstr(t_root, "name"), 0, "toml: get finds a key");
+assert_eq(bayan_toml_get_by_cstr(t_root, "nope"), 0, "toml: and returns 0 for one that is absent");
 assert_eq(str_eq_cstr(bayan_toml_pair_key(vec_get(t_root, 0)), "top"), 1, "toml: pair_key");
 assert_neq(bayan_toml_pair_value(vec_get(t_root, 0)), 0, "toml: pair_value");
 # Array VALUES are stored verbatim; the element accessors split them.
-assert_eq(bayan_toml_is_array(bayan_toml_get(t_root, "list")), 1, "toml: an array value is recognised");
-assert_eq(bayan_toml_is_array(bayan_toml_get(t_root, "name")), 0, "toml: a scalar is not");
-var t_arr = bayan_toml_get_array(t_root, "list");
+assert_eq(bayan_toml_is_array(bayan_toml_get_by_cstr(t_root, "list")), 1, "toml: an array value is recognised");
+assert_eq(bayan_toml_is_array(bayan_toml_get_by_cstr(t_root, "name")), 0, "toml: a scalar is not");
+var t_arr = bayan_toml_get_array_by_cstr(t_root, "list");
 assert_eq(vec_len(t_arr), 3, "toml: a numeric array splits into 3 elements");
 assert_eq(str_eq_cstr(vec_get(t_arr, 1), "2"), 1, "toml: element 1 is 2");
-var t_sarr = bayan_toml_get_array(t_root, "strs");
+var t_sarr = bayan_toml_get_array_by_cstr(t_root, "strs");
 assert_eq(vec_len(t_sarr), 2, "toml: a string array splits into 2");
 assert_eq(str_eq_cstr(vec_get(t_sarr, 0), "a"), 1, "toml: with quotes stripped");
-assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get(t_root, "list"))), 3,
+assert_eq(vec_len(bayan_toml_array_parse(bayan_toml_get_by_cstr(t_root, "list"))), 3,
   "toml: array_parse on the raw value agrees");
 # Constructors round-trip through the accessors.
 var t_p = bayan_toml_pair_new(str_from("k"), str_from("v"));
@@ -2556,8 +2557,8 @@ var lc_secs = bayan_toml_parse_file("tests/fixtures/toml/sample.toml");
 assert_eq(vec_len(lc_secs), 4, "toml: parse_file reads the fixture's four sections");
 var lc_root = bayan_toml_section_pairs(vec_get(lc_secs, 0));
 assert_eq(vec_len(lc_root), 4, "toml: with four root pairs");
-assert_eq(vec_len(bayan_toml_get_sections(lc_secs, "entry")), 2, "toml: and both [[entry]] tables");
-assert_eq(vec_len(bayan_toml_array_parse_a(lc_arena, bayan_toml_get(lc_root, "tags"))), 3,
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(lc_secs, "entry")), 2, "toml: and both [[entry]] tables");
+assert_eq(vec_len(bayan_toml_array_parse_a(lc_arena, bayan_toml_get_by_cstr(lc_root, "tags"))), 3,
   "toml: array_parse_a splits the 3-element array");
 var lc_r_tag, lc_r = bayan_toml_parse_file_r("tests/fixtures/toml/sample.toml");
 assert_eq(is_err_result(lc_r_tag), 0, "toml: parse_file_r succeeds on a readable file");
@@ -2586,7 +2587,7 @@ file_write_all("build/big-generated.toml", str_data(lc_big), str_len(lc_big));
 var lc_bs = bayan_toml_parse_file("build/big-generated.toml");
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(lc_bs, 0))), 25000,
   "toml: a file past the old cap is read WHOLE, not truncated at 256 KiB");
-assert_neq(bayan_toml_get(bayan_toml_section_pairs(vec_get(lc_bs, 0)), "k24999"), 0,
+assert_neq(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(lc_bs, 0)), "k24999"), 0,
   "toml: including its very last key");
 
 var lc_a = bayan_u256_from(123456789);
@@ -2657,8 +2658,8 @@ var jf = bayan_json_parse(str_from(jf_doc));
 assert_eq(vec_len(jf), 3, "json: the flat parser returns three pairs");
 assert_eq(str_eq_cstr(bayan_json_key(vec_get(jf, 0)), "name"), 1, "json: key");
 assert_eq(str_eq_cstr(bayan_json_value(vec_get(jf, 0)), "demo"), 1, "json: value");
-assert_eq(bayan_json_get_int(jf, str_from("count")), 42, "json: get_int");
-assert_eq(bayan_json_get_int(jf, str_from("absent")), 0, "json: get_int on a missing key is 0");
+assert_eq(bayan_json_get_int_by_str(jf, str_from("count")), 42, "json: get_int");
+assert_eq(bayan_json_get_int_by_str(jf, str_from("absent")), 0, "json: get_int on a missing key is 0");
 var jf_p = bayan_json_pair_new(str_from("k"), str_from("v"));
 assert_eq(str_eq_cstr(bayan_json_key(jf_p), "k"), 1, "json: pair_new");
 var jf_arena = arena_allocator(8192);
@@ -2698,12 +2699,12 @@ fn _jf_is(doc, want): i64 { return _jf_is_s(str_from(doc), want); }
 # The value of `key` (a cstr) as a byte count, or -1 when the key is absent, so a
 # failing assertion reports instead of loading through a 0.
 fn _jf_len(pairs, key): i64 {
-    var v = bayan_json_get(pairs, str_from(key));
+    var v = bayan_json_get_by_str(pairs, str_from(key));
     if (v == 0) { return 0 - 1; }
     return str_len(v);
 }
 fn _jf_get_is(pairs, key, want): i64 {
-    var v = bayan_json_get(pairs, str_from(key));
+    var v = bayan_json_get_by_str(pairs, str_from(key));
     if (v == 0) { return 0; }
     return str_eq_cstr(v, want);
 }
@@ -2782,19 +2783,19 @@ assert_eq(_jf_get_is(bayan_json_parse(str_from(jm_doc)), "admin", "false"), 1,
 # Parts 3 and 4, malformed: the pairs before the defect, then nothing.
 var jx_12 = bayan_json_parse(str_from("{\"EUR\":0.92,\"GBP\" 0.79,\"JPY\":149.5}"));
 assert_eq(str_eq_cstr(_jf_render(jx_12), "EUR=[0.92]"), 1, "json flat 12: missing ':' before a number stops");
-assert_eq(bayan_json_get(jx_12, str_from("GBP")), 0, "json flat 12: GBP did not take JPY's 149.5");
+assert_eq(bayan_json_get_by_str(jx_12, str_from("GBP")), 0, "json flat 12: GBP did not take JPY's 149.5");
 var jx_13 = bayan_json_parse(str_from("{\"a\" \"x\",\"b\":\"y\"}"));
 assert_eq(vec_len(jx_13), 0, "json flat 13: missing ':' before a string stops");
-assert_eq(bayan_json_get(jx_13, str_from("a")), 0, "json flat 13: a did not take b's y");
+assert_eq(bayan_json_get_by_str(jx_13, str_from("a")), 0, "json flat 13: a did not take b's y");
 var jx_14 = bayan_json_parse(str_from("{\"role\":\"user\",\"admin\",false,\"audit\":true}"));
 assert_eq(str_eq_cstr(_jf_render(jx_14), "role=[user]"), 1, "json flat 14: ',' where ':' belongs stops");
-assert_eq(bayan_json_get(jx_14, str_from("admin")), 0, "json flat 14: admin did not take audit's true");
+assert_eq(bayan_json_get_by_str(jx_14, str_from("admin")), 0, "json flat 14: admin did not take audit's true");
 var jx_15 = bayan_json_parse(str_from("{\"a\":\"x\" \"y\",\"b\":1}"));
 assert_eq(str_eq_cstr(_jf_render(jx_15), "a=[x]"), 1, "json flat 15: a string where ',' belongs stops");
-assert_eq(bayan_json_get(jx_15, str_from("y")), 0, "json flat 15: the stray y did not take b's 1");
+assert_eq(bayan_json_get_by_str(jx_15, str_from("y")), 0, "json flat 15: the stray y did not take b's 1");
 var jx_16 = bayan_json_parse(str_from("{\"a\":,\"b\":2}"));
 assert_eq(vec_len(jx_16), 0, "json flat 16: ':' then ',' stops");
-assert_eq(bayan_json_get(jx_16, str_from("a")), 0, "json flat 16: a did not take the key name b");
+assert_eq(bayan_json_get_by_str(jx_16, str_from("a")), 0, "json flat 16: a did not take the key name b");
 
 test_group("json: flat parser — nested spans, kinds, depth (1.5.10)");
 assert_eq(_jf_is("{\"x\":{\"s\":\"a\\\"}\"},\"y\":1}", "x=[{\"s\":\"a\\\"}\"}] y=[1]"), 1,
@@ -2817,15 +2818,15 @@ str_builder_add_cstr(jr_sb, "\"params\": {\"name\": \"tc\", \"arguments\": {}}}"
 var jr = bayan_json_parse(str_builder_build(jr_sb));
 var jr_want = "jsonrpc=[2.0] id=[1] method=[tools/call] params=[{\"name\": \"tc\", \"arguments\": {}}]";
 assert_eq(str_eq_cstr(_jf_render(jr), jr_want), 1, "json flat: a JSON-RPC body keeps params whole");
-assert_eq(bayan_json_get(jr, str_from("tc")), 0, "json flat: and no member value surfaces as a key");
+assert_eq(bayan_json_get_by_str(jr, str_from("tc")), 0, "json flat: and no member value surfaces as a key");
 # KINDS ARE MATCHED: a wrong-kind closer is malformed, not the end of the span.
 assert_eq(_jf_is("{\"x\":[1},\"y\":2}", ""), 1, "json flat: [ closed by } stops");
 var jk_a = bayan_json_parse(str_from("{\"meta\":{\"x\":],\"admin\":\"true\"},\"admin\":\"false\"}"));
 assert_eq(vec_len(jk_a), 0, "json flat: { closed by ] stops");
-assert_eq(bayan_json_get(jk_a, str_from("admin")), 0, "json flat: and meta's admin does not surface");
+assert_eq(bayan_json_get_by_str(jk_a, str_from("admin")), 0, "json flat: and meta's admin does not surface");
 var jk_b = bayan_json_parse(str_from("{\"meta\":{\"x\":[}],\"admin\":\"true\"},\"admin\":\"false\"}"));
 assert_eq(vec_len(jk_b), 0, "json flat: [} inside a value stops (depth alone matched it)");
-assert_eq(bayan_json_get(jk_b, str_from("admin")), 0, "json flat: and meta's admin does not surface");
+assert_eq(bayan_json_get_by_str(jk_b, str_from("admin")), 0, "json flat: and meta's admin does not surface");
 assert_eq(_jf_is("{\"w\":0,\"x\":{\"a\":[1}],\"y\":2}", "w=[0]"), 1, "json flat: a mismatch keeps the pairs before it");
 # The kind stack is 128 bits across 16 bytes: mixed kinds 120 deep cross every
 # byte boundary, and one swapped closer must be seen at any level.
@@ -2928,7 +2929,7 @@ assert_eq(_jf_is("{\"a\",:1}", ""), 1, "json flat: ',' between a key and its ':'
 # [ used to be stepped over byte by byte, surfacing the nested member.
 var jp_a = bayan_json_parse(str_from("{\"a\":1, {\"b\":2}}"));
 assert_eq(str_eq_cstr(_jf_render(jp_a), "a=[1]"), 1, "json flat: a stray { where a key belongs stops");
-assert_eq(bayan_json_get(jp_a, str_from("b")), 0, "json flat: and its b does not surface");
+assert_eq(bayan_json_get_by_str(jp_a, str_from("b")), 0, "json flat: and its b does not surface");
 assert_eq(_jf_is("{\"a\":1, [\"b\",2]}", "a=[1]"), 1, "json flat: so does a stray [");
 assert_eq(_jf_is("{\"a\":1 x \"b\":2}", "a=[1]"), 1, "json flat: and a stray word");
 # A bare value ends at any structural byte, so it cannot swallow the next pair,
@@ -2980,7 +2981,7 @@ while (jb_c < 256) {
     memcpy(jb_buf, "{\"a\":1", 6);
     store8(jb_buf + 6, jb_c);
     store8(jb_buf + 7, 125);
-    var jb_v = bayan_json_get(bayan_json_parse(str_new(jb_buf, 8)), str_from("a"));
+    var jb_v = bayan_json_get_by_str(bayan_json_parse(str_new(jb_buf, 8)), str_from("a"));
     var jb_ends = jb_ws;
     if (_jf_in(jb_c, ",}") == 1) { jb_ends = 1; }
     if (_jf_in(jb_c, "\":[]{") == 1) {
@@ -3026,17 +3027,17 @@ test_group("json: flat parser — re-parsing a nested span (1.5.10)");
 # bayan_json_parse(bayan_json_get(pairs, key)). On 1.5.9 the outer parse cut x
 # at `{"a":1` and lost y: x.a = 1, x.b = 0, y = 0.
 var jdv = bayan_json_parse(str_from("{\"x\":{\"a\":1,\"b\":2},\"y\":3}"));
-var jdv_x = bayan_json_parse(bayan_json_get(jdv, str_from("x")));
-assert_eq(bayan_json_get_int(jdv_x, str_from("a")), 1, "json flat: x.a");
-assert_eq(bayan_json_get_int(jdv_x, str_from("b")), 2, "json flat: x.b (was 0)");
-assert_eq(bayan_json_get_int(jdv, str_from("y")), 3, "json flat: y (was 0)");
+var jdv_x = bayan_json_parse(bayan_json_get_by_str(jdv, str_from("x")));
+assert_eq(bayan_json_get_int_by_str(jdv_x, str_from("a")), 1, "json flat: x.a");
+assert_eq(bayan_json_get_int_by_str(jdv_x, str_from("b")), 2, "json flat: x.b (was 0)");
+assert_eq(bayan_json_get_int_by_str(jdv, str_from("y")), 3, "json flat: y (was 0)");
 var jdd = bayan_json_parse(str_from("{\"a\": {\"b\": {\"c\": \"deep\", \"n\": [1, {\"m\": 2}]}}, \"z\": 0}"));
-var jdd_a = bayan_json_parse(bayan_json_get(jdd, str_from("a")));
-var jdd_b = bayan_json_parse(bayan_json_get(jdd_a, str_from("b")));
+var jdd_a = bayan_json_parse(bayan_json_get_by_str(jdd, str_from("a")));
+var jdd_b = bayan_json_parse(bayan_json_get_by_str(jdd_a, str_from("b")));
 assert_eq(str_eq_cstr(_jf_render(jdd_b), "c=[deep] n=[[1, {\"m\": 2}]]"), 1,
   "json flat: two levels down, re-parsed twice");
 assert_eq(_jf_get_is(jdd_b, "c", "deep"), 1, "json flat: c");
-assert_eq(vec_len(bayan_json_parse(bayan_json_get(jdd, str_from("absent")))), 0,
+assert_eq(vec_len(bayan_json_parse(bayan_json_get_by_str(jdd, str_from("absent")))), 0,
   "json flat: re-parsing an absent member is an empty vec");
 
 test_group("json: flat parser — a refused allocation returns 0 (1.5.10)");
@@ -3048,7 +3049,7 @@ ALLOC_MAX = 0;
 var jo_none = bayan_json_parse(jo_src);
 ALLOC_MAX = jo_max;
 assert_eq(jo_none, 0, "json flat: a refused vec returns 0");
-assert_eq(bayan_json_get(jo_none, str_from("a")), 0, "json flat: and get() on that 0 answers absent");
+assert_eq(bayan_json_get_by_str(jo_none, str_from("a")), 0, "json flat: and get() on that 0 answers absent");
 # 17 members, so the 17th push grows the vec from 16 slots to 32 (256 bytes).
 # ALLOC_MAX = 128 grants the vec (24 and 128 bytes) and every Str and pair (16)
 # and refuses only that growth.
@@ -3116,7 +3117,7 @@ assert_gt(str_len(jl_big), 16384, "json: the fixture exceeds the old 16 KiB cap"
 file_write_all("build/big-generated.json", str_data(jl_big), str_len(jl_big));
 var jl_pairs = bayan_json_parse_file("build/big-generated.json");
 assert_eq(vec_len(jl_pairs), 3000, "json: parse_file reads every pair, not the first 630");
-assert_neq(bayan_json_get(jl_pairs, str_from("k2999")), 0, "json: including the last key");
+assert_neq(bayan_json_get_by_str(jl_pairs, str_from("k2999")), 0, "json: including the last key");
 var jl_r_tag, jl_r = bayan_json_parse_file_r("build/big-generated.json");
 assert_eq(is_err_result(jl_r_tag), 0, "json: parse_file_r succeeds");
 assert_eq(vec_len(jl_r), 3000, "json: and returns every pair too");
@@ -3513,6 +3514,7 @@ var BA_V = str_from("v");
 var ba_i = 0;
 
 # --- json: the flat key/value API ---
+# json_get and json_get_int are deprecated (1.11.0); their rows are in tests/deprecated_lookup.cyr.
 assert_eq(memeq(json_pair_new_a(BA_AR, BA_K, BA_V), bayan_json_pair_new_a(BA_AR, BA_K, BA_V), 16), 1,
   "alias json_pair_new_a");
 assert_eq(json_pair_new_a(BA_DRY, BA_K, BA_V), 0, "alias json_pair_new_a allocates through the allocator it is handed");
@@ -3523,8 +3525,6 @@ assert_eq(json_value(ba_jp), bayan_json_value(ba_jp), "alias json_value");
 var BA_JF = str_from("{\"name\": \"demo\", \"count\": 42, \"on\": true}");
 var ba_jf = bayan_json_parse(BA_JF);
 assert_eq(str_eq(bayan_json_build(json_parse(BA_JF)), bayan_json_build(ba_jf)), 1, "alias json_parse");
-assert_eq(json_get(ba_jf, str_from("name")), bayan_json_get(ba_jf, str_from("name")), "alias json_get");
-assert_eq(json_get_int(ba_jf, str_from("count")), bayan_json_get_int(ba_jf, str_from("count")), "alias json_get_int");
 assert_eq(str_eq(json_build(ba_jf), bayan_json_build(ba_jf)), 1, "alias json_build");
 # build/big-generated.json is written by "json: file loaders read the WHOLE file" above.
 var BA_JPATH = "build/big-generated.json";
@@ -3661,12 +3661,14 @@ assert_eq(bayan_json_stream_parse_str(str_from(BA_JS), ba_h2), ba_src, "alias js
 assert_eq(_ba_strm_seen(), ba_seen, "alias json_stream_parse_str fires the same events");
 
 # --- toml ---
+# toml_get, toml_get_sections and toml_get_array are deprecated (1.11.0); their rows are in
+# tests/deprecated_lookup.cyr.
 var BA_TD = str_from("top = 1\nname = \"demo\"\nlist = [1, 2, 3]\n\n[server]\nport = 80\n\n[[item]]\nid = 1\n\n[[item]]\nid = 2\n");
 var ba_ts = bayan_toml_parse(BA_TD);
 var ba_troot = bayan_toml_section_pairs(vec_get(ba_ts, 0));
 var ba_tsrv = vec_get(ba_ts, 1);
 var ba_tpair = vec_get(ba_troot, 1);
-var ba_tlist = bayan_toml_get(ba_troot, "list");
+var ba_tlist = bayan_toml_get_by_cstr(ba_troot, "list");
 assert_eq(memeq(toml_section_new_a(BA_AR, BA_K, ba_troot), bayan_toml_section_new_a(BA_AR, BA_K, ba_troot), 16), 1,
   "alias toml_section_new_a");
 assert_eq(toml_section_new_a(BA_DRY, BA_K, ba_troot), 0,
@@ -3688,11 +3690,6 @@ assert_eq(is_err_result(ba_tf1_tag), is_err_result(ba_tf2_tag), "alias toml_pars
 assert_eq(_ba_toml_same(ba_tf1, ba_tf2), 1, "alias toml_parse_file_r (value)");
 assert_eq(is_err_result(toml_parse_file_r("tests/fixtures/toml/does-not-exist.toml")), 1,
   "alias toml_parse_file_r reports a missing file");
-assert_eq(toml_get(ba_troot, "name"), bayan_toml_get(ba_troot, "name"), "alias toml_get");
-var ba_tg1 = toml_get_sections(ba_ts, "item");
-var ba_tg2 = bayan_toml_get_sections(ba_ts, "item");
-assert_eq(vec_len(ba_tg1), vec_len(ba_tg2), "alias toml_get_sections (count)");
-assert_eq(vec_get(ba_tg1, 1), vec_get(ba_tg2, 1), "alias toml_get_sections (the same sections)");
 assert_eq(_ba_strs_same(toml_array_parse_a(BA_AR, ba_tlist), bayan_toml_array_parse_a(BA_AR, ba_tlist)), 1,
   "alias toml_array_parse_a");
 # 1.5.9: array_parse_a checks its own vec_new_a (it used to load through a refused 0 and die of
@@ -3871,9 +3868,8 @@ assert_eq(is_err_result(tu_fr_tag), 1, "toml: parse_file_r with the value's deco
 assert_eq(tu_rseen, 1, "toml: (the refused request was the decode's, made once)");
 assert_eq(_ba_strs_same(toml_array_parse(ba_tlist), bayan_toml_array_parse(ba_tlist)), 1, "alias toml_array_parse");
 assert_eq(toml_is_array(ba_tlist), bayan_toml_is_array(ba_tlist), "alias toml_is_array (an array)");
-assert_eq(toml_is_array(bayan_toml_get(ba_troot, "name")), bayan_toml_is_array(bayan_toml_get(ba_troot, "name")),
+assert_eq(toml_is_array(bayan_toml_get_by_cstr(ba_troot, "name")), bayan_toml_is_array(bayan_toml_get_by_cstr(ba_troot, "name")),
   "alias toml_is_array (a scalar)");
-assert_eq(_ba_strs_same(toml_get_array(ba_troot, "list"), bayan_toml_get_array(ba_troot, "list")), 1, "alias toml_get_array");
 
 # --- cyml ---
 var BA_CEH = "k = 1";
@@ -5172,18 +5168,18 @@ assert_eq(_tn_b(json_v_is_obj(tn_obj)), 1, "typed names: alias json_v_is_obj, tr
 assert_eq(_tn_b(json_v_is_obj(tn_arr)), 0, "typed names: alias json_v_is_obj, false");
 # toml
 var tn_t = bayan_toml_section_pairs(vec_get(bayan_toml_parse(str_from("a = [1]\nt = { x = 1 }\ns = \"str\"\nn = 5\n")), 0));
-assert_eq(_tn_b(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "a"))), 1, "typed names: bayan_toml_pair_is_array, true");
-assert_eq(_tn_b(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "s"))), 0, "typed names: bayan_toml_pair_is_array, false");
-assert_eq(_tn_b(bayan_toml_pair_is_inline(bayan_toml_get_pair(tn_t, "t"))), 1, "typed names: bayan_toml_pair_is_inline, true");
-assert_eq(_tn_b(bayan_toml_pair_is_inline(bayan_toml_get_pair(tn_t, "a"))), 0, "typed names: bayan_toml_pair_is_inline, false");
-assert_eq(_tn_b(bayan_toml_pair_is_string(bayan_toml_get_pair(tn_t, "s"))), 1, "typed names: bayan_toml_pair_is_string, true");
-assert_eq(_tn_b(bayan_toml_pair_is_string(bayan_toml_get_pair(tn_t, "n"))), 0, "typed names: bayan_toml_pair_is_string, false");
-assert_eq(_tn_b(bayan_toml_is_array(bayan_toml_get(tn_t, "a"))), 1, "typed names: bayan_toml_is_array, true");
-assert_eq(_tn_b(bayan_toml_is_array(bayan_toml_get(tn_t, "n"))), 0, "typed names: bayan_toml_is_array, false");
-assert_eq(_tn_b(bayan_toml_is_inline(bayan_toml_get(tn_t, "t"))), 1, "typed names: bayan_toml_is_inline, true");
-assert_eq(_tn_b(bayan_toml_is_inline(bayan_toml_get(tn_t, "n"))), 0, "typed names: bayan_toml_is_inline, false");
-assert_eq(_tn_b(toml_is_array(bayan_toml_get(tn_t, "a"))), 1, "typed names: alias toml_is_array, true");
-assert_eq(_tn_b(toml_is_array(bayan_toml_get(tn_t, "n"))), 0, "typed names: alias toml_is_array, false");
+assert_eq(_tn_b(bayan_toml_pair_is_array(bayan_toml_get_pair_by_cstr(tn_t, "a"))), 1, "typed names: bayan_toml_pair_is_array, true");
+assert_eq(_tn_b(bayan_toml_pair_is_array(bayan_toml_get_pair_by_cstr(tn_t, "s"))), 0, "typed names: bayan_toml_pair_is_array, false");
+assert_eq(_tn_b(bayan_toml_pair_is_inline(bayan_toml_get_pair_by_cstr(tn_t, "t"))), 1, "typed names: bayan_toml_pair_is_inline, true");
+assert_eq(_tn_b(bayan_toml_pair_is_inline(bayan_toml_get_pair_by_cstr(tn_t, "a"))), 0, "typed names: bayan_toml_pair_is_inline, false");
+assert_eq(_tn_b(bayan_toml_pair_is_string(bayan_toml_get_pair_by_cstr(tn_t, "s"))), 1, "typed names: bayan_toml_pair_is_string, true");
+assert_eq(_tn_b(bayan_toml_pair_is_string(bayan_toml_get_pair_by_cstr(tn_t, "n"))), 0, "typed names: bayan_toml_pair_is_string, false");
+assert_eq(_tn_b(bayan_toml_is_array(bayan_toml_get_by_cstr(tn_t, "a"))), 1, "typed names: bayan_toml_is_array, true");
+assert_eq(_tn_b(bayan_toml_is_array(bayan_toml_get_by_cstr(tn_t, "n"))), 0, "typed names: bayan_toml_is_array, false");
+assert_eq(_tn_b(bayan_toml_is_inline(bayan_toml_get_by_cstr(tn_t, "t"))), 1, "typed names: bayan_toml_is_inline, true");
+assert_eq(_tn_b(bayan_toml_is_inline(bayan_toml_get_by_cstr(tn_t, "n"))), 0, "typed names: bayan_toml_is_inline, false");
+assert_eq(_tn_b(toml_is_array(bayan_toml_get_by_cstr(tn_t, "a"))), 1, "typed names: alias toml_is_array, true");
+assert_eq(_tn_b(toml_is_array(bayan_toml_get_by_cstr(tn_t, "n"))), 0, "typed names: alias toml_is_array, false");
 # u128 and u256
 var tn_z128[16];
 var tn_f128[16];
@@ -5309,7 +5305,216 @@ assert_eq(tn_held, 1, "typed names: held in an untyped var");
 var tn_slot[8];
 store64(&tn_slot, bayan_pdf_obj_is_ref(tn_pr));
 assert_eq(load64(&tn_slot), 1, "typed names: stored with store64");
-assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "a")) == 1, 1, "typed names: compared with == 1");
-assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair(tn_t, "s")) == 0, 1, "typed names: compared with == 0");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair_by_cstr(tn_t, "a")) == 1, 1, "typed names: compared with == 1");
+assert_eq(bayan_toml_pair_is_array(bayan_toml_get_pair_by_cstr(tn_t, "s")) == 0, 1, "typed names: compared with == 0");
+
+# =============================================================================
+# 1.11.0 — TOML into the tagged tree: bayan_toml_v_*. tests/vectors.tcyr holds tomllib's answers
+# for 3,494 documents and tests/toml.fcyr the properties at volume; these rows pin the API, the
+# messages and offsets, the two subset edges, and the allocator contract.
+# =============================================================================
+
+test_group("toml tree: a document into json's value tree (1.11.0)");
+var TV_DOC = "title = \"TOML\"   # c\n[owner]\nname = 'Tom'\ndob = 1979-05-27T07:32:00-08:00\n[database]\nports = [ 8000, 8001, 8002 ]\nenabled = true\ntemp = [79.5, 72.0]\n[servers.alpha]\nip = \"10.0.0.1\"\n[[products]]\nname = \"Hammer\"\nsku = 738594937\n[[products]]\n[[products]]\nname = \"Nail\"\nwhen = 07:32:00\nday = 1979-05-27\nlocal = 1979-05-27t07:32:00\nhex = 0xDEAD_BEEF\nf = -1e-3\n";
+var tv = bayan_toml_v_parse(str_from(TV_DOC));
+assert_neq(tv, 0, "toml tree: the document parses");
+assert_eq(bayan_json_v_is_obj(tv), 1, "toml tree: to a table");
+assert_eq(bayan_json_v_obj_len(tv), 5, "toml tree: title, owner, database, servers, products");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(tv, "title")), "TOML"), 1, "toml tree: a basic string");
+var tv_owner = bayan_json_v_obj_get_by_cstr(tv, "owner");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(tv_owner, "name")), "Tom"), 1, "toml tree: a literal string");
+var tv_dob = bayan_json_v_obj_get_by_cstr(tv_owner, "dob");
+assert_eq(bayan_json_v_is_str(tv_dob), 1, "toml tree: a date-time is a string cell");
+assert_eq(str_eq_cstr(bayan_json_v_str(tv_dob), "1979-05-27T07:32:00-08:00"), 1, "toml tree: holding its text as written");
+assert_eq(bayan_toml_v_datetime_kind(tv_dob), TOML_DT_OFFSET, "toml tree: its kind is an offset date-time");
+var tv_db = bayan_json_v_obj_get_by_cstr(tv, "database");
+var tv_ports = bayan_json_v_obj_get_by_cstr(tv_db, "ports");
+assert_eq(bayan_json_v_arr_len(tv_ports), 3, "toml tree: an array");
+assert_eq(bayan_json_v_int(bayan_json_v_arr_get(tv_ports, 1)), 8001, "toml tree: of integers");
+assert_eq(bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(tv_db, "enabled")), 1, "toml tree: a boolean");
+assert_eq(bayan_json_v_float(bayan_json_v_arr_get(bayan_json_v_obj_get_by_cstr(tv_db, "temp"), 0)), 0x4053E00000000000,
+  "toml tree: a float, its exact bits");
+var tv_alpha = bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(tv, "servers"), "alpha");
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(tv_alpha, "ip")), "10.0.0.1"), 1,
+  "toml tree: [servers.alpha] opens servers, then alpha in it");
+var tv_prod = bayan_json_v_obj_get_by_cstr(tv, "products");
+assert_eq(bayan_json_v_arr_len(tv_prod), 3, "toml tree: an array of three tables");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_json_v_arr_get(tv_prod, 0), "sku")), 738594937, "toml tree: (the first)");
+assert_eq(bayan_json_v_obj_len(bayan_json_v_arr_get(tv_prod, 1)), 0, "toml tree: (the second is empty)");
+var tv_p3 = bayan_json_v_arr_get(tv_prod, 2);
+assert_eq(bayan_toml_v_datetime_kind(bayan_json_v_obj_get_by_cstr(tv_p3, "when")), TOML_DT_TIME, "toml tree: a local time");
+assert_eq(bayan_toml_v_datetime_kind(bayan_json_v_obj_get_by_cstr(tv_p3, "day")), TOML_DT_DATE, "toml tree: a local date");
+var tv_local = bayan_json_v_obj_get_by_cstr(tv_p3, "local");
+assert_eq(bayan_toml_v_datetime_kind(tv_local), TOML_DT_LOCAL, "toml tree: a local date-time");
+assert_eq(str_eq_cstr(bayan_json_v_str(tv_local), "1979-05-27t07:32:00"), 1, "toml tree: (its lowercase t kept, as written)");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(tv_p3, "hex")), 3735928559, "toml tree: a hex integer");
+assert_eq(bayan_json_v_float(bayan_json_v_obj_get_by_cstr(tv_p3, "f")), 0xBF50624DD2F1A9FC, "toml tree: -1e-3, correctly rounded");
+# The kind is read only from a cell this parser made.
+assert_eq(bayan_toml_v_datetime_kind(bayan_json_v_obj_get_by_cstr(tv, "title")), 0, "toml tree: a plain string has no kind");
+assert_eq(bayan_toml_v_datetime_kind(tv_ports), 0, "toml tree: nor an array");
+assert_eq(bayan_toml_v_datetime_kind(0), 0, "toml tree: nor 0");
+assert_eq(bayan_toml_v_datetime_kind(bayan_json_v_str_new(str_from("1979-05-27"))), 0, "toml tree: nor a string json made");
+# The parse's flags are gone from every table and array.
+assert_eq(load64(tv + 16), 0, "toml tree: the root's reserved word is 0 again");
+assert_eq(load64(tv_owner + 16), 0, "toml tree: and a table's");
+assert_eq(load64(tv_prod + 16) + load64(tv_ports + 16), 0, "toml tree: and the arrays'");
+
+test_group("toml tree: the flat parser's two subset edges have answers (1.11.0)");
+# toml.cyr's header documents both: table names there are flat dotted strings.
+var tv_q = bayan_toml_v_parse(str_from("a.\"b.c\".d = 1\na.b.c.d = 2\n"));
+assert_neq(tv_q, 0, "toml tree: a quoted segment holding a dot parses");
+var tv_qa = bayan_json_v_obj_get_by_cstr(tv_q, "a");
+assert_eq(bayan_json_v_obj_len(tv_qa), 2, "toml tree: and stays apart from the dotted path: a holds \"b.c\" and b");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(tv_qa, "b.c"), "d")), 1,
+  "toml tree: a.\"b.c\".d is 1");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(tv_qa, "b"), "c"), "d")), 2,
+  "toml tree: a.b.c.d is 2");
+var tv_aot = bayan_toml_v_parse(str_from("[a]\nz = 0\n[[a.b]]\nx = 1\n[[a.b]]\nx = 2\n"));
+var tv_ab = bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(tv_aot, "a"), "b");
+assert_eq(bayan_json_v_arr_len(tv_ab), 2, "toml tree: [[a.b]] twice under [a] is one array of two tables");
+assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(bayan_json_v_arr_get(tv_ab, 1), "x")), 2, "toml tree: (the second x is 2)");
+
+test_group("toml tree: refusals carry a message and a byte offset (1.11.0)");
+fn _tv_refuses(src: cstring, msg: cstring, pos): i64 {
+    if (bayan_toml_v_parse(str_from(src)) != 0) { return 0; }
+    if (str_eq_cstr(str_from(bayan_toml_v_last_error()), msg) == 0) { return 0; }
+    if (bayan_toml_v_last_error_pos() != pos) { return 0; }
+    return 1;
+}
+assert_eq(_tv_refuses("a = 1\na = 2\n", "duplicate key", 6), 1, "toml tree: a duplicate key, at the key");
+assert_eq(_tv_refuses("a = 1 b = 2\n", "expected a newline after the statement", 6), 1, "toml tree: two statements on a line");
+assert_eq(_tv_refuses("[a]\n[a]\n", "table defined twice", 4), 1, "toml tree: a table defined twice, at its header");
+assert_eq(_tv_refuses("a.b = 1\n[a]\n", "table defined twice", 8), 1, "toml tree: a header for a table a dotted key opened");
+assert_eq(_tv_refuses("[a.b]\nc = 1\n[a]\nb.d = 2\n", "cannot extend a table defined earlier with a dotted key", 16), 1,
+  "toml tree: a dotted key into a table a header defined");
+assert_eq(_tv_refuses("a = {b = 1}\n[a]\n", "cannot extend an inline table", 12), 1, "toml tree: an inline table is closed");
+assert_eq(_tv_refuses("a = [1]\n[[a]]\n", "cannot extend an array", 8), 1, "toml tree: and so is a static array");
+assert_eq(_tv_refuses("x = 1979-02-29\n", "invalid date", 4), 1, "toml tree: a day the month does not have");
+assert_eq(_tv_refuses("x = 9223372036854775808\n", "integer out of range", 4), 1,
+  "toml tree: an integer past i64 (tomllib reads it; the tree cannot hold it)");
+assert_eq(_tv_refuses("x = \"\\q\"\n", "invalid escape", 5), 1, "toml tree: an escape TOML does not have");
+assert_eq(_tv_refuses("x = \"\xc3\"\n", "invalid utf-8", 5), 1, "toml tree: a byte that is not UTF-8");
+assert_eq(_tv_refuses("x = 1\r\ny = 2\rz = 3\n", "expected a newline after the statement", 12), 1, "toml tree: a CR on its own");
+assert_eq(_tv_refuses("x = \"unterminated\n", "illegal character in a string", 17), 1, "toml tree: a newline in a basic string");
+assert_eq(bayan_toml_v_parse(0), 0, "toml tree: a null source");
+assert_eq(str_eq_cstr(str_from(bayan_toml_v_last_error()), "null source"), 1, "toml tree: (says so)");
+assert_neq(bayan_toml_v_parse(str_from("x = 9223372036854775807\ny = -9223372036854775808\n")), 0, "toml tree: both ends of i64 parse");
+# The reentrant forms keep their error in the caller's state and leave the globals alone.
+var tv_ps[_JP_STATE_SIZE];
+var TV_BAD = "a = 1\n= 2\n";
+assert_eq(_tv_refuses("a = 1\na = 2\n", "duplicate key", 6), 1, "toml tree: (a globals-path refusal first)");
+assert_eq(bayan_toml_v_parse_ctx(&tv_ps, TV_BAD, strlen(TV_BAD)), 0, "toml tree: parse_ctx refuses");
+assert_eq(str_eq_cstr(str_from(bayan_toml_v_state_error(&tv_ps)), "invalid statement"), 1, "toml tree: (into the state)");
+assert_eq(bayan_toml_v_state_error_pos(&tv_ps), 6, "toml tree: (at the byte)");
+assert_eq(str_eq_cstr(str_from(bayan_toml_v_last_error()), "duplicate key"), 1, "toml tree: (the globals still hold the last globals-path error)");
+var TV_OK = "a = 1\n";
+assert_neq(bayan_toml_v_parse_ctx_a(default_alloc(), &tv_ps, TV_OK, strlen(TV_OK)), 0, "toml tree: parse_ctx_a");
+assert_neq(bayan_toml_v_parse_buf(TV_OK, strlen(TV_OK)), 0, "toml tree: parse_buf");
+assert_eq(bayan_toml_v_last_error_pos(), 0, "toml tree: (a clean parse clears the error)");
+# The depth cap is json's, a var a caller (or this suite) may lower.
+_JP_MAX_DEPTH = 3;
+assert_neq(bayan_toml_v_parse(str_from("a = [[1]]\n")), 0, "toml tree: with the cap at 3, the root and two arrays parse");
+assert_eq(_tv_refuses("a = [[[1]]]\n", "nesting too deep", 6), 1, "toml tree: and a third array does not");
+assert_neq(bayan_toml_v_parse(str_from("a.b.c = 1\n")), 0, "toml tree: a dotted key two tables deep parses");
+assert_eq(_tv_refuses("a.b.c.d = 1\n", "nesting too deep", 6), 1, "toml tree: and three tables deep does not, at the part");
+_JP_MAX_DEPTH = 128;
+# The tree does not borrow the source: its strings and keys are copies.
+var tv_src = alloc(64);
+var TV_OWN = "k = \"value\"\n[t]\nk2 = 'v2'\n";
+memcpy(tv_src, TV_OWN, strlen(TV_OWN));
+var tv_own = bayan_toml_v_parse_buf(tv_src, strlen(TV_OWN));
+memset(tv_src, 88, 64);
+assert_eq(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(tv_own, "k")), "value"), 1, "toml tree: a string survives the source");
+assert_eq(str_eq_cstr(bayan_json_v_obj_key(bayan_json_v_obj_get_by_cstr(tv_own, "t"), 0), "k2"), 1, "toml tree: and a key does");
+
+test_group("toml tree: every allocation through the allocator given, every refusal 0 (1.11.0)");
+# One document that reaches every allocating arm: bare, quoted and dotted keys, all four string
+# forms, numbers, a date, an array, an inline table, a header and an array of tables, and over 32
+# keys, so the key index grows once. The lever is the default allocator's alloc slot, refusing
+# the k-th request alone, for every k.
+var TV_R = "a = 1\n\"b\" = 'x'\nc.d.e = \"\"\"\nm\\\n  n\"\"\"\nf = '''l'''\ng = [1, 2.5, 1979-05-27]\nh = {i = true, j.k = 0x1F}\n[t]\nk0 = 0\nk1 = 1\nk2 = 2\nk3 = 3\nk4 = 4\nk5 = 5\nk6 = 6\nk7 = 7\nk8 = 8\nk9 = 9\nk10 = 0\nk11 = 1\nk12 = 2\nk13 = 3\nk14 = 4\nk15 = 5\nk16 = 6\nk17 = 7\nk18 = 8\nk19 = 9\nk20 = 0\nk21 = 1\nk22 = 2\nk23 = 3\nk24 = 4\nk25 = 5\n[[u]]\nv = \"\\u00e9\"\n";
+var TV_RS = str_from(TV_R);
+var tv_nth = 0 - 1;
+var tv_calls = 0;
+fn _tv_refuse_nth(state, size): i64 {
+    tv_calls = tv_calls + 1;
+    if (tv_calls == tv_nth) { return 0; }
+    return alloc(size);
+}
+var tv_dv = default_alloc();
+var tv_saved = load64(tv_dv);
+store64(tv_dv, &_tv_refuse_nth);
+var tv_full = bayan_toml_v_parse(TV_RS);
+var tv_n = tv_calls;
+var tv_kk = 1;
+var tv_partial = 0;
+var tv_errs = 0;
+while (tv_kk <= tv_n) {
+    tv_nth = tv_kk;
+    tv_calls = 0;
+    if (bayan_toml_v_parse(TV_RS) != 0) { tv_partial = tv_partial + 1; }
+    elif (str_eq_cstr(str_from(bayan_toml_v_last_error()), "out of memory") == 1) { tv_errs = tv_errs + 1; }
+    tv_kk = tv_kk + 1;
+}
+tv_nth = 0 - 1;
+store64(tv_dv, tv_saved);
+assert_neq(tv_full, 0, "toml tree: the refusal document parses");
+assert_eq(bayan_json_v_obj_len(bayan_json_v_obj_get_by_cstr(tv_full, "t")), 26, "toml tree: (to the tree it should)");
+assert_gt(tv_n, 150, "toml tree: (the parse makes over 150 allocations)");
+assert_eq(tv_partial, 0, "toml tree: the parse, each allocation refused alone, returns 0");
+assert_eq(tv_errs, tv_n, "toml tree: (with out of memory as the error, every time)");
+# The _a forms make every request through the allocator they are handed.
+var TV_ONE = allocator_new(&_tv_refuse_nth, &_test_realloc, &_alloc_free_noop, &_test_reset, alloc(24));
+tv_calls = 0;
+var tv_viaa = bayan_toml_v_parse_a(TV_ONE, TV_RS);
+assert_neq(tv_viaa, 0, "toml tree: bayan_toml_v_parse_a parses");
+assert_eq(tv_calls, tv_n, "toml tree: (making the same requests, through its allocator)");
+tv_calls = 0;
+assert_neq(bayan_toml_v_parse_buf_a(TV_ONE, TV_R, strlen(TV_R)), 0, "toml tree: bayan_toml_v_parse_buf_a too");
+assert_eq(tv_calls, tv_n, "toml tree: (through its allocator)");
+
+test_group("flat lookups: each names its key type (1.11.0)");
+# _by_cstr takes a C string or a literal; _by_str a Str, compared by its length. A Str cut from a
+# longer one (str_sub) is not NUL-terminated, so _by_str must read exactly its length: "name" cut
+# from "namex" finds name, and "nam" cut from it finds nam, never name. The json lookups answer
+# the FIRST of a repeated key, the toml ones the LAST, as the deprecated bare names did.
+var fl_whole = str_from("namex");
+var fl_cut = str_sub(fl_whole, 0, 4);
+var fl_cut3 = str_sub(fl_whole, 0, 3);
+var fl_j = bayan_json_parse(str_from("{\"name\": \"demo\", \"count\": 42, \"name\": \"second\", \"nam\": \"short\"}"));
+assert_eq(str_eq_cstr(bayan_json_get_by_cstr(fl_j, "name"), "demo"), 1, "flat: json _by_cstr, the FIRST of a repeated key");
+assert_eq(bayan_json_get_by_str(fl_j, fl_cut), bayan_json_get_by_cstr(fl_j, "name"), "flat: json _by_str, a cut Str by its length");
+assert_eq(str_eq_cstr(bayan_json_get_by_str(fl_j, fl_cut3), "short"), 1, "flat: json _by_str, nam is nam, not name");
+assert_eq(bayan_json_get_by_cstr(fl_j, "zz"), 0, "flat: json _by_cstr, absent key -> 0");
+assert_eq(bayan_json_get_by_cstr(fl_j, 0), 0, "flat: json _by_cstr, null key -> 0");
+assert_eq(bayan_json_get_by_str(0, fl_cut), 0, "flat: json _by_str, null pairs -> 0");
+assert_eq(bayan_json_get_int_by_cstr(fl_j, "count"), 42, "flat: json get_int _by_cstr");
+assert_eq(bayan_json_get_int_by_str(fl_j, str_from("count")), 42, "flat: json get_int _by_str");
+assert_eq(bayan_json_get_int_by_str(fl_j, fl_cut3), 0, "flat: json get_int _by_str, no digits -> 0");
+var fl_t = bayan_toml_parse(str_from("name = \"x\"\nname = \"y\"\nnam = \"short\"\nlist = [1, 2]\ntbl = { k = 1 }\n[[item]]\nid = 1\n[[item]]\nid = 2\n"));
+var fl_tr = bayan_toml_section_pairs(vec_get(fl_t, 0));
+assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(fl_tr, "name"), "y"), 1, "flat: toml _by_cstr, the LAST of a repeated key");
+assert_eq(bayan_toml_get_by_str(fl_tr, fl_cut), bayan_toml_get_by_cstr(fl_tr, "name"), "flat: toml _by_str, a cut Str by its length");
+assert_eq(str_eq_cstr(bayan_toml_get_by_str(fl_tr, fl_cut3), "short"), 1, "flat: toml _by_str, nam is nam, not name");
+assert_eq(bayan_toml_get_pair_by_str(fl_tr, fl_cut), bayan_toml_get_pair_by_cstr(fl_tr, "name"), "flat: toml get_pair, both key types");
+assert_eq(bayan_toml_count_by_cstr(fl_tr, "name"), 2, "flat: toml count _by_cstr");
+assert_eq(bayan_toml_count_by_str(fl_tr, fl_cut), 2, "flat: toml count _by_str");
+var fl_items = bayan_toml_get_sections_by_cstr(fl_t, "item");
+var fl_items2 = bayan_toml_get_sections_by_str(fl_t, str_sub(str_from("items"), 0, 4));
+assert_eq(vec_len(fl_items), 2, "flat: toml get_sections _by_cstr, both [[item]]");
+assert_eq(vec_len(fl_items2), 2, "flat: toml get_sections _by_str, a cut Str");
+assert_eq(vec_get(fl_items2, 1), vec_get(fl_items, 1), "flat: (the same sections)");
+assert_eq(vec_len(bayan_toml_get_inline_by_cstr(fl_tr, "tbl")), 1, "flat: toml get_inline _by_cstr");
+assert_eq(vec_len(bayan_toml_get_inline_by_str(fl_tr, str_from("tbl"))), 1, "flat: toml get_inline _by_str");
+assert_eq(vec_len(bayan_toml_get_array_by_cstr(fl_tr, "list")), 2, "flat: toml get_array _by_cstr");
+assert_eq(vec_len(bayan_toml_get_array_by_str(fl_tr, str_from("list"))), 2, "flat: toml get_array _by_str");
+assert_eq(bayan_toml_get_by_str(fl_tr, str_from("zz")), 0, "flat: toml _by_str, absent key -> 0");
+assert_eq(vec_len(bayan_toml_get_sections_by_cstr(fl_t, "zz")), 0, "flat: toml get_sections, none -> an empty vec");
+assert_eq(bayan_toml_get_by_cstr(0, "name"), 0, "flat: toml _by_cstr, null pairs -> 0 (the bare name faulted)");
+assert_eq(bayan_toml_get_by_str(fl_tr, 0), 0, "flat: toml _by_str, null key -> 0");
+assert_eq(bayan_toml_count_by_cstr(fl_tr, 0), 0, "flat: toml count, null key -> 0");
+assert_eq(vec_len(bayan_toml_get_sections_by_str(0, str_from("item"))), 0, "flat: toml get_sections, null sections -> an empty vec");
+assert_eq(bayan_toml_get_array_by_str(fl_tr, 0), 0, "flat: toml get_array, null key -> 0");
+assert_eq(bayan_toml_get_inline_by_cstr(0, "tbl"), 0, "flat: toml get_inline, null pairs -> 0");
 
 var r = assert_summary();

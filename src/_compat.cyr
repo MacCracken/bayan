@@ -9,8 +9,13 @@ fn json_pair_new(key, value): i64 { return bayan_json_pair_new(key, value); }
 fn json_key(p): i64 { return bayan_json_key(p); }
 fn json_value(p): i64 { return bayan_json_value(p); }
 fn json_parse(src): i64 { return bayan_json_parse(src); }
-fn json_get(pairs, key): i64 { return bayan_json_get(pairs, key); }
-fn json_get_int(pairs, key): i64 { return bayan_json_get_int(pairs, key); }
+# Deprecated in 1.11.0 with the name it aliases (ADR 0014): the bare name does not say what its
+# key is. It forwards to the typed name, never to the deprecated bayan_* one, whose own
+# #deprecated would warn inside this body in every build that includes dist/bayan.cyr.
+#deprecated("use bayan_json_get_by_cstr (C-string/literal key) or bayan_json_get_by_str (Str key)")
+fn json_get(pairs, key): i64 { return bayan_json_get_by_str(pairs, key); }
+#deprecated("use bayan_json_get_int_by_cstr (C-string/literal key) or bayan_json_get_int_by_str (Str key)")
+fn json_get_int(pairs, key): i64 { return bayan_json_get_int_by_str(pairs, key); }
 fn json_build(pairs): i64 { return bayan_json_build(pairs); }
 fn json_parse_file(path): i64 { return bayan_json_parse_file(path); }
 fn json_parse_file_r(path): i64 { return bayan_json_parse_file_r(path); }
@@ -83,12 +88,18 @@ fn toml_pair_value(p) : i64 { return bayan_toml_pair_value(p); }
 fn toml_parse(src): i64 { return bayan_toml_parse(src); }
 fn toml_parse_file(path): i64 { return bayan_toml_parse_file(path); }
 fn toml_parse_file_r(path) : Result { return bayan_toml_parse_file_r(path); }
-fn toml_get(pairs, key): i64 { return bayan_toml_get(pairs, key); }
-fn toml_get_sections(sections, name): i64 { return bayan_toml_get_sections(sections, name); }
+# Deprecated in 1.11.0 with the name it aliases (ADR 0014): the bare name does not say what its
+# key is. It forwards to the typed name, never to the deprecated bayan_* one, whose own
+# #deprecated would warn inside this body in every build that includes dist/bayan.cyr.
+#deprecated("use bayan_toml_get_by_cstr (C-string/literal key) or bayan_toml_get_by_str (Str key)")
+fn toml_get(pairs, key: cstring): i64 { return bayan_toml_get_by_cstr(pairs, key); }
+#deprecated("use bayan_toml_get_sections_by_cstr (C-string/literal key) or bayan_toml_get_sections_by_str (Str key)")
+fn toml_get_sections(sections, name: cstring): i64 { return bayan_toml_get_sections_by_cstr(sections, name); }
 fn toml_array_parse_a(a, value): i64 { return bayan_toml_array_parse_a(a, value); }
 fn toml_array_parse(value): i64 { return bayan_toml_array_parse(value); }
 fn toml_is_array(value): bool { return bayan_toml_is_array(value); }
-fn toml_get_array(pairs, key): i64 { return bayan_toml_get_array(pairs, key); }
+#deprecated("use bayan_toml_get_array_by_cstr (C-string/literal key) or bayan_toml_get_array_by_str (Str key)")
+fn toml_get_array(pairs, key: cstring): i64 { return bayan_toml_get_array_by_cstr(pairs, key); }
 fn cyml_entry_new_a(a, hp, hl, bp, bl): i64 { return bayan_cyml_entry_new_a(a, hp, hl, bp, bl); }
 fn cyml_entry_new(hp, hl, bp, bl): i64 { return bayan_cyml_entry_new(hp, hl, bp, bl); }
 fn cyml_entry_header(e) : i64 { return bayan_cyml_entry_header(e); }

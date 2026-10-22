@@ -29,7 +29,7 @@ defaults:
 #   x86_64     build, smoke, suite, fuzz, bench, coverage, mulmod + divmod cost
 #   aarch64    the same program cross-built for aarch64 and run under qemu
 #   oracles    independent oracles: the PDF validator, font metrics, vectors (u128, f64, toml, csv, yaml,
-#              markdown), the markdown entity table
+#              markdown, the toml tree), the markdown entity table
 #   dist       the bundles, their regeneration, and the consumer/deprecation gate
 #
 # The committed lib/ is what every job builds against; only `toolchain` runs
@@ -194,13 +194,16 @@ jobs:
       # `bayan_json_v_obj_get_by(<Str>, ..)` call of matching arity is silently rerouted
       # to `_by_str` (measured on cyrius 6.6.12; the `_cstr` slot is registered but not
       # yet dispatched on, so it would join the moment a toolchain starts reading it).
-      - name: JSON — the typed lookups keep no overload base
+      #
+      # 1.11.0 gave the flat lookups the same pairs (bayan_json_get_by_str / _by_cstr, and the toml
+      # ones), so the rule is general now: no fn named `<anything>_by` may exist beside them.
+      - name: Typed lookups keep no overload base
         run: |
           set -euo pipefail
-          if grep -nE '^[[:space:]]*((pub|public)[[:space:]]+)?fn[[:space:]]+bayan_json_v_obj_get_by[[:space:]]*\(' src/*.cyr; then
-            echo "::error::defining bayan_json_v_obj_get_by turns _by_str/_by_cstr into live overload slots"; exit 1
+          if grep -nE '^[[:space:]]*((pub|public)[[:space:]]+)?fn[[:space:]]+[a-z0-9_]*_by[[:space:]]*\(' src/*.cyr; then
+            echo "::error::a fn named *_by turns its _by_str/_by_cstr siblings into live overload slots"; exit 1
           fi
-          echo "json typed-lookup naming clear"
+          echo "typed-lookup naming clear ($(grep -cE '^fn [a-z0-9_]*_by_(str|cstr)\(' src/*.cyr | awk -F: '{s+=$2} END {print s}') typed lookups, no *_by base)"
 
       # 1.10.0 typed the public names, and this keeps the next name typed too. A public constant
       # (an upper-case name declared at column 0, the top level) is a `const`: a `var` cannot be a `case` label or a stack
@@ -335,6 +338,15 @@ jobs:
           ./scripts/no-warnings.sh cyrius build tests/markdown_scaling.cyr build/md-scaling
           ./build/md-scaling
 
+      # And for the TOML tree parser (1.11.0): a table of n keys, n tables, n array-of-tables
+      # elements, n dotted keys, n sub-table headers, long arrays, inline tables and strings. Its key
+      # index keeps each line O(1); every vector would still pass without it, only slower.
+      - name: toml tree cost grows linearly
+        run: |
+          set -euo pipefail
+          ./scripts/no-warnings.sh cyrius build tests/toml_scaling.cyr build/toml-scaling
+          ./build/toml-scaling
+
   # --- aarch64: the same program, cross-built and run under qemu -----------
   #
   # Until 1.5.10 no bayan gate ran aarch64. From 1.0.2 to 1.5.9 its
@@ -421,6 +433,13 @@ jobs:
           set -euo pipefail
           ./scripts/no-warnings.sh cyrius build --aarch64 tests/markdown_scaling.cyr build/md-scaling-a64
           qemu-aarch64 build/md-scaling-a64
+
+      # The aarch64 half of the x86 job's toml tree cost check (1.11.0).
+      - name: toml tree cost grows linearly
+        run: |
+          set -euo pipefail
+          ./scripts/no-warnings.sh cyrius build --aarch64 tests/toml_scaling.cyr build/toml-scaling-a64
+          qemu-aarch64 build/toml-scaling-a64
 
       # One input, two targets, one answer: the PDF writer's output must be the
       # same BYTES on aarch64 as on x86_64 (it is, measured at 1.5.10: 3,331
@@ -587,6 +606,17 @@ jobs:
             diff "${RUNNER_TEMP}/mv/$(basename "$f")" "$f" \
               || { echo "::error file=$f::markdown vectors differ from scripts/gen-markdown-vectors.py output"; exit 1; }
           done
+
+      # The TOML tree vectors (1.11.0): tomllib's answer, a tree or a refusal, for hand-written
+      # documents aimed at each rule, random ones over a small key alphabet (so tables collide and
+      # keys repeat), byte-level mutations of those, and every document of the string vectors.
+      # Fixed seeds, so the file regenerates byte for byte; tomllib is stdlib from 3.11.
+      - name: TOML tree vectors regenerate identically
+        run: |
+          set -euo pipefail
+          python3 -W error scripts/gen-toml-tree-vectors.py "${RUNNER_TEMP}/ttv"
+          diff "${RUNNER_TEMP}/ttv/tree.vec" tests/fixtures/toml/tree.vec \
+            || { echo "::error::toml tree vectors differ from scripts/gen-toml-tree-vectors.py output"; exit 1; }
 
       # The HTML5 entity table src/markdown_entities.cyr is generated from
       # Python's html.entities.html5, the WHATWG list CommonMark names (stdlib,

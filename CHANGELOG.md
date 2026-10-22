@@ -2,6 +2,209 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.0] — 2026-10-22
+
+Minor release, the roadmap's 1.11.0 slot. Pin unchanged at **6.7.16**; the floor stays 6.7.9,
+checked there.
+
+- **`bayan_toml_v_parse`: TOML 1.0.0 into json's value tree**
+  ([ADR 0013](docs/adr/0013-toml-parses-into-the-json-value-tree-strictly.md)). It is strict: it
+  accepts and refuses what Python's `tomllib` does, and builds the tree `tomllib` builds. CI checks
+  this on 3,494 vectors generated from `tomllib`. A scratch differential of 384,384 more documents
+  agreed on every one (96,160 accepted, 288,224 refused).
+- **The flat lookups name their key type**
+  ([ADR 0014](docs/adr/0014-the-flat-lookups-name-their-key-type.md)). Each comes as `_by_cstr`
+  and `_by_str`, and the bare names and five aliases are deprecated. They give the same answers.
+- **The flat parser's two subset edges** (Known gap 1) have answers in the tree.
+
+Public API: 27 functions and 4 constants added. 13 names deprecated, none removed.
+
+> ### ⚠ What to re-check
+>
+> - **13 flat lookups warn at every call: rename each to its typed name.** The bare names are
+>   `bayan_json_get`, `bayan_json_get_int`, `bayan_toml_get`, `bayan_toml_get_pair`,
+>   `bayan_toml_count`, `bayan_toml_get_sections`, `bayan_toml_get_inline` and
+>   `bayan_toml_get_array`. Their aliases are `json_get`, `json_get_int`, `toml_get`,
+>   `toml_get_sections` and `toml_get_array`. Each warning names its two replacements:
+>   - `_by_cstr` takes a C string or a literal;
+>   - `_by_str` takes a `Str`.
+>
+>   A toml call passing a literal becomes `bayan_toml_get_by_cstr(pairs, "k")`. A json call
+>   passing `str_from(..)` becomes `bayan_json_get_by_str(pairs, s)`. The deprecated names answer
+>   exactly as before, with one difference: a null pairs or key now returns 0 (an empty vec for
+>   sections) instead of faulting. A build that treats warnings as errors fails until every call is
+>   renamed.
+> - **The toml bare names now carry `key: cstring`,** so passing a `Str` to one warns twice:
+>   deprecated, and "passing Str-typed". It was a silent "not found" before.
+> - **Nothing else changes.** No existing function's answer moved, and no sublib's contents changed
+>   except its version header and the deprecations. `bayan-toml` is still the flat parser alone;
+>   the tree parser is the new `bayan-toml-tree`.
+
+### Added — `bayan_toml_v_*`, TOML into the tree
+
+- **The parser.** It has the forms yaml and json have:
+  - `bayan_toml_v_parse(src)` and `bayan_toml_v_parse_a(a, src)` take a `Str`;
+  - `bayan_toml_v_parse_buf(buf, len)` and `_buf_a` take a span;
+  - `bayan_toml_v_parse_ctx(ps, buf, len)` and `_ctx_a` are the reentrant forms, on json's per-call
+    state.
+
+  Each returns the root table (a `JTAG_OBJ`), or 0 with the reason. Read the reason with
+  `bayan_toml_v_last_error()` / `_last_error_pos()`, or from the state with
+  `bayan_toml_v_state_error(ps)` / `_pos(ps)`. A table is read with `bayan_json_v_*`, and a key
+  with `bayan_json_v_obj_get_by_cstr` / `_by_str`.
+- **The mapping.**
+  - Tables and inline tables are objects, keys in document order.
+  - Arrays and arrays of tables are arrays.
+  - Strings are decoded (all four forms; CR LF in a multi-line string reads as LF).
+  - Integers are i64.
+  - Floats are correctly rounded through the stdlib's `f64_parse_n`; `inf` and `nan` keep their
+    sign.
+  - A **date or time is a string cell holding its text as written.**
+    `bayan_toml_v_datetime_kind(v)` says which kind: `TOML_DT_OFFSET`, `TOML_DT_LOCAL`,
+    `TOML_DT_DATE`, `TOML_DT_TIME`. The parser keeps the kind in the cell's reserved word, so a
+    cell json or yaml made reads 0.
+- **What `tomllib` refuses is refused, with a message and a byte offset.** That covers a duplicate
+  key, a table defined twice, and a dotted key into a table a header defined (or a header naming a
+  table a dotted key opened). It also covers extending an inline table or static array, invalid
+  escapes and UTF-8, control characters, an impossible date, a number TOML does not have, and
+  statements that do not end their line. The model of which tables are defined, and when, is
+  `tomllib`'s three flags. The parser keeps them in each container's reserved word during the
+  parse and clears them before returning.
+- **Where the tree cannot follow `tomllib`, bayan refuses:**
+  - an integer outside i64 ("integer out of range"; `tomllib` returns a Python int);
+  - nesting past json's cap of 128, counted as json counts ("nesting too deep");
+  - bytes that are not UTF-8 ("invalid utf-8"; `tomllib.load` raises `UnicodeDecodeError`).
+- **The flat parser's subset edges, answered.** `a."b.c".d = 1` is three nested tables, the middle
+  one named `b.c`, apart from `a.b.c.d`. `[[a.b]]` repeated under `[a]` is one array of tables.
+  `src/toml.cyr`'s header says the tree has the answers. In the flat API they stay documented.
+- **Cost.** A hash index over every key the document defines makes each lookup O(1), so a table of
+  n keys costs O(n). On a 3.1 KB Cargo-shaped manifest the tree parse takes about 100 µs and the
+  flat parse 30 µs; the flat parse validates nothing and leaves arrays and inline tables as text.
+- **Allocation.** Every allocation goes through the allocator given, and the strings are copies,
+  so the tree outlives its source. A refused allocation returns 0 with "out of memory", never a
+  partial tree.
+- **`src/toml_tree.cyr`, in `[lib]` after `yaml.cyr`, and the sublib `bayan-toml-tree`** (dtoa,
+  json, toml_tree; 11 stdlib leaves). It shares nothing with `toml.cyr`, so `bayan-toml` and
+  `bayan-toml-tree` build side by side (checked, 0 warnings). `bayan-toml-tree` carries json, so,
+  like `bayan-yaml`, it cannot sit beside `bayan-json`
+  ([architecture note 002](docs/architecture/002-one-copy-of-each-module-per-program.md)).
+
+### Changed — the flat lookups name their key type
+
+- **16 typed lookups.** The json pairs are `bayan_json_get_by_cstr` / `_by_str` and
+  `bayan_json_get_int_by_cstr` / `_by_str`. The toml pairs are `bayan_toml_get_by_*`,
+  `_get_pair_by_*`, `_count_by_*`, `_get_sections_by_*`, `_get_inline_by_*` and `_get_array_by_*`.
+  - `_by_cstr` carries `key: cstring`. On cyrius 6.7.16 a `Str` passed to it warns, whether it is a
+    named local, a global or a call's result.
+  - `_by_str` compares by the `Str`'s length, so a `Str` cut from a longer one (not NUL-terminated)
+    is read correctly.
+  - Each keeps its module's rule for a repeated key: json the first pair, toml the last.
+  - Each returns 0 for a null pairs or key.
+- **The bare names and aliases are deprecated forwarders**, each `#deprecated` with advice naming
+  both replacements. The toml ones forward to `_by_cstr`, the json ones to `_by_str`. The aliases
+  forward to the typed names, never the deprecated bare ones, whose warning would fire inside the
+  bundle. Each toml lookup's three copies of its loop became one private helper taking the key type
+  (`_toml_find_pair` and friends).
+- **cyrius's `: cstring` diagnostic is no longer bayan's open gap** (Known gap 8). ADR 0004 measured
+  it silent on a call's result, a global and a tail call (6.6.12). cyrius fixed that in 6.6.13 from
+  bayan's 2026-10-01 filing, and 6.7.16 warns on each. `state.md` called it open until now.
+- **CI** (`ci.yml`):
+  - The overload-base guard covers every typed lookup: no fn may be named `*_by`.
+  - New steps: the toml tree's cost (x86_64 and aarch64), and its vectors regenerating
+    identically.
+  - The consumer gate probes every new deprecation in every bundle that ships it: `bayan` for all
+    13; `bayan-json`, `-yaml` and `-toml-tree` for json's; `bayan-toml` for toml's. Each needs
+    exactly its warnings and advice. The json names never stated a key type and keep it unstated,
+    so they expect no "passing Str-typed" warning. The gate also pins every new `_by_cstr`'s two
+    diagnostics in every such bundle: 81 checks, all green.
+- **`dist/` regenerated** (`cyrius distlib --all`): 12 bundles, `bayan-toml-tree` new.
+  - `bayan.cyr`, `bayan-json`, `-yaml` and `-toml` carry the typed lookups and deprecations.
+  - The other sublibs change only their version header.
+  - No existing `.deps` sidecar changes, and a second regeneration changes nothing.
+
+### Tests
+
+- **`tests/fixtures/toml/tree.vec` (new), 3,494 vectors**, from `scripts/gen-toml-tree-vectors.py`
+  (`tomllib`, fixed seeds, regenerated in CI). 2,114 parse and 1,380 are refused. Sources:
+  - hand-written documents per rule: each table-model case, every escape, number and date form,
+    each end of input, the depth cap on both sides;
+  - 800 random documents over a small key alphabet, so tables collide and keys repeat;
+  - 800 byte-level mutations of those;
+  - every document of the string vectors.
+
+  `run_toml_tree` in `tests/vectors.tcyr` writes bayan's tree in the canonical form with its own
+  serializer: floats as bits, dates normalized as `tomllib` keeps them. Every error message the
+  parser has is reached, most of them dozens of times, except "out of memory" and "null source",
+  which the suite drives.
+- **The differential, in scratch: 384,384 documents, 0 disagreements** (four seeds, 50,000
+  generated and 50,000 mutated each).
+- **`tests/toml.fcyr` (new): 120,343 parses, 18,597 of them accepted.** Inputs are token soup,
+  random statements and their damage, every prefix of 15 edge documents, and nesting at 120–135
+  levels by four routes. Each is parsed against a PROT_NONE page, so no read goes past the input.
+  It checks that:
+  - a second parse from another address builds an equal tree;
+  - a tree is clean (flags cleared, no duplicate key, nothing past 128 levels);
+  - one in eight is parsed again with a random allocation refused, and returns 0 with "out of
+    memory";
+  - nesting past the cap is refused.
+- **`tests/toml_scaling.cyr` (new)** times eight families at two sizes, 8× apart: root keys,
+  tables, array-of-tables elements, dotted keys, sub-table headers, array values, inline-table keys
+  and string escapes. The ratios are 0.8–1.0, against a limit of 3.0.
+- **`tests/bayan.tcyr`: 1,889 → 1,987 runtime asserts.**
+  - The tree: a manifest walked with json's accessors, every value form and date kind, the
+    reserved words cleared.
+  - The two subset edges.
+  - 13 refusals by message and byte offset.
+  - The ctx path leaving the globals alone, the depth cap lowered to 3, the tree outliving its
+    source.
+  - Each of a 40-key document's 150+ allocations refused alone; the `_a` forms making every
+    request through their allocator.
+  - The 16 typed lookups: both key types, cut `Str`s, first and last wins, absent and null keys.
+  - The alias rows of the 5 deprecated aliases moved to `tests/deprecated_lookup.cyr`.
+- **`tests/deprecated_lookup.cyr`: 13 → 36 asserts.** Each of the 13 newly deprecated names answers
+  what its typed name answers. `scripts/deprecated-lookup.sh` now holds advice per name, and
+  requires exactly 31 warnings.
+- **Mutation pass, 28 mutants in scratch copies: 26 fail a suite, and 2 are equivalent.** The
+  mutants cover:
+  - the key index (a constant hash: the scaling gate);
+  - each table-model rule; year 0, the century leap rule, second 60, leading zeros, the i64 edge;
+  - the extra closing quotes, the line-ending backslash, surrogates, DEL in a comment, the depth
+    edge, a refused index growth, the multi-line newline trim, `\f`;
+  - the trailing commas of inline tables and arrays, escapes in literal strings, a date's kind,
+    the flags left uncleared;
+  - and, in the flat lookups, first-wins, the key type, and the null guard.
+
+  The two equivalents:
+  - Dropping the PENDING bit's own set only lets a table walked by several dotted keys into the
+    finalize list more than once. Every answer is the same; the bit stays, as a dedup.
+  - Dropping the string scan's skip of the whitespace after a line-ending backslash changes nothing,
+    because that run is legal body text and the decoder drops it on its own. So that loop was dead,
+    and it is gone. The vectors, the suite, the fuzz harness and the whole differential (384,384
+    documents, 0 wrong) were re-run after.
+- **Benchmarks:** two rows in `tests/bayan.bcyr`, the tree and the flat parse of the same 3.1 KB
+  manifest.
+- **Gates** (state.md has the recipes):
+  - every `ci.yml` job, each in a fresh tree, on the 6.7.16 release (signature verified): all green;
+  - aarch64 under qemu: the suite, all four fuzz harnesses, both cost checks;
+  - the floor, on the 6.7.9 release in a scratch copy: build, suite, raw include, `distlib --check`
+    of the 6.7.16-generated bundles, consumer gate.
+
+### Docs
+
+- **[ADR 0013](docs/adr/0013-toml-parses-into-the-json-value-tree-strictly.md)**: the oracle, a
+  date as a string that remembers its kind, the refusals where the tree cannot follow, the
+  separate module and sublib, the index. Alternatives: a lenient tree parse, a `JTAG_DATETIME`
+  tag, normalized date text, refusing dates, the tree in `bayan-toml`, pair-walking lookups.
+- **[ADR 0014](docs/adr/0014-the-flat-lookups-name-their-key-type.md)**: ADR 0004 applied to the
+  flat lookups, with the 6.7.16 re-measurement of both diagnostics.
+- **[Architecture note 002](docs/architecture/002-one-copy-of-each-module-per-program.md)** gains
+  `toml_tree` and the `bayan-toml-tree` pairings. json's cell layout comment says what the
+  reserved word holds now. `src/toml.cyr`'s header points at the tree for its subset edges.
+- **The README** lists `toml_tree`, and `markdown`, which it lacked since 1.9.0, and says which
+  sublibs carry json. Its Status paragraph still says 1.5.4; state.md holds the version.
+- **The roadmap** drops the 1.11.0 slot. **`state.md`** is refreshed: Version, Source, Tests, CI,
+  Known gaps 1, 7 and 8, Next.
+
 ## [1.10.0] — 2026-10-22
 
 Minor release, the roadmap's 1.10.0 slot, with the toolchain pin moving **6.7.12 → 6.7.16**.

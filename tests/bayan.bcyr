@@ -38,6 +38,9 @@ include "lib/unicode/casefold.cyr"
 include "src/pdf.cyr"
 include "src/dtoa.cyr"
 include "src/cyml.cyr"
+include "src/toml.cyr"
+include "src/json.cyr"
+include "src/toml_tree.cyr"
 include "src/markdown_entities.cyr"
 include "src/markdown.cyr"
 
@@ -263,6 +266,57 @@ fn main(): i64 {
     }
     bench_batch_stop(b16, 200);
     bench_report(b16);
+
+    # --- toml (1.11.0) ----------------------------------------------------------
+    # A Cargo-shaped manifest: a package table, 30 inline-table dependencies with arrays, 10
+    # [[bin]] entries, a dotted-key profile and a server table with a float and a date-time. The
+    # tree parse runs on an arena reset between documents; the flat parse beside it, for scale.
+    var tsb = str_builder_new();
+    str_builder_add_cstr(tsb, "[package]\nname = \"example\"\nversion = \"1.2.3\"\nauthors = [\"A <a@x.org>\", \"B <b@x.org>\"]\nedition = \"2021\"\n\n[dependencies]\n");
+    i = 0;
+    while (i < 30) {
+        str_builder_add_cstr(tsb, "dep");
+        str_builder_add_int(tsb, i);
+        str_builder_add_cstr(tsb, " = { version = \"1.0\", features = [\"alloc\", \"std\"], optional = false }\n");
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 10) {
+        str_builder_add_cstr(tsb, "\n[[bin]]\nname = \"tool");
+        str_builder_add_int(tsb, i);
+        str_builder_add_cstr(tsb, "\"\npath = 'src/bin/tool.rs'  # the entry\n");
+        i = i + 1;
+    }
+    str_builder_add_cstr(tsb, "\n[profile]\nrelease.opt-level = 3\nrelease.lto = true\n\n[server]\nhost = \"0.0.0.0\"\nport = 8_080\ntimeout = 30.5\nstarted = 1979-05-27T07:32:00Z\n");
+    var tds = str_builder_build(tsb);
+    var tar = arena_allocator(1048576);
+    var tb = bench_new("toml_v_parse (Cargo-shaped manifest, 3.1KB)");
+    bench_batch_start(tb);
+    i = 0;
+    while (i < 1000) {
+        reset_via(tar);
+        bayan_toml_v_parse_a(tar, tds);
+        i = i + 1;
+    }
+    bench_batch_stop(tb, 1000);
+    bench_report(tb);
+
+    var tf = bench_new("toml_parse, flat (the same manifest)");
+    bench_batch_start(tf);
+    i = 0;
+    while (i < 1000) {
+        bayan_toml_parse(tds);
+        i = i + 1;
+    }
+    bench_batch_stop(tf, 1000);
+    bench_report(tf);
+    if (bayan_toml_v_parse(tds) == 0) {
+        print("toml bench: the manifest did not parse\n", 39);
+        return 1;
+    }
+    print("toml manifest: ", 15);
+    fmt_int(str_len(tds));
+    print(" bytes\n", 7);
 
     return 0;
 }

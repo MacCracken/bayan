@@ -1,0 +1,440 @@
+# toml tree fuzz harness — bayan_toml_v_parse over generated, damaged and deep documents (1.11.0).
+#
+# tests/vectors.tcyr checks bayan_toml_v_parse against tomllib's answers for the documents in
+# tests/fixtures/toml/tree.vec, and the scratch differential at 1.11.0 checked 384,384 more (the
+# CHANGELOG has it). This harness keeps the properties that need no oracle, at a volume no fixture
+# holds:
+#
+#   SOUP     documents of random tokens from every construct TOML has (keys bare and quoted, `=`,
+#            `.`, headers, brackets and braces, commas, all four string forms with escapes, each
+#            number form, dates and times, comments, CR LF, non-ASCII and stray bytes).
+#   LINES    documents of random statements, most of them well formed, over a small key alphabet,
+#            so tables collide and keys repeat; each is parsed again after 1..3 random edits.
+#   EDGES    every prefix of documents that end the input in each scanner's states.
+#   DEEP     nesting from 120 to 135 levels: arrays, inline tables, dotted keys and headers.
+#
+# Properties. Any failure prints the document and exits non-zero:
+#   (a) no crash, and no load past the source: every document is parsed from the END of a mapping
+#       whose next page is PROT_NONE, so a read at src[len] is a SIGSEGV.
+#   (b) the parse does not depend on where the source sits: a second parse, from the heap, gives
+#       the same answer, and an equal tree.
+#   (c) a tree is clean: every table's and array's reserved word is 0 again (the parse's flags are
+#       cleared), a string's is 0 or a TOML_DT_* kind, no table holds a key twice, and nothing nests
+#       past 128 levels.
+#   (d) one document in eight is parsed again with one allocation refused, picked at random from
+#       the ones the parse makes: the parse returns 0, with "out of memory".
+#   (e) a document past the nesting cap is refused with "nesting too deep".
+#
+# xorshift64, seeded as tests/json.fcyr is, so a failure reproduces exactly. The heap is rewound
+# before every document.
+
+# NOTE: a file carrying include directives skips the [deps].stdlib auto-prepend, so the stdlib
+# prerequisites are listed explicitly here, exactly as src/main.cyr does.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/math.cyr"
+include "lib/mmap.cyr"
+
+include "src/dtoa.cyr"
+include "src/json.cyr"
+include "src/toml_tree.cyr"
+
+var g_x = 0x9E3779B97F4A7C15;
+
+fn xs64(): i64 {
+    g_x = g_x ^ (g_x << 13);
+    g_x = g_x ^ (g_x >> 7);
+    g_x = g_x ^ (g_x << 17);
+    return g_x;
+}
+# Uniform in 0..n-1.
+fn fz_rand(n): i64 { return ((xs64() >> 1) % n); }
+
+fn fz_say(s): i64 { print(s, strlen(s)); return 0; }
+fn fz_num(n): i64 {
+    var b[24];
+    var l = fmt_int_buf(n, &b);
+    print(&b, l);
+    return 0;
+}
+# A byte span, printable, with other bytes as \xHH.
+fn fz_dump(p, n): i64 {
+    var hex = "0123456789abcdef";
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c >= 32 && c < 127 && c != 92) { print(p + i, 1); }
+        else {
+            var e[4];
+            store8(&e, 92);
+            store8(&e + 1, 120);
+            store8(&e + 2, load8(hex + (c >> 4)));
+            store8(&e + 3, load8(hex + (c & 15)));
+            print(&e, 4);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Tokens, separated by \x01 and ended by \x02, in one literal (static data, so alloc_reset leaves
+# them).
+var FZ_TOK = "a\x01b\x01x\x01k-1\x01_\x01\"a\"\x01'b'\x01\"a.b\"\x01\"\"\x01=\x01 = \x01.\x01 . \x01[\x01]\x01[[\x01]]\x01{\x01}\x01,\x01, \x01\n\x01\r\n\x01\r\x01 \x01\t\x01# c\x01#\x011\x01-1\x01+0\x010x1F\x010o7\x010b1\x011_000\x011.5\x01-0.0\x011e5\x011e-400\x01inf\x01-nan\x01true\x01false\x011979-05-27\x0107:32:00\x011979-05-27T07:32:00Z\x011979-05-27 07:32:00.5-07:00\x012000-02-29\x01\"s\\n\\u00e9\"\x01\"\\U0001F600\"\x01'l'\x01\"\"\"\nm\\\n  n\"\"\"\x01'''m''''\x01\"\x01'\x01\"\"\"\x01'''\x01\\\x01\\u\x01\xc3\xa9\x01\xff\x01\x00\x01\x7f\x019223372036854775808\x0101\x01_1\x011__2\x02";
+var g_tok[2048];        # FZ_TOK's tokens: offset, length
+var g_ntok = 0;
+
+fn fz_index(tab, out): i64 {
+    var n = 0;
+    var i = 0;
+    loop {
+        var st = i;
+        while (load8(tab + i) != 1 && load8(tab + i) != 2) { i = i + 1; }
+        store64(out + n * 16, st);
+        store64(out + n * 16 + 8, i - st);
+        n = n + 1;
+        if (load8(tab + i) == 2 || n >= 120) { break; }
+        i = i + 1;
+    }
+    return n;
+}
+
+const FZ_CAP = 65536;
+var g_doc = 0;          # the document being built (FZ_CAP)
+var g_fence = 0;        # the end of a mapping whose next page is PROT_NONE
+var g_bad = 0;
+var g_docs = 0;
+var g_ok = 0;
+var g_refused = 0;
+var g_deep = 0;
+
+fn fz_addn(at, s, n): i64 {
+    if (at + n >= FZ_CAP - 8) { return at; }
+    memcpy(g_doc + at, s, n);
+    return at + n;
+}
+fn fz_add(at, s): i64 { return fz_addn(at, s, strlen(s)); }
+fn fz_tok(at, k): i64 { return fz_addn(at, FZ_TOK + load64(&g_tok + k * 16), load64(&g_tok + k * 16 + 8)); }
+
+# A soup document into g_doc; its length.
+fn fz_soup(): i64 {
+    var n = 0;
+    var k = 1 + fz_rand(40);
+    var i = 0;
+    while (i < k) {
+        n = fz_tok(n, fz_rand(g_ntok));
+        i = i + 1;
+    }
+    return n;
+}
+
+var FZ_KEYS = "a\x01b\x01c\x01\"a\"\x01'b'\x01a.b\x01b.c\x01a . c\x01\"x.y\".z\x02";
+var g_key[512];
+var g_nkey = 0;
+var FZ_VALS = "1\x01\"s\"\x01'l'\x01\"\"\"\nm\"\"\"\x011.5\x01true\x011979-05-27\x0107:32:00\x01[]\x01[1, 2]\x01[\n1,\n# c\n2,\n]\x01{}\x01{x = 1}\x01{x.y = 1, x.z = 2}\x01[{a = 1}, {b = 2}]\x01{a = [1], b = {c = 2}}\x01-0x1\x01nan\x02";
+var g_val[512];
+var g_nval = 0;
+
+fn fz_pick(at, tab, idx, n): i64 {
+    var k = fz_rand(n);
+    return fz_addn(at, tab + load64(idx + k * 16), load64(idx + k * 16 + 8));
+}
+
+# A document of random statements into g_doc; its length.
+fn fz_lines(): i64 {
+    var n = 0;
+    var k = 1 + fz_rand(12);
+    var i = 0;
+    while (i < k) {
+        var r = fz_rand(10);
+        if (r < 6) {
+            if (fz_rand(2) == 0) { n = fz_pick(n, FZ_KEYS, &g_key, g_nkey); }
+            else {
+                # A key unlikely to collide, so a document gets far enough to reach its values.
+                var kb[24];
+                n = fz_add(n, "k");
+                n = fz_addn(n, &kb, fmt_int_buf(fz_rand(1000), &kb));
+            }
+            n = fz_add(n, " = ");
+            n = fz_pick(n, FZ_VALS, &g_val, g_nval);
+        } elif (r < 8) {
+            n = fz_add(n, "[");
+            n = fz_pick(n, FZ_KEYS, &g_key, g_nkey);
+            n = fz_add(n, "]");
+        } else {
+            n = fz_add(n, "[[");
+            n = fz_pick(n, FZ_KEYS, &g_key, g_nkey);
+            n = fz_add(n, "]]");
+        }
+        if (fz_rand(6) == 0) { n = fz_add(n, " # c"); }
+        if (fz_rand(8) == 0) { n = fz_add(n, "\r\n"); } else { n = fz_add(n, "\n"); }
+        i = i + 1;
+    }
+    return n;
+}
+
+# 1..3 random edits to g_doc[0..n): delete, insert or replace a byte with a token's first.
+fn fz_damage(n): i64 {
+    var e = 1 + fz_rand(3);
+    while (e > 0) {
+        var at = 0;
+        if (n > 0) { at = fz_rand(n); }
+        var r = fz_rand(3);
+        var t = FZ_TOK + load64(&g_tok + fz_rand(g_ntok) * 16);
+        if (r == 0 && n > 0) {
+            memcpy(g_doc + at, g_doc + at + 1, n - at - 1);
+            n = n - 1;
+        } elif (r == 1 && n < FZ_CAP - 8) {
+            var j = n;
+            while (j > at) { store8(g_doc + j, load8(g_doc + j - 1)); j = j - 1; }
+            store8(g_doc + at, load8(t));
+            n = n + 1;
+        } elif (n > 0) {
+            store8(g_doc + at, load8(t));
+        }
+        e = e - 1;
+    }
+    return n;
+}
+
+fn fz_fail(what, n): i64 {
+    g_bad = g_bad + 1;
+    if (g_bad <= 10) {
+        fz_say("toml fuzz: "); fz_say(what); fz_say(": [");
+        fz_dump(g_doc, n);
+        fz_say("]\n");
+    }
+    return 0;
+}
+
+# The refusal lever: the default allocator's alloc slot, refusing request g_nth alone.
+var g_nth = 0 - 1;
+var g_calls = 0;
+fn fz_refuse_nth(state, size): i64 {
+    g_calls = g_calls + 1;
+    if (g_calls == g_nth) { return 0; }
+    return alloc(size);
+}
+
+# True if the trees a and b are equal: tags, values, string bytes, kinds, keys and order.
+fn fz_eq(a, b): i64 {
+    var t = load64(a);
+    if (t != load64(b)) { return 0; }
+    if (load64(a + 16) != load64(b + 16)) { return 0; }
+    if (t == JTAG_STR) { return str_eq(bayan_json_v_str(a), bayan_json_v_str(b)); }
+    if (t == JTAG_ARR) {
+        var n = bayan_json_v_arr_len(a);
+        if (n != bayan_json_v_arr_len(b)) { return 0; }
+        var i = 0;
+        while (i < n) {
+            if (fz_eq(bayan_json_v_arr_get(a, i), bayan_json_v_arr_get(b, i)) == 0) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    if (t == JTAG_OBJ) {
+        var m = bayan_json_v_obj_len(a);
+        if (m != bayan_json_v_obj_len(b)) { return 0; }
+        var j = 0;
+        while (j < m) {
+            if (str_eq(bayan_json_v_obj_key(a, j), bayan_json_v_obj_key(b, j)) == 0) { return 0; }
+            if (fz_eq(bayan_json_v_obj_val(a, j), bayan_json_v_obj_val(b, j)) == 0) { return 0; }
+            j = j + 1;
+        }
+        return 1;
+    }
+    return load64(a + 8) == load64(b + 8);
+}
+
+# (c): 1 if the tree v, at `level`, is clean.
+fn fz_clean(v, level): i64 {
+    var t = load64(v);
+    var r = load64(v + 16);
+    if (t == JTAG_STR) { return r >= 0 && r <= 4; }
+    if (t == JTAG_ARR || t == JTAG_OBJ) {
+        if (r != 0 || level > 128) { return 0; }
+    }
+    if (t == JTAG_ARR) {
+        var n = bayan_json_v_arr_len(v);
+        var i = 0;
+        while (i < n) {
+            if (fz_clean(bayan_json_v_arr_get(v, i), level + 1) == 0) { return 0; }
+            i = i + 1;
+        }
+    }
+    if (t == JTAG_OBJ) {
+        var m = bayan_json_v_obj_len(v);
+        var j = 0;
+        while (j < m) {
+            var k = j + 1;
+            if (m <= 64) {
+                while (k < m) {
+                    if (str_eq(bayan_json_v_obj_key(v, j), bayan_json_v_obj_key(v, k)) == 1) { return 0; }
+                    k = k + 1;
+                }
+            }
+            if (fz_clean(bayan_json_v_obj_val(v, j), level + 1) == 0) { return 0; }
+            j = j + 1;
+        }
+    }
+    return 1;
+}
+
+# Parse g_doc[0..n) at the fence and from the heap, and check (a)-(e).
+fn fz_check(n): i64 {
+    if (n > FZ_CAP) { return 0; }
+    memcpy(g_fence - n, g_doc, n);
+    var dv = default_alloc();
+    var saved = load64(dv);
+    store64(dv, &fz_refuse_nth);
+    g_nth = 0 - 1;
+    g_calls = 0;
+    var d1 = bayan_toml_v_parse_buf_a(dv, g_fence - n, n);
+    var calls = g_calls;
+    store64(dv, saved);
+    g_docs = g_docs + 1;
+    var e1 = bayan_toml_v_last_error();
+    var copy = alloc(n + 1);
+    memcpy(copy, g_doc, n);
+    var d2 = bayan_toml_v_parse_buf_a(default_alloc(), copy, n);
+    if ((d1 == 0) != (d2 == 0)) { return fz_fail("a second parse answers differently", n); }
+    if (d1 == 0) {
+        if (str_eq_cstr(str_from(e1), "out of memory") == 1) { return fz_fail("out of memory with nothing refused", n); }
+        if (str_eq_cstr(str_from(e1), "nesting too deep") == 1) { g_deep = g_deep + 1; }
+        return 0;
+    }
+    g_ok = g_ok + 1;
+    if (fz_eq(d1, d2) == 0) { return fz_fail("a second parse differs", n); }
+    if (fz_clean(d1, 1) == 0) { return fz_fail("the tree is not clean", n); }
+    if (calls > 0 && fz_rand(8) == 0) {
+        store64(dv, &fz_refuse_nth);
+        g_nth = 1 + fz_rand(calls);
+        g_calls = 0;
+        var d3 = bayan_toml_v_parse_buf_a(dv, g_fence - n, n);
+        store64(dv, saved);
+        g_nth = 0 - 1;
+        g_refused = g_refused + 1;
+        if (d3 != 0) { return fz_fail("a refused allocation still parsed", n); }
+        if (str_eq_cstr(str_from(bayan_toml_v_last_error()), "out of memory") == 0) { return fz_fail("refused, but not out of memory", n); }
+    }
+    return 1;
+}
+
+# Every prefix of a set of documents that end the input in each scanner's states.
+var FZ_EDGE = "a = \"x\\u00e9\\U0001F600\\\"\"\x01a = \"\"\"\nx\\\n  y\"\"\"\"\x01a = '''x'''''\x01a = 'x'\x01a = 1979-05-27T07:32:00.123-07:00\x01a = 07:32:00.5\x01a = 0x7FFF_FFFF\x01a = -1_000.5e-1_0\x01a = +inf\x01a = [1, [2, 3], # c\n]\x01a = {b = 1, c.d = {e = 2}}\x01[a . \"b\" . 'c']\n\x01[[a.b]]\nc = 1\n\x01\"k\\t\" = true # c\r\n\x01a.b.c = 2000-02-29\n\x02";
+var g_edge[512];
+
+fn fz_edges(): i64 {
+    var ne = fz_index(FZ_EDGE, &g_edge);
+    var total = 0;
+    var e = 0;
+    while (e < ne) {
+        var src = FZ_EDGE + load64(&g_edge + e * 16);
+        var len = load64(&g_edge + e * 16 + 8);
+        var k = 0;
+        while (k <= len) {
+            alloc_reset();
+            memcpy(g_doc, src, k);
+            fz_check(k);
+            total = total + 1;
+            k = k + 1;
+        }
+        e = e + 1;
+    }
+    return total;
+}
+
+# (e): nesting of `levels` containers, by four routes, either side of the cap.
+fn fz_deep_one(kind, levels): i64 {
+    var n = 0;
+    var i = 0;
+    if (kind == 0) {                    # arrays: the root, then levels - 1 arrays
+        n = fz_add(n, "a = ");
+        while (i < levels - 1) { n = fz_add(n, "["); i = i + 1; }
+        i = 0;
+        while (i < levels - 1) { n = fz_add(n, "]"); i = i + 1; }
+    } elif (kind == 1) {                # inline tables
+        n = fz_add(n, "a = ");
+        while (i < levels - 1) { n = fz_add(n, "{b = "); i = i + 1; }
+        n = fz_add(n, "1");
+        i = 0;
+        while (i < levels - 1) { n = fz_add(n, "}"); i = i + 1; }
+    } elif (kind == 2) {                # a dotted key: levels - 1 tables and a value
+        while (i < levels - 1) { n = fz_add(n, "k."); i = i + 1; }
+        n = fz_add(n, "v = 1");
+    } else {                            # a header of levels - 1 parts
+        n = fz_add(n, "[k");
+        while (i < levels - 2) { n = fz_add(n, ".k"); i = i + 1; }
+        n = fz_add(n, "]");
+    }
+    n = fz_add(n, "\n");
+    memcpy(g_fence - n, g_doc, n);
+    var d = bayan_toml_v_parse_buf(g_fence - n, n);
+    g_docs = g_docs + 1;
+    if (levels <= 128) {
+        if (d == 0) { return fz_fail("refused at or under the nesting cap", n); }
+        if (fz_clean(d, 1) == 0) { return fz_fail("the tree is not clean", n); }
+    } else {
+        if (d != 0) { return fz_fail("parsed past the nesting cap", n); }
+        if (str_eq_cstr(str_from(bayan_toml_v_last_error()), "nesting too deep") == 0) { return fz_fail("past the cap, but not nesting too deep", n); }
+        g_deep = g_deep + 1;
+    }
+    return 0;
+}
+
+fn fz_deep(): i64 {
+    var kind = 0;
+    while (kind < 4) {
+        var lv = 120;
+        while (lv <= 135) {
+            alloc_reset();
+            fz_deep_one(kind, lv);
+            lv = lv + 1;
+        }
+        kind = kind + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var fm = mmap_anon(FZ_CAP + 4096);
+    if (fm == 0) { fz_say("toml fuzz: mmap failed\n"); return 1; }
+    if (cyr_mprotect(fm + FZ_CAP, 4096, 0) != 0) { fz_say("toml fuzz: mprotect failed\n"); return 1; }
+    g_fence = fm + FZ_CAP;
+    g_doc = mmap_anon(FZ_CAP);
+    if (g_doc == 0) { fz_say("toml fuzz: mmap failed\n"); return 1; }
+    g_ntok = fz_index(FZ_TOK, &g_tok);
+    g_nkey = fz_index(FZ_KEYS, &g_key);
+    g_nval = fz_index(FZ_VALS, &g_val);
+
+    var it = 0;
+    while (it < 40000) {
+        alloc_reset();
+        var n = fz_soup();
+        fz_check(n);
+        alloc_reset();
+        n = fz_lines();
+        fz_check(n);
+        n = fz_damage(n);
+        fz_check(n);
+        it = it + 1;
+    }
+    var nedge = fz_edges();
+    fz_deep();
+
+    fz_say("toml fuzz: "); fz_num(g_docs); fz_say(" parses ("); fz_num(g_ok); fz_say(" accepted, ");
+    fz_num(nedge); fz_say(" edge prefixes, "); fz_num(g_deep); fz_say(" refused as too deep, ");
+    fz_num(g_refused); fz_say(" with an allocation refused); ");
+    fz_num(g_bad); fz_say(" wrong\n");
+    if (g_bad > 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+syscall(60, r);

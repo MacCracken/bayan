@@ -216,6 +216,28 @@ because a batch yields a single sample.
   (a quadratic path measures about the input ratio, 8). The paths it guards, and what each cost
   before its fix, are in the CHANGELOG [1.9.0] entry.
 
+## TOML into the tree — `bayan_toml_v_parse` (1.11.0)
+
+- **Toolchain**: cyrius 6.7.16 · **bayan**: 1.11.0 · `tests/bayan.bcyr`. The document is
+  Cargo-shaped: a package table with an array, 30 inline-table dependencies each holding an array,
+  10 `[[bin]]` entries with a trailing comment, a dotted-key profile and a server table with a
+  float and a date-time; 3,117 bytes. The tree parse gets a fresh arena each time (`reset_via`).
+
+| Row | x86_64 |
+|---|---:|
+| `toml_v_parse (Cargo-shaped manifest, 3.1KB)` | ~102 µs |
+| `toml_parse, flat (the same manifest)` | ~30 µs |
+
+### Reading these
+
+- **About 30 MB/s through the tree, about 3.4× the flat parse.** The two do different work. The
+  tree parse checks every byte against TOML 1.0.0, decodes every string into a copy, splits arrays
+  and inline tables into cells, and indexes every key. The flat parse validates nothing and keeps
+  arrays and inline tables as raw text.
+- **The cost grows with the input.** `tests/toml_scaling.cyr` times eight families at two sizes,
+  8× apart; the time ratio over the input ratio is 0.8–1.0 (a quadratic path measures about 8).
+  40,000 keys in one table, 429 KB, parse in about 28 ms.
+
 ### Not yet measured
 
 Compression (the Flate hooks), multi-page documents at scale, and the

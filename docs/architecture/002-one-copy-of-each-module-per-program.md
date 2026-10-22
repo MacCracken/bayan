@@ -15,13 +15,15 @@ So a module that declares a `const` can be in a program once. Measured at bayan 
 | `pdf` | `_PDF_STATE_SIZE` (1.5.13); `PTAG_*` and the public `PDF_*` (1.10.0) | refused since 1.5.13 |
 | `markdown` | `_MD_*`, `_MN_*`, `_MP_*` (1.9.0); `MD_K_*`, `MD_EXT_*`, `MD_ALIGN_*` (1.10.0) | refused since 1.9.0 |
 | `toml` | `TOML_K_*` (1.10.0) | **refused since 1.10.0** |
+| `toml_tree` | `TOML_DT_*` and its private `_TC_*` / `_TF_*` (1.11.0) | refused since it shipped (1.11.0) |
 | `bigint` | `U256_SIZE` (1.10.0) | **refused since 1.10.0** |
 | `base64`, `csv`, `u128`, `cyml`, `dtoa` | none | builds, with one "duplicate fn" warning per function |
 
 A program gets a second copy in three ways:
 
 - **Two sublibs that share a module.** `bayan-yaml` carries `json.cyr` and `dtoa.cyr`, so it cannot
-  sit beside `bayan-json`.
+  sit beside `bayan-json`; nor can `bayan-toml-tree` (1.11.0), which carries them too. `bayan-toml`
+  and `bayan-toml-tree` share no module, so those two can.
 - **A sublib beside the full bundle.**
 - **Any bundle beside cyrius's own fold, `lib/bayan.cyr`.** Other stdlib files include that fold:
   at 6.7.16, `lib/sigil.cyr`, `lib/ws.cyr`, `lib/ws_server.cyr` and `lib/yantra.cyr`. bayan's own

@@ -1,9 +1,16 @@
-# tests/deprecated_lookup.cyr — the two DEPRECATED json lookups still answer as before.
+# tests/deprecated_lookup.cyr — the DEPRECATED lookups still answer as before.
 #
 # bayan_json_v_obj_get and its alias json_v_obj_get were deprecated at 1.5.10 in favour of
 # _by_cstr / _by_str (docs/adr/0004). The deprecation is non-breaking only if they keep
 # answering exactly as before: the same node as _by_cstr, 0 wherever _by_cstr gives 0, and
 # the FIRST pair of a repeated key.
+#
+# 1.11.0 deprecated eight more, for the same reason (docs/adr/0014): the flat lookups
+# bayan_json_get, bayan_json_get_int, bayan_toml_get, bayan_toml_get_pair, bayan_toml_count,
+# bayan_toml_get_sections, bayan_toml_get_inline and bayan_toml_get_array, and the five aliases of
+# them (json_get, json_get_int, toml_get, toml_get_sections, toml_get_array). Each forwards to its
+# typed name, so each must answer what that name answers: the json lookups the FIRST pair of a
+# repeated key, the toml ones the LAST, and 0 (or an empty vec) for an absent or a null key.
 #
 # Through 1.5.11 these rows sat in tests/bayan.tcyr, reached through `&fn`, because cyrius
 # 6.6.12 did not deprecation-check `&fn` and the suite stayed warning-free. cyrius 6.6.16
@@ -70,6 +77,39 @@ assert_eq(json_v_obj_get(dup, "a"), first, "deprecated json_v_obj_get picks the 
 # A null key returns 0 (through 1.5.9 every lookup died of SIGSEGV on one).
 assert_eq(bayan_json_v_obj_get(doc, 0), 0, "deprecated bayan_json_v_obj_get: null key -> 0");
 assert_eq(json_v_obj_get(doc, 0), 0, "deprecated json_v_obj_get: null key -> 0");
+
+# --- 1.11.0: the flat lookups --------------------------------------------------------------
+var JF = bayan_json_parse(str_from("{\"name\": \"demo\", \"count\": 42, \"name\": \"second\"}"));
+var jf_name = bayan_json_get_by_str(JF, str_from("name"));
+assert_eq(str_eq_cstr(jf_name, "demo"), 1, "the json fixture's first name is demo");
+assert_eq(bayan_json_get(JF, str_from("name")), jf_name, "deprecated bayan_json_get: the FIRST of a repeated key, as _by_str");
+assert_eq(bayan_json_get(JF, str_from("zz")), 0, "deprecated bayan_json_get: absent key -> 0");
+assert_eq(bayan_json_get(JF, 0), 0, "deprecated bayan_json_get: null key -> 0");
+assert_eq(bayan_json_get_int(JF, str_from("count")), 42, "deprecated bayan_json_get_int: as _by_str");
+assert_eq(bayan_json_get_int(JF, str_from("zz")), 0, "deprecated bayan_json_get_int: absent key -> 0");
+assert_eq(json_get(JF, str_from("name")), jf_name, "deprecated json_get: as bayan_json_get_by_str");
+assert_eq(json_get_int(JF, str_from("count")), 42, "deprecated json_get_int: as bayan_json_get_int_by_str");
+
+var TD = str_from("a = 1\nname = \"x\"\nname = \"y\"\nlist = [1, 2]\ntbl = { k = 1 }\n[[item]]\nid = 1\n[[item]]\nid = 2\n");
+var ts = bayan_toml_parse(TD);
+var tr = bayan_toml_section_pairs(vec_get(ts, 0));
+var tr_name = bayan_toml_get_by_cstr(tr, "name");
+assert_eq(str_eq_cstr(tr_name, "y"), 1, "the toml fixture's last name is y");
+assert_eq(bayan_toml_get(tr, "name"), tr_name, "deprecated bayan_toml_get: the LAST of a repeated key, as _by_cstr");
+assert_eq(bayan_toml_get(tr, "zz"), 0, "deprecated bayan_toml_get: absent key -> 0");
+assert_eq(bayan_toml_get(tr, 0), 0, "deprecated bayan_toml_get: null key -> 0 (it faulted before 1.11.0)");
+assert_eq(bayan_toml_get_pair(tr, "name"), bayan_toml_get_pair_by_cstr(tr, "name"), "deprecated bayan_toml_get_pair: as _by_cstr");
+assert_eq(bayan_toml_count(tr, "name"), 2, "deprecated bayan_toml_count: as _by_cstr");
+var ts_items = bayan_toml_get_sections(ts, "item");
+assert_eq(vec_len(ts_items), 2, "deprecated bayan_toml_get_sections: both [[item]] sections");
+assert_eq(vec_get(ts_items, 1), vec_get(bayan_toml_get_sections_by_cstr(ts, "item"), 1), "deprecated bayan_toml_get_sections: the same sections as _by_cstr");
+assert_eq(vec_len(bayan_toml_get_sections(ts, "zz")), 0, "deprecated bayan_toml_get_sections: none -> an empty vec");
+assert_eq(vec_len(bayan_toml_get_inline(tr, "tbl")), 1, "deprecated bayan_toml_get_inline: as _by_cstr");
+assert_eq(vec_len(bayan_toml_get_array(tr, "list")), 2, "deprecated bayan_toml_get_array: as _by_cstr");
+assert_eq(bayan_toml_get_array(tr, "zz"), 0, "deprecated bayan_toml_get_array: absent key -> 0");
+assert_eq(toml_get(tr, "name"), tr_name, "deprecated toml_get: as bayan_toml_get_by_cstr");
+assert_eq(vec_len(toml_get_sections(ts, "item")), 2, "deprecated toml_get_sections: as bayan_toml_get_sections_by_cstr");
+assert_eq(vec_len(toml_get_array(tr, "list")), 2, "deprecated toml_get_array: as bayan_toml_get_array_by_cstr");
 
 var r = assert_summary();
 syscall(SYS_EXIT, r);

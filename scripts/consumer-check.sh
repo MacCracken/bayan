@@ -219,11 +219,32 @@ fi
 # line-start pattern missed the last two, and a deprecation spelt that way shipped
 # unlisted and unprobed. (The probe calls `fn(0, <key>)`: a future row with
 # another signature fails to compile here, loudly, until it gets a body.)
-DEPRECATED="bayan:bayan_json_v_obj_get bayan:json_v_obj_get bayan-json:bayan_json_v_obj_get bayan-yaml:bayan_json_v_obj_get"
+#
+# 1.11.0 deprecated the flat lookups and five aliases of them (docs/adr/0014), each in every bundle
+# that ships it: json's in bayan, bayan-json, bayan-yaml and bayan-toml-tree (which carry json.cyr),
+# toml's in bayan and bayan-toml. bayan_json_get and bayan_json_get_int, and their aliases, never
+# stated a key type and keep their untyped key, so their probe gets no `passing Str-typed` warning:
+# DEPRECATED_UNTYPED lists them, and their want is two warnings, not three.
+JSON_DEP="bayan_json_v_obj_get bayan_json_get bayan_json_get_int"
+TOML_DEP="bayan_toml_get bayan_toml_get_pair bayan_toml_count bayan_toml_get_sections bayan_toml_get_inline bayan_toml_get_array"
+ALIAS_DEP="json_v_obj_get json_get json_get_int toml_get toml_get_sections toml_get_array"
+DEPRECATED=""
+for f in $JSON_DEP $TOML_DEP $ALIAS_DEP; do DEPRECATED="$DEPRECATED bayan:$f"; done
+for b in bayan-json bayan-yaml bayan-toml-tree; do
+    for f in $JSON_DEP; do DEPRECATED="$DEPRECATED $b:$f"; done
+done
+for f in $TOML_DEP; do DEPRECATED="$DEPRECATED bayan-toml:$f"; done
 declare -A DEPRECATED_MSG=(
     [bayan_json_v_obj_get]="use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key"
     [json_v_obj_get]="use bayan_json_v_obj_get_by_cstr for a C-string/literal key, bayan_json_v_obj_get_by_str for a Str key"
 )
+for base in json_get json_get_int toml_get toml_get_pair toml_count toml_get_sections toml_get_inline toml_get_array; do
+    DEPRECATED_MSG[bayan_${base}]="use bayan_${base}_by_cstr (C-string/literal key) or bayan_${base}_by_str (Str key)"
+done
+for base in json_get json_get_int toml_get toml_get_sections toml_get_array; do
+    DEPRECATED_MSG[${base}]="use bayan_${base}_by_cstr (C-string/literal key) or bayan_${base}_by_str (Str key)"
+done
+DEPRECATED_UNTYPED=" bayan_json_get bayan_json_get_int json_get json_get_int "
 DEP_ATTR='(^|[[:space:]])#deprecated([[:space:]]*\(|[[:space:]]|$)'
 drc=0
 
@@ -361,12 +382,15 @@ PROBE
             bad_repl="${bad_repl} ${t}(itself deprecated)"
         fi
     done
-    if [ "$nw" -eq 3 ] && [ -z "$foreign" ] && [ "$dep_a" -eq 1 ] && [ "$dep_b" -eq 1 ] \
-        && [ "$strw" -eq 1 ] && [ "$nmsg" -eq 2 ] && [ "$nexact" -eq 2 ] && [ -n "$repl" ] && [ -z "$bad_repl" ]; then
+    want_nw=3
+    want_strw=1
+    case "$DEPRECATED_UNTYPED" in *" ${fn} "*) want_nw=2; want_strw=0 ;; esac
+    if [ "$nw" -eq "$want_nw" ] && [ -z "$foreign" ] && [ "$dep_a" -eq 1 ] && [ "$dep_b" -eq 1 ] \
+        && [ "$strw" -eq "$want_strw" ] && [ "$nmsg" -eq 2 ] && [ "$nexact" -eq 2 ] && [ -n "$repl" ] && [ -z "$bad_repl" ]; then
         echo "ok      ${name} — ${fn} warns at both call sites with its exact advice, and nowhere in the bundle"
     else
-        echo "FAIL    ${name} — ${fn} deprecation: ${nw} warning(s), want 3 (deprecated at lines ${la}"
-        echo "        and ${lb}: ${dep_a}+${dep_b}, want 1+1; Str-typed at ${lb}: ${strw}, want 1;"
+        echo "FAIL    ${name} — ${fn} deprecation: ${nw} warning(s), want ${want_nw} (deprecated at lines ${la}"
+        echo "        and ${lb}: ${dep_a}+${dep_b}, want 1+1; Str-typed at ${lb}: ${strw}, want ${want_strw};"
         echo "        exact advice at ${nexact} of ${nmsg} deprecation(s), want 2 of 2);"
         echo "        replacements named: [$(echo $repl)]${bad_repl:+, unusable:${bad_repl}}"
         echo "        want advice: ${want_msg}"
@@ -385,7 +409,17 @@ done
 # are sent to, against each bundle that ships it. The Str-local probe must get
 # EXACTLY the one `passing Str-typed` warning: no deprecation (the replacement is
 # not deprecated) and nothing from inside the bundle.
-TYPED_CSTR="bayan:bayan_json_v_obj_get_by_cstr bayan-json:bayan_json_v_obj_get_by_cstr bayan-yaml:bayan_json_v_obj_get_by_cstr"
+#
+# 1.11.0 adds the typed flat lookups' _by_cstr names, pinned the same way in every bundle that
+# ships them.
+JSON_CSTR="bayan_json_v_obj_get_by_cstr bayan_json_get_by_cstr bayan_json_get_int_by_cstr"
+TOML_CSTR="bayan_toml_get_by_cstr bayan_toml_get_pair_by_cstr bayan_toml_count_by_cstr bayan_toml_get_sections_by_cstr bayan_toml_get_inline_by_cstr bayan_toml_get_array_by_cstr"
+TYPED_CSTR=""
+for f in $JSON_CSTR $TOML_CSTR; do TYPED_CSTR="$TYPED_CSTR bayan:$f"; done
+for b in bayan-json bayan-yaml bayan-toml-tree; do
+    for f in $JSON_CSTR; do TYPED_CSTR="$TYPED_CSTR $b:$f"; done
+done
+for f in $TOML_CSTR; do TYPED_CSTR="$TYPED_CSTR bayan-toml:$f"; done
 for row in $TYPED_CSTR; do
     name=${row%%:*}
     fn=${row#*:}
