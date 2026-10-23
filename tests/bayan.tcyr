@@ -5941,6 +5941,34 @@ assert_eq(_pdfz_ahx_a(TFA, 0, "4142>", 5), 0, "pdf filter frees: AHx with its he
 assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: AHx's refused header holds no buffer");
 assert_eq(_tf_err_is("ASCIIHexDecode: out of memory wrapping the output"), 1, "pdf filter frees: (AHx's, by name)");
 tf_refuse_16 = 0;
+# 1 when ASCII85Decode refuses `src` as `msg` and holds no block for it.
+fn _tf_a85_refused(src, msg): i64 {
+    var m = tf_n;
+    if (_pdfz_a85_a(TFA, 0, src, strlen(src)) != 0) { return 0; }
+    if (_tf_live(m) != 0) { return 0; }
+    return _tf_err_is(msg);
+}
+assert_eq(_tf_a85_refused("!!z~>", "ASCII85Decode: 'z' inside a group"), 1,
+  "pdf filter frees: A85's 'z' inside a group holds no buffer");
+assert_eq(_tf_a85_refused("!!\x01", "ASCII85Decode: byte is outside the '!'..'u' alphabet"), 1,
+  "pdf filter frees: A85's byte below '!'");
+assert_eq(_tf_a85_refused("!!v", "ASCII85Decode: byte is outside the '!'..'u' alphabet"), 1,
+  "pdf filter frees: A85's byte above 'u'");
+assert_eq(_tf_a85_refused("uuuuu", "ASCII85Decode: group does not fit in 32 bits"), 1,
+  "pdf filter frees: A85's group past 32 bits");
+assert_eq(_tf_a85_refused("!!!!!!", "ASCII85Decode: final group of one character encodes nothing"), 1,
+  "pdf filter frees: A85's final group of one character");
+assert_eq(_tf_a85_refused("uuuu~>", "ASCII85Decode: final group does not fit in 32 bits"), 1,
+  "pdf filter frees: A85's final group past 32 bits");
+assert_eq(_tf_a85_refused("!!!!!~x", "ASCII85Decode: '~' not followed by '>'"), 1,
+  "pdf filter frees: A85's '~' not followed by '>'");
+tf_refuse_16 = 1;
+assert_eq(_tf_a85_refused("!!!!!~>", "ASCII85Decode: out of memory wrapping the output"), 1,
+  "pdf filter frees: A85's refused header holds no buffer, and is named");
+tf_refuse_16 = 0;
+tf_mark = tf_n;
+assert_eq(str_len(_pdfz_a85_a(TFA, 0, "!!!!!~>", 7)), 4, "pdf filter frees: (A85 decodes)");
+assert_eq(_tf_live(tf_mark), 2, "pdf filter frees: (holding a buffer and a header)");
 assert_lt(tf_n, 4096, "pdf filter frees: (TFA listed every block it handed out)");
 
 var r = assert_summary();
