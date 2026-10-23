@@ -758,11 +758,15 @@ fn _yp_parse_block(ps, yc, indent): i64 {
 # error; a `- ` entry at this indent inside a mapping is an error.
 fn _yp_parse_mapping(ps, yc, indent): i64 {
     var obj = bayan_json_v_obj_new();
+    # The mapping's keys so far, for the duplicate check below: json.cyr's key set
+    # (1.11.1), O(1) a key where the walk of the object it replaces was O(n).
+    var ks[_JK_SIZE];
+    _jk_init(&ks, default_alloc());
     while (1 == 1) {
         var rec = _yc_cur(yc);
-        if (rec == 0) { return obj; }
+        if (rec == 0) { _jk_free(&ks); return obj; }
         var ri = load64(rec + 24);
-        if (ri < indent) { return obj; }
+        if (ri < indent) { _jk_free(&ks); return obj; }
         var roff = load64(rec);
         var rptr = load64(rec + 8);
         var rlen = load64(rec + 16);
@@ -845,10 +849,19 @@ fn _yp_parse_mapping(ps, yc, indent): i64 {
         # — and every downstream JSON reader takes the LAST. Two components
         # reading the same document disagreeing about a role is exactly the
         # shape a policy file must not have.
+        #
+        # 1.11.1: the check was bayan_json_v_obj_get_by_str, a walk of every key
+        # before this one, so a mapping of n keys cost O(n^2): 40,000 keys (480
+        # KB) took 14.4 s. The key set answers in O(1).
         var dupk = kstr;
         if (dupk == 0) { dupk = str_new(kptr, klen); }
-        if (bayan_json_v_obj_get_by_str(obj, dupk) != 0) {
+        var fresh = _jk_add(&ks, str_data(dupk), str_len(dupk));
+        if (fresh == 0) {
             _jp_set_err(ps, "duplicate mapping key", kptr - load64(ps));
+            return 0;
+        }
+        if (fresh < 0) {
+            _jp_set_err(ps, "out of memory in mapping", kptr - load64(ps));
             return 0;
         }
         bayan_json_v_obj_set(obj, dupk, val);
