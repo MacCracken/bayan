@@ -95,8 +95,9 @@ does that.
 document through bounds-checked slices, so the same hand-written list must
 include **`lib/slice.cyr`** before `lib/bayan.cyr` (the full bundle and the
 json / yaml / toml-tree sublibs, which carry json); their `.deps` sidecars and
-`# Requires` blocks name it. So, for the same four, **`lib/hashseed.cyr`**: the
-duplicate-key set hashes a peer's keys with the stdlib's per-process seed.
+`# Requires` blocks name it. So, for those four and the flat toml sublib, does
+**`lib/hashseed.cyr`**: json's duplicate-key set and both toml parsers' key
+indexes hash a peer's keys with the stdlib's per-process seed.
 
 ### PDF compression is opt-in
 

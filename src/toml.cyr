@@ -2,7 +2,8 @@
 # Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-toml.cyr" (sublib).
 #        `lib/toml.cyr` was the pre-carve stdlib module and no longer ships —
 #        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
-# Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, fs.cyr
+# Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, fs.cyr,
+#           hashseed.cyr (1.11.1: the dotted-key index's per-process hash seed)
 #
 # Parses TOML files with:
 #   key = "value"          (basic string — ESCAPES DECODED as of 1.5.3)
@@ -1097,17 +1098,21 @@ fn _toml_section_find(sections, from, name): i64 {
 #   ix: +0 slots (0 while walking; then cap slots of {hash, section})  +8 cap  +16 n
 const _TOML_DOT_WALK = 8;
 
+# FNV-1a over the name from a basis seeded per process, then hashseed's finalizer, so every bit of
+# the slot depends on the whole name AND the seed. The names are a peer's dotted keys: with
+# published constants alone (1.11.1 as first written) a peer precomputed, offline and once, names
+# sharing a slot, and each dotted key's lookup walked every table before it — the O(n^2) this
+# index replaced. json's key set had the same hash and the same fix. CHANGELOG [1.11.1]
 fn _toml_name_hash(name: Str): i64 {
     var p = str_data(name);
     var n = str_len(name);
-    var h = 0xCBF29CE484222325;
+    var h = 0xCBF29CE484222325 ^ _hm_seed_get();
     var i = 0;
     while (i < n) {
         h = (h ^ load8(p + i)) * 0x100000001B3;
         i = i + 1;
     }
-    h = h * 0x9E3779B97F4A7C15;
-    return h ^ (h >> 29);
+    return _hm_mix(h);
 }
 
 fn _toml_dot_put(slots, mask, h, sec): i64 {

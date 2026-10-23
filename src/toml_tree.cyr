@@ -264,16 +264,21 @@ fn _tv_skip_array_ws(c, buf, pos, end): i64 {
 # One open-addressing table for the whole parse, keyed by (parent cell, key bytes). Every key a
 # document defines goes in, so finding a table's child, and refusing a duplicate, costs O(1) where
 # a walk of the object's pairs would make a table of n keys cost O(n^2).
-
+#
+# The hash is FNV-1a over the key from a basis seeded per process, the parent XORed in, then
+# hashseed's finalizer: every bit of the slot depends on the whole key, the parent AND the seed.
+# The keys are a peer's. With published constants alone (1.11.0) a peer precomputed, offline and
+# once, keys sharing a slot, and each insert walked every key before it. The parent did not save
+# it: it went in before a multiply, so a slot read only the low bits of (FNV state ^ parent), and
+# keys whose FNV states agree in those bits share it under every parent. CHANGELOG [1.11.1]
 fn _tv_hash(parent, data, len): i64 {
-    var h = 0xCBF29CE484222325;
+    var h = 0xCBF29CE484222325 ^ _hm_seed_get();
     var i = 0;
     while (i < len) {
         h = (h ^ load8(data + i)) * 0x100000001B3;
         i = i + 1;
     }
-    h = (h ^ parent) * 0x9E3779B97F4A7C15;
-    return h ^ (h >> 29);
+    return _hm_mix(h ^ parent);
 }
 
 # A zeroed slot array of `cap` slots, or 0.

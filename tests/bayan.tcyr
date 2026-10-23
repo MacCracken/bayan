@@ -785,6 +785,55 @@ assert_eq(vec_len(tf_doc), 1 + 20 + 1 + 12, "toml dot index: and the parse under
 assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(tf_doc, 33)), "h.e11"), 1,
   "toml dot index: (its last table named as the walk would)");
 
+test_group("toml: the dotted-key index's hash is seeded per process (1.11.1)");
+# The index picks a slot from the LOW bits of _toml_name_hash, probing linearly. Unseeded, that
+# hash was published constants (FNV-1a, a multiply, a shift: the json key set's, until it was
+# seeded), so a peer precomputed, once and offline, table names that share a slot and sent them
+# as dotted keys to every bayan process: each dotted key's lookup then walked every table before
+# it, the O(n^2) the index replaced. _tnf_pub is that offline computation; 400 names it puts in
+# one slot of 1024 must not form one run of 400 in the live index.
+fn _tnf_pub(p, n): i64 {
+    var h = 0xCBF29CE484222325;
+    var i = 0;
+    while (i < n) {
+        h = (h ^ load8(p + i)) * 0x100000001B3;
+        i = i + 1;
+    }
+    h = h * 0x9E3779B97F4A7C15;
+    return h ^ (h >> 29);
+}
+var tnf_buf[4];                 # 32 bytes: "d" and a candidate number
+var tnf_secs = vec_new();
+var tnf_cand = 0;
+while (vec_len(tnf_secs) < 400) {
+    store8(&tnf_buf, 100);
+    var tnf_n = 1 + fmt_int_buf(tnf_cand, &tnf_buf + 1);
+    if ((_tnf_pub(&tnf_buf, tnf_n) & 1023) == 0) {
+        vec_push(tnf_secs, bayan_toml_section_new_a(default_alloc(), str_from_buf(&tnf_buf, tnf_n), vec_new()));
+    }
+    tnf_cand = tnf_cand + 1;
+}
+var tnf_ix: i64[3];
+memset(&tnf_ix, 0, 24);
+assert_eq(_toml_dot_build_a(default_alloc(), &tnf_ix, tnf_secs, 0, 1024), 0, "toml dot index: 400 tables indexed");
+assert_eq(load64(&tnf_ix + 8), 1024, "toml dot index: (in 1024 slots)");
+assert_eq(_toml_dot_find_a(default_alloc(), &tnf_ix, tnf_secs, 0, bayan_toml_section_name(vec_get(tnf_secs, 399))),
+  vec_get(tnf_secs, 399), "toml dot index: (each found by name)");
+# The longest run of occupied slots, walked twice round so a run that wraps is whole.
+var tnf_slots = load64(&tnf_ix);
+var tnf_run = 0;
+var tnf_max = 0;
+var tnf_i = 0;
+while (tnf_i < 2048) {
+    if (load64(tnf_slots + (tnf_i & 1023) * 16 + 8) != 0) {
+        tnf_run = tnf_run + 1;
+        if (tnf_run > tnf_max) { tnf_max = tnf_run; }
+    } else { tnf_run = 0; }
+    tnf_i = tnf_i + 1;
+}
+assert_lt(tnf_max, 64, "toml dot index: names precomputed from the published hash do not share one run");
+_toml_dot_reset_a(default_alloc(), &tnf_ix);
+
 test_group("toml: inline tables (1.5.4)");
 # `k = { a = 1 }` was captured verbatim with no accessor and was not listed
 # as a subset limit anywhere a caller reads — so a consumer needing one had
@@ -5860,6 +5909,65 @@ assert_eq(tv_calls, tv_n, "toml tree: (making the same requests, through its all
 tv_calls = 0;
 assert_neq(bayan_toml_v_parse_buf_a(TV_ONE, TV_R, strlen(TV_R)), 0, "toml tree: bayan_toml_v_parse_buf_a too");
 assert_eq(tv_calls, tv_n, "toml tree: (through its allocator)");
+
+test_group("toml tree: the key index's hash is seeded per process (1.11.1)");
+# The parse's one key index picks a slot from the LOW bits of _tv_hash(parent, key), probing
+# linearly. Unseeded, that hash was published constants (FNV-1a over the key, the parent cell
+# XORed in, a multiply, a shift), so a peer precomputed, once and offline, keys that share a slot
+# and sent them as one table's keys to every bayan process: each key's insert and duplicate check
+# then walked every key before it, the O(n^2) the index replaced. Not knowing the parent's
+# address did not protect it: the parent went in before the multiply, so a slot of 1024 read only
+# the low 39 bits of (FNV state ^ parent), and keys whose FNV-1a states agree there (cheap to
+# precompute by chaining birthday collisions of a 39-bit state) shared a slot under EVERY parent.
+# _tvf_pub is the offline computation, for one parent; 400 keys it puts in one slot of 1024 must
+# not form one run of 400 in the live index.
+fn _tvf_pub(parent, p, n): i64 {
+    var h = 0xCBF29CE484222325;
+    var i = 0;
+    while (i < n) {
+        h = (h ^ load8(p + i)) * 0x100000001B3;
+        i = i + 1;
+    }
+    h = (h ^ parent) * 0x9E3779B97F4A7C15;
+    return h ^ (h >> 29);
+}
+var tvf_ctx[_TC_SIZE];
+var tvf_c = &tvf_ctx;
+store64(tvf_c + _TC_A, default_alloc());
+store64(tvf_c + _TC_SLOTS, _tv_slots_new(default_alloc(), 1024));
+store64(tvf_c + _TC_CAP, 1024);
+store64(tvf_c + _TC_COUNT, 0);
+var tvf_parent = bayan_json_v_obj_new_a(default_alloc());
+var tvf_buf[4];                 # 32 bytes: "k" and a candidate number
+var tvf_keys = vec_new();
+var tvf_cand = 0;
+while (vec_len(tvf_keys) < 400) {
+    store8(&tvf_buf, 107);
+    var tvf_n = 1 + fmt_int_buf(tvf_cand, &tvf_buf + 1);
+    if ((_tvf_pub(tvf_parent, &tvf_buf, tvf_n) & 1023) == 0) {
+        var tvf_k = str_from_buf(&tvf_buf, tvf_n);
+        vec_push(tvf_keys, tvf_k);
+        _tv_index(tvf_c, tvf_parent, tvf_k, tvf_k);
+    }
+    tvf_cand = tvf_cand + 1;
+}
+var tvf_last = vec_get(tvf_keys, 399);
+assert_eq(load64(tvf_c + _TC_COUNT), 400, "toml tree index: 400 keys indexed");
+assert_eq(load64(tvf_c + _TC_CAP), 1024, "toml tree index: (in 1024 slots)");
+assert_eq(_tv_find_str(tvf_c, tvf_parent, tvf_last), tvf_last, "toml tree index: (each found under its parent)");
+# The longest run of occupied slots, walked twice round so a run that wraps is whole.
+var tvf_slots = load64(tvf_c + _TC_SLOTS);
+var tvf_run = 0;
+var tvf_max = 0;
+var tvf_i = 0;
+while (tvf_i < 2048) {
+    if (load64(tvf_slots + (tvf_i & 1023) * 24) != 0) {
+        tvf_run = tvf_run + 1;
+        if (tvf_run > tvf_max) { tvf_max = tvf_run; }
+    } else { tvf_run = 0; }
+    tvf_i = tvf_i + 1;
+}
+assert_lt(tvf_max, 64, "toml tree index: keys precomputed from the published hash do not share one run");
 
 test_group("flat lookups: each names its key type (1.11.0)");
 # _by_cstr takes a C string or a literal; _by_str a Str, compared by its length. A Str cut from a
