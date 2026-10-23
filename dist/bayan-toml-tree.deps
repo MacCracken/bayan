@@ -3,11 +3,12 @@
 atomic
 math
 alloc
+string
+slice
 vec
 str
 io
 result
 syscalls
-string
 fmt
 fnptr

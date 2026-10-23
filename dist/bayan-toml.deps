@@ -3,6 +3,7 @@
 alloc
 str
 vec
+string
 io
 result
 syscalls

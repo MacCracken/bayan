@@ -2,11 +2,22 @@
 
 > Refreshed every release. CLAUDE.md is preferences/process/procedures
 > (durable); this file is **state** (volatile).
-> Last refreshed: 2026-10-22.
+> Last refreshed: 2026-10-23.
 
 ## Version
 
-**1.11.0** — a minor, the roadmap's 1.11.0 slot whole; pin unchanged at **6.7.16**.
+**1.11.1** — a patch, the bayan findings of cyrius 6.7.18's security audit; pin unchanged at
+**6.7.16**. CYRIUS-2026-0045: a failed PDF stream decode is memoised and every inflate attempt is
+charged, so pages sharing a failing Flate stream no longer re-inflate it (1.9 GB from 25 KB); page
+content handed out is charged to a 512 MiB per-document budget (`_PDF_MAX_CONTENT`). yaml mappings
+and flat-toml dotted keys are linear again (`tests/parse_scaling.cyr`, a CI step). ⚠ Invalid input
+that parsed now refuses, by name (the user's decisions at the audit): a duplicate JSON key in every
+parser (`bayan_json_parse` returns 0), a malformed or out-of-range number in the streaming parser and
+a leading zero in both, non-canonical base64 (new `bayan_base64_last_error()`). json's parsers read
+through bounds-checked slices (cyrius 6.7.18 D1), so ⚠ bayan needs stdlib `slice`. New harness
+`tests/json_parsers.fcyr`. Floor 6.7.9.
+
+Before it, **1.11.0** — a minor, the roadmap's 1.11.0 slot whole; pin unchanged at **6.7.16**.
 **`bayan_toml_v_parse`**: TOML 1.0.0 into json's value tree (ADR 0013), strict: it accepts and
 refuses what Python's `tomllib` does and builds the tree it builds, checked on 3,494 vectors
 regenerated in CI and 384,384 more in a scratch differential (0 disagreements). A date or time is a
@@ -434,7 +445,7 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **1,987 asserts and 99 `#assert`s, green** @1.11.0 on x86_64 and aarch64 under qemu (1,889 @1.10.0, 1,781 @1.9.0, 1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **2,075 asserts and 99 `#assert`s, green** @1.11.1 on x86_64 (1,987 @1.11.0, 1,889 @1.10.0, 1,781 @1.9.0, 1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
@@ -578,7 +589,8 @@ this is mutation-verified.
   the protocol completes and agrees with itself (300× green on a Pi; the 1.5.10 code did not show
   the race in 300 Pi runs either).
 - `tests/pdf_flate.tcyr` — the compression path, isolated because it is the
-  only test that pulls in `lib/sankoch.cyr`. **19 asserts, green.**
+  only test that pulls in `lib/sankoch.cyr`. **43 asserts, green** (19 before 1.11.1, which added
+  the CYRIUS-2026-0045 rows and the page-content budget's, on PDFs it builds in the test).
 - `tests/mulmod_speed.cyr` — **new at 1.5.10**, run by its own CI step on
   x86_64 and under qemu-aarch64: per-call mulmod cost against a plain `(a*b)%m`
   call in the same process, failing above 50×. It sees a fall back to a bit-serial
@@ -614,6 +626,18 @@ this is mutation-verified.
   edge documents, is also parsed flush against a PROT_NONE page, so a one-byte
   read past the end faults — six over-read mutants passed both suites without it.
   ~2.5 s.
+- `tests/json_parsers.fcyr` — **new at 1.11.1**: the tree, streaming and flat JSON parsers over
+  60,000 mutants of 14 seeds (truncations, byte edits, repeated and swapped spans, boundary numbers,
+  a repeated first member, wraps 126–129 deep). The two descents agree, a tree round-trips, the flat
+  parser returns an accepted object's members, and every answer is the same at a PROT_NONE page and
+  inside a buffer whose bytes past the input would change it. `<binary> N` replays one iteration.
+  ~2 s; green plain, `--poison`, `--poison=ab`, `--bounds`. `tests/json.fcyr` gained property (f) and
+  a REPEATED corpus at 1.11.1 (duplicate keys refuse).
+- `tests/parse_scaling.cyr` — **new at 1.11.1**, its own CI step on x86_64 and qemu-aarch64:
+  yaml mapping keys, the json tree / flat / stream object keys and flat-toml dotted keys at two sizes
+  8× apart, failing above 3.0 (yaml and flat toml measured 7.1–7.7 at 1.11.0, 1.0 now).
+- `tests/json_slice_trap.cyr` — **new at 1.11.1**, its own CI step: each mode reads past the input
+  through one of json's readers and must trap (exit 134, "slice bounds violation").
 - `tests/markdown.fcyr` — **new at 1.9.0**: 25,028 parses a run of generated, edited, edge
   (every prefix of 16), deep (120–135 levels) and pathological documents, each from a page whose
   next page is PROT_NONE; the HTML must be well formed (every `<` one of the renderer's tags,

@@ -2,6 +2,106 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.1] — 2026-10-23
+
+Patch release: the bayan findings of cyrius 6.7.18's security audit
+(`docs/audit/2026-10-22-security-audit.md` in cyrius), every one fixed, and the audit's JSON
+parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
+
+> ### ⚠ What to re-check — invalid input that parsed now refuses (the user's decisions at the audit)
+>
+> - **A duplicate JSON object key refuses the document**, in all three parsers, comparing keys
+>   decoded (`"\u0061dmin"` is `"admin"`). The tree and streaming parsers fail with
+>   "duplicate key" at the second key. **`bayan_json_parse` returns 0** for one (its documented
+>   failure value, until now only a refused allocation), with "duplicate key" in
+>   `bayan_json_last_error()` / `_pos()`: check its result for 0 before `vec_len`. A tree built
+>   by hand with `bayan_json_v_obj_set` may still repeat a key, and the lookups still answer the
+>   first. yaml already refused duplicates; it is unchanged but for the cost.
+> - **A malformed JSON number is refused by name in the streaming parser as in the tree**:
+>   `-`, `1.`, `1e`, `-e5`, `-.5` and an integer outside i64 (`18446744073709551616` reached
+>   `on_int` as 0). **A leading zero (`01`, `-01`, `00`) is refused by both**, "a number may not
+>   have a leading zero" (RFC 8259 section 6). yaml's numbers are unchanged (`01` stays a
+>   string there).
+> - **The base64 decoders refuse what is not canonical RFC 4648**: `=` anywhere but the padding
+>   that ends the last group, padding of the wrong length (base64url: none, or exactly to a
+>   multiple of 4), a one-character last group, non-zero bits below the last byte (`QR==`), and
+>   the other alphabet's characters. The reason is in the new **`bayan_base64_last_error()`**.
+> - **bayan needs stdlib `slice`.** json's parsers read through bounds-checked slices: a
+>   hand-written include list adds `lib/slice.cyr` before bayan (the full bundle and the json,
+>   yaml and toml-tree sublibs; their `.deps` and `# Requires` name it). A read past the input
+>   is "slice bounds violation" and exit 134. JSON parsing costs about 1.5x what it did.
+> - **PDF:** a stream that failed to decode stays failed in its document, so install the inflate
+>   hook before asking for a stream's bytes; every inflate attempt counts against the 512 MiB
+>   per-document budget, not only a success; and the page content handed out (and so scanned by
+>   text extraction) counts against a new 512 MiB per-document budget, `_PDF_MAX_CONTENT`:
+>   past it a page answers "" with "page content bytes exceed the per-document limit".
+
+### Security
+
+- **CYRIUS-2026-0045 — the PDF Flate bomb guard was bypassed.** `bayan_pdf_stream_data_a`
+  memoised only a successful decode, and `_pdfz_inflate_a` charged `_pdfz_budget` only with a
+  success's final length. A stream the inflate hook could not decode doubled its way through
+  buffers the 512 MiB guard never saw, once for every page naming it: 48 pages of a 25 KB file
+  reached 1.9 GB, and the ratio-capped hook bayan recommends, 1.96 GB from 66 KB. A failure now
+  sets the stream's cache to the static empty Str, so it is decoded once; each attempt charges
+  its buffer before allocating it (a buffer the budget cannot cover shrinks to the room left, and
+  no room is the refusal, so `/DL` is trusted no further); a rejected attempt's buffer goes back
+  through `free_via`. The audit's files hold at 42 MB and 7.9 MB. Row: `tests/pdf_flate.tcyr`
+  "a failing Flate stream is decoded once, and charged".
+
+### Fixed
+
+- **PDF text extraction work multiplied with page references to one content stream** (audit
+  Finding 25). A decode is memoised, but each page naming the stream was scanned in full, up to
+  the walk's 1,048,576 references: 11.6 s from 15.8 KB at 128. Every byte
+  `bayan_pdf_page_content_a` hands out is charged to `_PDF_MAX_CONTENT` (PdfDoc +200;
+  `_PDF_DOC_SIZE` 200 → 208), a `/Contents` array's streams one by one before each is copied.
+  The same file: 2.9 s, and no longer growing with the references.
+- **yaml was quadratic in a mapping's size** (Finding 15): each key's duplicate check walked
+  every key before it, 14.4 s for 40,000 keys (480 KB). It uses json's new O(1) key set.
+- **The flat TOML parser was quadratic in dotted-key tables** (Finding 17): each dotted key
+  walked every table since the header, 4.0 s for 20,000 (300 KB). Past 8 tables under a header
+  they are indexed by name; every smaller document allocates what it did.
+- **The streaming JSON parser wrapped out-of-range integers and accepted digitless numbers**
+  (Finding 16). Both descents now share one scanner, `_jp_scan_number`, and the stream checks
+  the i64 range as the tree does.
+- **JSON accepted duplicate object keys and answered the first** (Finding 24), the opposite of
+  most readers, so a validating bayan component and a last-wins reader disagreed about
+  `{"role":"user","role":"admin"}`. A per-object key set (`_jk_*`: 32 keys in place, no
+  allocation; past that a hash table) refuses one in O(1). `bayan_json_parse`'s header now says
+  its lookups compare raw keys and must not decide an allowlist.
+- **The base64 decoders accepted invalid and non-canonical input** (Finding 18): `QQ==QUFB`
+  gave `41 00 00 41 41 41`, `====` one `00`, `QR==` what `QQ==` gives, base64url's `QUFBQ`
+  `41 41 41`. One core now decodes both alphabets, refusing each by name, without the per-call
+  256-byte table (unchecked, never freed); every allocation is checked.
+- **`bayan_base64url_encode` stored through a refused output buffer**; it returns 0, as
+  `bayan_base64_encode` has since 1.5.9.
+
+### Hardening
+
+- **json's three parsers read the document through bounds-checked slices** (cyrius 6.7.18 D1).
+  Each reader wraps its `(buf, len)` in a fn-local `[u8]` slice and reads `bs[i]`, checked in
+  every build. `tests/json_slice_trap.cyr` (a new CI step) makes a read past the input through
+  each parser's readers and wants the trap.
+
+### Tests
+
+- `tests/json_parsers.fcyr` (new): the tree, streaming and flat parsers over 14 seeds after
+  1..4 seeded mutations (truncation, byte edits, repeated and swapped spans, boundary numbers,
+  a repeated first member, wraps 126..129 deep), 60,000 documents. The two descents must agree
+  (acceptance, message, events), a tree's serialisation round-trip, the flat parser return an
+  accepted object's members, and every answer be the same at a PROT_NONE page and inside a
+  buffer whose bytes past the input would change it. Passes plain, `--poison`, `--poison=ab` and
+  `--bounds`.
+- `tests/json.fcyr` gains property (f), a duplicate key refuses the flat parse, and a REPEATED
+  corpus; its generator now writes distinct keys.
+- `tests/parse_scaling.cyr` (new, a CI step on x86_64 and aarch64): yaml mapping keys, the json
+  tree, flat and stream parsers' object keys and flat toml dotted keys must cost linearly.
+- `tests/bayan.tcyr` +88 (1,987 → 2,075), `tests/pdf_flate.tcyr` +24 (19 → 43). The rows that
+  leaned on an accepted duplicate key now build their repeats by hand.
+
+Public API: 1 function added (`bayan_base64_last_error`), none removed or deprecated.
+
 ## [1.11.0] — 2026-10-22
 
 Minor release, the roadmap's 1.11.0 slot. Pin unchanged at **6.7.16**; the floor stays 6.7.9,
