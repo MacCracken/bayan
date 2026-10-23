@@ -94,6 +94,20 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   but the output's goes back, as inflate's do, and the header refusal is named ("deflate: out
   of memory wrapping the output"). Row: `tests/pdf_flate.tcyr` "a deflate attempt's buffer goes
   back unless it is the output".
+- **The other PDF stream decoders kept their output buffer when they refused.** ASCIIHexDecode
+  (a byte that is not hex), ASCII85Decode (each of its seven malformed-input refusals), the PNG
+  predictor (a row filter type outside 0..4) and every decoder's refused `Str` header (which also
+  recorded no reason, so the stream read "" with no error) returned 0 holding it under an
+  allocator that frees. Each gives it back (`_pdfz_fail_a`), and each header refusal is named
+  ("... out of memory wrapping the output", `_pdfz_out_a`). Row: `tests/bayan.tcyr` "a filter
+  decoder's output buffer goes back on every refusal".
+- **A PDF stream's `/Filter` chain kept every stage's output**, not only the last: a chain of n
+  stages, a predictor counting as one, held n outputs, on success as on a refusal by the next
+  stage, by the chain (a filter it does not decode) or by a `/DecodeParms` value that is not a
+  number. Each stage's output is given back once the next has read it (`_pdfz_drop_a`), and an
+  empty Flate output is a one-byte buffer of its own rather than a static `""` no allocator could
+  free. Rows: `tests/bayan.tcyr` "a filter chain gives back each stage's output once the next has
+  read it" and `tests/pdf_flate.tcyr` "an empty Flate stage is its own buffer".
 
 ### Hardening
 
@@ -115,7 +129,7 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   corpus; its generator now writes distinct keys.
 - `tests/parse_scaling.cyr` (new, a CI step on x86_64 and aarch64): yaml mapping keys, the json
   tree, flat and stream parsers' object keys and flat toml dotted keys must cost linearly.
-- `tests/bayan.tcyr` +95 (1,987 → 2,082), `tests/pdf_flate.tcyr` +40 (19 → 59). The rows that
+- `tests/bayan.tcyr` +139 (1,987 → 2,126), `tests/pdf_flate.tcyr` +42 (19 → 61). The rows that
   leaned on an accepted duplicate key now build their repeats by hand.
 
 Public API: 1 function added (`bayan_base64_last_error`), none removed or deprecated.

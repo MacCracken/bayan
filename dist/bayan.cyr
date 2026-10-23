@@ -11758,6 +11758,33 @@ fn _pdfz_err(doc, msg: cstring, pos): i64 {
     return 0;
 }
 
+# A decoder's refusal once its output buffer exists: `buf` goes back through
+# free_via, then the failure is recorded as _pdfz_err does. Always returns 0.
+# A refusal used to return with the buffer still held. CHANGELOG [1.11.1]
+fn _pdfz_fail_a(a, doc, buf, msg: cstring, pos): i64 {
+    free_via(a, buf);
+    return _pdfz_err(doc, msg, pos);
+}
+
+# A decoder's output `buf[0..n)` as a Str. A refused header gives `buf` back and
+# is recorded as `msg`; it used to keep the buffer and record nothing, so the
+# stream read "" with no error. CHANGELOG [1.11.1]
+fn _pdfz_out_a(a, doc, buf, n, msg: cstring): Str {
+    var s = str_new_a(a, buf, n);
+    if (s == 0) { _pdfz_fail_a(a, doc, buf, msg, 0 - 1); }
+    return s;
+}
+
+# Give back a filter stage's output — its buffer and its header — once the next
+# stage has read it, or refused. Every decoder allocates both from `a` (an empty
+# Flate output too), so both are `a`'s to free. 0 is a no-op. CHANGELOG [1.11.1]
+fn _pdfz_drop_a(a, s): i64 {
+    if (s == 0) { return 0; }
+    free_via(a, str_data(s));
+    free_via(a, s);
+    return 0;
+}
+
 # --- the decompression budget ----------------------------------------------
 #
 # _PDF_MAX_INFLATE caps ONE stream; a zip bomb spreads itself over a thousand
@@ -11967,7 +11994,17 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
         _pdfz_err(doc, "FlateDecode: negative source length", 0 - 1);
         return 0;
     }
-    if (len == 0) { return str_from_a(a, ""); }
+    if (len == 0) {
+        # Its own empty buffer, not str_from_a's static "": a chain gives every
+        # stage's output back (_pdfz_drop_a). CHANGELOG [1.11.1]
+        var e = alloc_via(a, 1);
+        if (e == 0) {
+            _pdfz_err(doc, "FlateDecode: out of memory sizing the output buffer", 0 - 1);
+            return 0;
+        }
+        store8(e, 0);
+        return _pdfz_out_a(a, doc, e, 0, "FlateDecode: out of memory wrapping the output");
+    }
 
     var cap = 0;
     if (hint > 0) {
@@ -12158,10 +12195,7 @@ fn _pdfz_ahx_a(a, doc, src, len): Str {
             hi = hi;                # whitespace is ignored, even mid-pair
         } else {
             var v = _pdfe_hexval(c);
-            if (v < 0) {
-                _pdfz_err(doc, "ASCIIHexDecode: byte is not a hex digit", i - 1);
-                return 0;
-            }
+            if (v < 0) { return _pdfz_fail_a(a, doc, out, "ASCIIHexDecode: byte is not a hex digit", i - 1); }
             if (hi < 0) {
                 hi = v;
             } else {
@@ -12177,7 +12211,7 @@ fn _pdfz_ahx_a(a, doc, src, len): Str {
         nout = nout + 1;
     }
     store8(out + nout, 0);
-    return str_new_a(a, out, nout);
+    return _pdfz_out_a(a, doc, out, nout, "ASCIIHexDecode: out of memory wrapping the output");
 }
 
 # --- ASCII85Decode ----------------------------------------------------------
@@ -12226,8 +12260,7 @@ fn _pdfz_a85_a(a, doc, src, len): Str {
             k = k;                                  # whitespace is ignored
         } elif (c == 122) {                         # 'z'
             if (k != 0) {
-                _pdfz_err(doc, "ASCII85Decode: 'z' inside a group", i - 1);
-                return 0;
+                return _pdfz_fail_a(a, doc, out, "ASCII85Decode: 'z' inside a group", i - 1);
             }
             store8(out + nout,     0);
             store8(out + nout + 1, 0);
@@ -12235,11 +12268,9 @@ fn _pdfz_a85_a(a, doc, src, len): Str {
             store8(out + nout + 3, 0);
             nout = nout + 4;
         } elif (c < 33) {
-            _pdfz_err(doc, "ASCII85Decode: byte is outside the '!'..'u' alphabet", i - 1);
-            return 0;
+            return _pdfz_fail_a(a, doc, out, "ASCII85Decode: byte is outside the '!'..'u' alphabet", i - 1);
         } elif (c > 117) {
-            _pdfz_err(doc, "ASCII85Decode: byte is outside the '!'..'u' alphabet", i - 1);
-            return 0;
+            return _pdfz_fail_a(a, doc, out, "ASCII85Decode: byte is outside the '!'..'u' alphabet", i - 1);
         } else {
             # 85^5 - 1 is 4437053124 — an i64 holds a full group with nine
             # decimal digits to spare, so the range check happens on the
@@ -12248,8 +12279,7 @@ fn _pdfz_a85_a(a, doc, src, len): Str {
             k = k + 1;
             if (k == 5) {
                 if (grp > _PDFZ_A85_MAX) {
-                    _pdfz_err(doc, "ASCII85Decode: group does not fit in 32 bits", i - 1);
-                    return 0;
+                    return _pdfz_fail_a(a, doc, out, "ASCII85Decode: group does not fit in 32 bits", i - 1);
                 }
                 # grp is non-negative here, so the LOGICAL `>>` is the right
                 # shift; `>>>` is the arithmetic one in Cyrius (G12).
@@ -12265,15 +12295,13 @@ fn _pdfz_a85_a(a, doc, src, len): Str {
     }
 
     if (k == 1) {
-        _pdfz_err(doc, "ASCII85Decode: final group of one character encodes nothing", i);
-        return 0;
+        return _pdfz_fail_a(a, doc, out, "ASCII85Decode: final group of one character encodes nothing", i);
     }
     if (k > 1) {
         var pad = k;
         while (pad < 5) { grp = grp * 85 + 84; pad = pad + 1; }   # 'u' - '!' == 84
         if (grp > _PDFZ_A85_MAX) {
-            _pdfz_err(doc, "ASCII85Decode: final group does not fit in 32 bits", i);
-            return 0;
+            return _pdfz_fail_a(a, doc, out, "ASCII85Decode: final group does not fit in 32 bits", i);
         }
         var sh = 24;
         var emit = 0;
@@ -12290,13 +12318,12 @@ fn _pdfz_a85_a(a, doc, src, len): Str {
         # the missing byte carries no information.
         if (i < n) {
             if (load8(src + i) != 62) {
-                _pdfz_err(doc, "ASCII85Decode: '~' not followed by '>'", i);
-                return 0;
+                return _pdfz_fail_a(a, doc, out, "ASCII85Decode: '~' not followed by '>'", i);
             }
         }
     }
     store8(out + nout, 0);
-    return str_new_a(a, out, nout);
+    return _pdfz_out_a(a, doc, out, nout, "ASCII85Decode: out of memory wrapping the output");
 }
 
 # --- RunLengthDecode --------------------------------------------------------
@@ -12378,7 +12405,7 @@ fn _pdfz_rl_a(a, doc, src, len): Str {
         }
     }
     store8(out + w, 0);
-    return str_new_a(a, out, w);
+    return _pdfz_out_a(a, doc, out, w, "RunLengthDecode: out of memory wrapping the output");
 }
 
 # --- predictors -------------------------------------------------------------
@@ -12527,8 +12554,11 @@ fn _pdfz_unpredict_a(a, doc, data, len, parms_pred, parms_colors, parms_bpc, par
         # A borrowed view, deliberately: /Predictor 1 is the identity and
         # copying a multi-megabyte content stream to say so is pure waste. The
         # view's lifetime is the source buffer's, which is already the rule for
-        # every Str this reader hands back.
-        return str_new_a(a, data, n);
+        # every Str this reader hands back. A refused header is named, as
+        # every refusal here is. CHANGELOG [1.11.1]
+        var view = str_new_a(a, data, n);
+        if (view == 0) { _pdfz_err(doc, "predictor: out of memory wrapping the output", 0 - 1); }
+        return view;
     }
 
     # Validate BEFORE any multiply. colors * bpc is at most 32 * 16 == 512, and
@@ -12602,7 +12632,7 @@ fn _pdfz_unpredict_a(a, doc, data, len, parms_pred, parms_colors, parms_bpc, par
             r = r + 1;
         }
         store8(tout + n, 0);
-        return str_new_a(a, tout, n);
+        return _pdfz_out_a(a, doc, tout, n, "TIFF Predictor 2: out of memory wrapping the output");
     }
 
     if (parms_pred < 10) {
@@ -12637,14 +12667,13 @@ fn _pdfz_unpredict_a(a, doc, data, len, parms_pred, parms_colors, parms_bpc, par
         var drow = out + row * rowlen;
         memcpy(drow, srow + 1, rowlen);
         if (_pdfz_png_row(prev, drow, rowlen, bpp, load8(srow)) != 0) {
-            _pdfz_err(doc, "PNG predictor: row filter type is not one of 0 to 4", row * stride);
-            return 0;
+            return _pdfz_fail_a(a, doc, out, "PNG predictor: row filter type is not one of 0 to 4", row * stride);
         }
         prev = drow;
         row = row + 1;
     }
     store8(out + nrows * rowlen, 0);
-    return str_new_a(a, out, nrows * rowlen);
+    return _pdfz_out_a(a, doc, out, nrows * rowlen, "PNG predictor: out of memory wrapping the output");
 }
 
 # === _pdfl_ — the PDF lexer ==================================================
@@ -15212,15 +15241,19 @@ fn _pdfp_decode_one_a(a, doc, id, src, len, hint, parms): Str {
     # interpreted, so a present-but-wrong-typed value must refuse rather than
     # fall back to a default that silently changes the output.
     var pred = _pdfp_dict_num_strict(doc, parms, "Predictor", 1);
-    if (pred == _PDF_NUM_BAD) { return 0; }
+    if (pred == _PDF_NUM_BAD) { return _pdfz_drop_a(a, out); }
     if (pred <= 1) { return out; }
     var colors  = _pdfp_dict_num_strict(doc, parms, "Colors", 1);
     var bpc     = _pdfp_dict_num_strict(doc, parms, "BitsPerComponent", 8);
     var columns = _pdfp_dict_num_strict(doc, parms, "Columns", 1);
-    if (colors == _PDF_NUM_BAD || bpc == _PDF_NUM_BAD) { return 0; }
-    if (columns == _PDF_NUM_BAD) { return 0; }
-    return _pdfz_unpredict_a(a, doc, str_data(out), str_len(out),
+    if (colors == _PDF_NUM_BAD || bpc == _PDF_NUM_BAD) { return _pdfz_drop_a(a, out); }
+    if (columns == _PDF_NUM_BAD) { return _pdfz_drop_a(a, out); }
+    # The predictor copies the filter's output (pred > 1 here), so that output
+    # goes back whatever it answers; it used to be kept. CHANGELOG [1.11.1]
+    var un = _pdfz_unpredict_a(a, doc, str_data(out), str_len(out),
       pred, colors, bpc, columns);
+    _pdfz_drop_a(a, out);
+    return un;
 }
 
 # Decode a stream through its whole /Filter chain, left to right.
@@ -15254,6 +15287,9 @@ fn _pdfp_decode_chain_a(a, doc, st): Str {
         return 0;
     }
 
+    # `cur` is the raw bytes (the document's), then each stage's output, which is
+    # given back once the next stage has read it or the chain refuses; only the
+    # last is kept. They used to be kept, every one. CHANGELOG [1.11.1]
     var cur = raw;
     var i = 0;
     while (i < nf) {
@@ -15262,27 +15298,33 @@ fn _pdfp_decode_chain_a(a, doc, st): Str {
         if (_pdfo_tag(nm) != PTAG_NAME) {
             _pdfe_doc_err(doc, "stream /Filter array holds something that is not a name",
               0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         var id = _pdfz_filter_id(bayan_pdf_obj_name(nm));
         if (id < 0) {
             _pdfe_doc_err(doc, "stream uses an unrecognised /Filter", 0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         if (_pdfz_filter_is_image(id)) {
             _pdfe_doc_err(doc,
               "stream is image data (DCT/JPX/CCITT/JBIG2) and is never decoded here",
               0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         if (_pdfz_filter_supported(id) == 0) {
             _pdfe_doc_err(doc, "stream uses a filter this build does not implement",
               0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         var p = _pdfp_parms_at(doc, parms, i, nf);
-        cur = _pdfp_decode_one_a(a, doc, id, str_data(cur), str_len(cur), hint, p);
-        if (cur == 0) { return 0; }
+        var next = _pdfp_decode_one_a(a, doc, id, str_data(cur), str_len(cur), hint, p);
+        if (cur != raw) { _pdfz_drop_a(a, cur); }
+        if (next == 0) { return 0; }
+        cur = next;
         i = i + 1;
     }
     return cur;
