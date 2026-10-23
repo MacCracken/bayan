@@ -2634,7 +2634,7 @@ fn _pdfz_rl_a(a, doc, src, len): Str {
         }
     }
     store8(out + w, 0);
-    return str_new_a(a, out, w);
+    return _pdfz_out_a(a, doc, out, w, "RunLengthDecode: out of memory wrapping the output");
 }
 
 # --- predictors -------------------------------------------------------------

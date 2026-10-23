@@ -5969,6 +5969,20 @@ tf_refuse_16 = 0;
 tf_mark = tf_n;
 assert_eq(str_len(_pdfz_a85_a(TFA, 0, "!!!!!~>", 7)), 4, "pdf filter frees: (A85 decodes)");
 assert_eq(_tf_live(tf_mark), 2, "pdf filter frees: (holding a buffer and a header)");
+# RunLengthDecode measures before it allocates, so its only refusal past the allocation is the
+# header. The stream: a literal run of two bytes, "AB", then end of data.
+var tf_rl = alloc(8);
+store8(tf_rl, 1);
+store8(tf_rl + 1, 65);
+store8(tf_rl + 2, 66);
+store8(tf_rl + 3, 128);
+tf_mark = tf_n;
+tf_refuse_16 = 1;
+assert_eq(_pdfz_rl_a(TFA, 0, tf_rl, 4), 0, "pdf filter frees: RunLength with its header refused answers 0");
+tf_refuse_16 = 0;
+assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: RunLength's refused header holds no buffer");
+assert_eq(_tf_err_is("RunLengthDecode: out of memory wrapping the output"), 1, "pdf filter frees: (RunLength's, by name)");
+assert_eq(str_eq_cstr(_pdfz_rl_a(TFA, 0, tf_rl, 4), "AB"), 1, "pdf filter frees: (RunLength decodes)");
 assert_lt(tf_n, 4096, "pdf filter frees: (TFA listed every block it handed out)");
 
 var r = assert_summary();
