@@ -2025,6 +2025,57 @@ assert_eq(bayan_json_v_parse_buf("-9223372036854775809", 20), 0, "json: nor past
 assert_neq(bayan_json_v_parse_buf("9223372036854775807", 19), 0, "json: i64 max itself still parses");
 assert_neq(bayan_json_v_parse_buf("-9223372036854775808", 20), 0, "json: and i64 min");
 
+test_group("json: both parsers refuse the same malformed numbers, by name (1.11.1)");
+# The streaming parser kept its own laxer scanner after 1.5.1 fixed the tree's:
+# [18446744073709551616] reached on_int as 0, [18446744073709551615] as -1 and
+# [9223372036854775808] as INT64_MIN, and [-], [1.], [1e], [-e5], [-.5] were
+# accepted. Both parsers now share _jp_scan_number, and a leading zero (`01`,
+# RFC 8259 section 6), which both accepted, is refused too.
+fn _num_stream(doc, msg): i64 {
+    _strm_reset();
+    var rc = bayan_json_stream_parse(doc, strlen(doc), sh);
+    if (rc != 0 - 1) { return 0; }
+    if (_strm_int != 0 || _strm_err != 1) { return 0; }
+    return streq(bayan_json_last_error(), msg);
+}
+fn _num_tree(doc, msg): i64 {
+    if (bayan_json_v_parse_buf(doc, strlen(doc)) != 0) { return 0; }
+    return streq(bayan_json_last_error(), msg);
+}
+assert_eq(_num_stream("[18446744073709551616]", "integer is out of range for i64"), 1,
+  "json stream: 2^64 is refused, not delivered as 0");
+assert_eq(_num_stream("[18446744073709551615]", "integer is out of range for i64"), 1,
+  "json stream: 2^64 - 1 is refused, not delivered as -1");
+assert_eq(_num_stream("[9223372036854775808]", "integer is out of range for i64"), 1,
+  "json stream: 2^63 is refused, not delivered as INT64_MIN");
+assert_eq(_num_stream("[-9223372036854775809]", "integer is out of range for i64"), 1,
+  "json stream: nor one past i64 min");
+assert_eq(_num_stream("[-]", "expected number"), 1, "json stream: a lone minus is not the integer 0");
+assert_eq(_num_stream("[-,-]", "expected number"), 1, "json stream: nor two of them");
+assert_eq(_num_stream("[-e5]", "expected number"), 1, "json stream: a digitless mantissa is refused");
+assert_eq(_num_stream("[-.5]", "expected number"), 1, "json stream: a fraction needs its integer part");
+assert_eq(_num_stream("[1.]", "expected digits after the decimal point"), 1,
+  "json stream: a trailing decimal point is refused");
+assert_eq(_num_stream("[1e]", "expected digits in the exponent"), 1,
+  "json stream: an empty exponent is refused");
+assert_eq(_num_stream("[1e+]", "expected digits in the exponent"), 1,
+  "json stream: a signed empty exponent is refused");
+assert_eq(_num_stream("[01]", "a number may not have a leading zero"), 1,
+  "json stream: a leading zero is refused");
+assert_eq(_num_stream("[-01]", "a number may not have a leading zero"), 1,
+  "json stream: after a minus too");
+assert_eq(_num_tree("[01]", "a number may not have a leading zero"), 1, "json tree: a leading zero is refused");
+assert_eq(_num_tree("00", "a number may not have a leading zero"), 1, "json tree: 00 too");
+assert_eq(_num_tree("[-01.5]", "a number may not have a leading zero"), 1, "json tree: and -01.5");
+assert_eq(_num_tree("[-.5]", "expected number"), 1, "json tree: a fraction needs its integer part");
+assert_eq(_num_tree("[1e+]", "expected digits in the exponent"), 1, "json tree: a signed empty exponent");
+_strm_reset();
+var _num_ok = "[0, -0, 0.5, -0.5e3, 0e1, 10, 9223372036854775807, -9223372036854775808]";
+assert_eq(bayan_json_stream_parse(_num_ok, strlen(_num_ok), sh), 0, "json stream: the valid shapes parse");
+assert_eq(_strm_int, 5, "json stream: 0, -0, 10 and both i64 bounds are ints");
+assert_eq(_strm_acc, 9, "json stream: summing to 9 (10, and the two bounds sum to -1)");
+assert_neq(bayan_json_v_parse_buf(_num_ok, strlen(_num_ok)), 0, "json tree: the same shapes parse");
+
 test_group("json: the flat parser honours escapes (was key injection)");
 # The value scan stopped at the first quote regardless of a preceding
 # backslash, so a string value could terminate early and the parser

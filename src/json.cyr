@@ -1273,64 +1273,81 @@ fn _jp_parse_string(ps): i64 {
     return _jp_parse_string_a(default_alloc(), ps);
 }
 
-# Allocator-as-first-arg variant of _jp_parse_number.
+# The extent of the JSON number at ps's cursor, which it does not move: the index
+# just past it, or -1 with the error recorded. RFC 8259 section 6's grammar,
+#   -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+# so a sign alone, a fraction or exponent with no digits, and a leading zero
+# before another digit are each refused by name. out+0 gets 1 for a fraction or
+# an exponent, out+8 the index just past the integer part.
 #
-# Parse a number. Returns json_v* (INT or FLOAT) or 0. Cursor kept in a local;
-# written back to ps before the (allocating) constructor call on success.
-fn _jp_parse_number_a(a, ps): i64 {
+# ONE SCANNER FOR BOTH DESCENTS (1.11.1). 1.5.1 fixed the tree parser's copy
+# (digitless parts, i64 range) and the streaming parser kept its own laxer one:
+# [-] reached on_int as 0, [18446744073709551616] as 0 and [9223372036854775808]
+# as INT64_MIN, each with success. A leading zero (`01`), which both accepted, is
+# refused too (the user's decision at the 6.7.18 audit).
+fn _jp_scan_number(ps, out): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
     var pos = load64(ps + 16);
     var start = pos;
-    var is_float = 0;
-    # Optional minus
+    store64(out, 0);
     if (pos < len && load8(buf + pos) == 45) { pos = pos + 1; }
-    # Integer part. At least ONE digit is required (1.5.1): the old code only
-    # rejected an EMPTY token via `pos == start`, so a lone "-" advanced the
-    # cursor by one, passed that check, and parsed as the integer 0 — and
-    # "[-,-]" serialised back out as "[0,0]". Same for a fraction or exponent
-    # with no digits: "1." and "1e" were accepted.
-    var int_digits = 0;
+    var int_start = pos;
     while (pos < len) {
         var c = load8(buf + pos);
-        if (c >= 48 && c <= 57) { pos = pos + 1; int_digits = int_digits + 1; }
+        if (c >= 48 && c <= 57) { pos = pos + 1; }
         else { break; }
     }
-    if (int_digits == 0) { _jp_set_err(ps, "expected number", start); return 0; }
-    var int_end = pos;
-    # Fraction
+    if (pos == int_start) { _jp_set_err(ps, "expected number", start); return 0 - 1; }
+    if (pos - int_start > 1 && load8(buf + int_start) == 48) {
+        _jp_set_err(ps, "a number may not have a leading zero", start);
+        return 0 - 1;
+    }
+    store64(out + 8, pos);
     if (pos < len && load8(buf + pos) == 46) {
-        is_float = 1;
+        store64(out, 1);
         pos = pos + 1;
-        var frac_digits = 0;
+        var frac_start = pos;
         while (pos < len) {
             var c2 = load8(buf + pos);
-            if (c2 >= 48 && c2 <= 57) { pos = pos + 1; frac_digits = frac_digits + 1; }
+            if (c2 >= 48 && c2 <= 57) { pos = pos + 1; }
             else { break; }
         }
-        if (frac_digits == 0) { _jp_set_err(ps, "expected digits after the decimal point", pos); return 0; }
+        if (pos == frac_start) { _jp_set_err(ps, "expected digits after the decimal point", pos); return 0 - 1; }
     }
-    # Exponent
     if (pos < len) {
         var ec = load8(buf + pos);
         if (ec == 101 || ec == 69) {
-            is_float = 1;
+            store64(out, 1);
             pos = pos + 1;
             if (pos < len) {
                 var sg = load8(buf + pos);
                 if (sg == 43 || sg == 45) { pos = pos + 1; }
             }
-            var exp_digits = 0;
+            var exp_start = pos;
             while (pos < len) {
                 var c3 = load8(buf + pos);
-                if (c3 >= 48 && c3 <= 57) { pos = pos + 1; exp_digits = exp_digits + 1; }
+                if (c3 >= 48 && c3 <= 57) { pos = pos + 1; }
                 else { break; }
             }
-            if (exp_digits == 0) { _jp_set_err(ps, "expected digits in the exponent", pos); return 0; }
+            if (pos == exp_start) { _jp_set_err(ps, "expected digits in the exponent", pos); return 0 - 1; }
         }
     }
+    return pos;
+}
+
+# Allocator-as-first-arg variant of _jp_parse_number.
+#
+# Parse a number (_jp_scan_number's grammar). Returns json_v* (INT or FLOAT) or
+# 0. The cursor is written back before the (allocating) constructor call.
+fn _jp_parse_number_a(a, ps): i64 {
+    var buf = load64(ps);
+    var start = load64(ps + 16);
+    var nb: i64[2];
+    var pos = _jp_scan_number(ps, &nb);
+    if (pos < 0) { return 0; }
     store64(ps + 16, pos);
-    if (is_float == 1) {
+    if (load64(&nb) == 1) {
         var fbits = _jp_atof(buf + start, pos - start);
         var fv2 = bayan_json_v_float_new_a(a, fbits);
         if (fv2 == 0) { _jp_set_err(ps, "out of memory building a number", start); }
@@ -1341,7 +1358,7 @@ fn _jp_parse_number_a(a, ps): i64 {
     # SIGN differs from the document's, round-tripping out of the serialiser as
     # a different number with no error. An integer bayan cannot represent is
     # now a parse error rather than a plausible wrong answer.
-    if (_jp_int_fits(buf + start, int_end - start) == 0) {
+    if (_jp_int_fits(buf + start, load64(&nb + 8) - start) == 0) {
         _jp_set_err(ps, "integer is out of range for i64", start);
         return 0;
     }
@@ -1974,57 +1991,31 @@ fn _js_relay_err(ps, h): i64 {
     return 0;
 }
 
-# Number parser — mirrors _jp_parse_number's lex but emits via
-# callback instead of allocating json_v*. Returns 0 on success, -1 on
-# error.
+# Number parser — _jp_scan_number's grammar and the tree parser's i64 range
+# (1.11.1; see there), emitted through a callback instead of a json_v*. Returns
+# 0 on success, -1 on error.
 fn _js_parse_number(ps, h): i64 {
     var buf = load64(ps);
-    var len = load64(ps + 8);
-    var pos = load64(ps + 16);
-    var start = pos;
-    var is_float = 0;
-    if (pos < len && load8(buf + pos) == 45) { pos = pos + 1; }
-    while (pos < len) {
-        var c = load8(buf + pos);
-        if (c >= 48 && c <= 57) { pos = pos + 1; }
-        else { break; }
-    }
-    if (pos < len && load8(buf + pos) == 46) {
-        is_float = 1;
-        pos = pos + 1;
-        while (pos < len) {
-            var c2 = load8(buf + pos);
-            if (c2 >= 48 && c2 <= 57) { pos = pos + 1; }
-            else { break; }
-        }
-    }
-    if (pos < len) {
-        var ec = load8(buf + pos);
-        if (ec == 101 || ec == 69) {
-            is_float = 1;
-            pos = pos + 1;
-            if (pos < len) {
-                var sg = load8(buf + pos);
-                if (sg == 43 || sg == 45) { pos = pos + 1; }
-            }
-            while (pos < len) {
-                var c3 = load8(buf + pos);
-                if (c3 >= 48 && c3 <= 57) { pos = pos + 1; }
-                else { break; }
-            }
-        }
-    }
-    if (pos == start) { store64(ps + 16, pos); _js_emit_error(ps, h, "expected number"); return 0 - 1; }
-    store64(ps + 16, pos);
-    if (is_float == 1) {
+    var start = load64(ps + 16);
+    var nb: i64[2];
+    var pos = _jp_scan_number(ps, &nb);
+    if (pos < 0) { _js_relay_err(ps, h); return 0 - 1; }
+    if (load64(&nb) == 1) {
+        store64(ps + 16, pos);
         var fbits = _jp_atof(buf + start, pos - start);
         var fp_f = _js_cb(h, JS_EV_FLOAT);
         if (fp_f != 0) { fncall2(fp_f, _js_ctx(h), fbits); }
-    } else {
-        var iv = _jp_atoi(buf + start, pos - start);
-        var fp_i = _js_cb(h, JS_EV_INT);
-        if (fp_i != 0) { fncall2(fp_i, _js_ctx(h), iv); }
+        return 0;
     }
+    if (_jp_int_fits(buf + start, load64(&nb + 8) - start) == 0) {
+        _jp_set_err(ps, "integer is out of range for i64", start);
+        _js_relay_err(ps, h);
+        return 0 - 1;
+    }
+    store64(ps + 16, pos);
+    var iv = _jp_atoi(buf + start, pos - start);
+    var fp_i = _js_cb(h, JS_EV_INT);
+    if (fp_i != 0) { fncall2(fp_i, _js_ctx(h), iv); }
     return 0;
 }
 
