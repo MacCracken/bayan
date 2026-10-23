@@ -2297,6 +2297,10 @@ ALLOC_MAX = b64_max;
 assert_eq(b64_r0, 0, "base64url: a refused allocation returns 0, not a fault");
 assert_eq(b64_s0, 0, "base64: as does the standard decoder");
 assert_eq(streq(bayan_base64_last_error(), "base64: out of memory"), 1, "base64: by name");
+ALLOC_MAX = 0;
+var b64_e0 = bayan_base64url_encode("foo", 3);
+ALLOC_MAX = b64_max;
+assert_eq(b64_e0, 0, "base64url: a refused output allocation returns 0 from the encoder too");
 
 test_group("bigint: u256 multiply propagates carries");
 # The three-term inner sum detected overflow with ONE comparison, missing the
