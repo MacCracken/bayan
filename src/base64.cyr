@@ -38,76 +38,133 @@ fn bayan_base64_encode(buf, len): i64 {
     return out;
 }
 
-# One decoded sextet, or 0 - 1 when the byte is outside the alphabet.
-# Positions at or past the end contribute 0 (the group is zero-padded); a '='
-# is padding, also 0, and is only legal in the last group, which the length
-# rules above already constrain.
-fn _b64_dec_at(dtbl, encoded, i, enc_len): i64 {
-    if (i >= enc_len) { return 0; }
-    var ch = load8(encoded + i);
-    if (ch == 61) { return 0; }
-    var v = load8(dtbl + ch);
-    if (v == 255) { return 0 - 1; }
-    return v;
+# --- Decoding: what is refused, and why (1.11.1) -----------------------------
+#
+# A DECODER REFUSES WHAT IS NOT CANONICAL BASE64, BY NAME: 0, with the reason in
+# bayan_base64_last_error() ("" after a decode that succeeded). The user's
+# decision at the 6.7.18 audit. Until 1.11.1 a '=' anywhere decoded as six zero
+# bits, so QQ==QUFB gave 41 00 00 41 41 41, =AAA gave 00 00 00 and ==== one 00;
+# QR== gave 41 as QQ== does; base64url dropped a dangling character (QUFBQ gave
+# 41 41 41, Q nothing) and stripped any run of '='. A consumer that compares,
+# deduplicates or revokes by the encoded string (a JWT signature, say) met
+# several accepted spellings of the same bytes. Refused now:
+#   - a byte outside the decoder's alphabet, the other alphabet's '-' '_' or
+#     '+' '/' included: the two never mix;
+#   - '=' anywhere but as the padding that ends the last group;
+#   - padding of the wrong length: base64 is padded to a multiple of 4 always,
+#     base64url either not at all or exactly so;
+#   - a last group of one character (6 bits cannot make a byte);
+#   - bits left over below the last byte that are not zero (RFC 4648 section
+#     3.5): one byte string, one spelling.
+# The decoders no longer build a 256-byte table per call (an allocation nothing
+# checked, never freed on the bump allocator); every allocation is checked.
+
+var _b64_err = 0;
+
+# Why the last bayan_base64_decode / bayan_base64url_decode refused its input
+# (cstring), or "" when it decoded (1.11.1).
+fn bayan_base64_last_error(): i64 {
+    if (_b64_err == 0) { return ""; }
+    return _b64_err;
+}
+
+# Record a refusal and return 0, the refused answer.
+fn _b64_refuse(msg): i64 {
+    _b64_err = msg;
+    return 0;
+}
+
+# The sextet byte `ch` stands for in the standard (url == 0) or URL-safe (url ==
+# 1) alphabet, or 0 - 1. '=' is not in either; the caller handles padding.
+fn _b64_val(ch, url): i64 {
+    if (ch >= 65 && ch <= 90) { return ch - 65; }
+    if (ch >= 97 && ch <= 122) { return ch - 71; }
+    if (ch >= 48 && ch <= 57) { return ch + 4; }
+    if (url == 0) {
+        if (ch == 43) { return 62; }
+        if (ch == 47) { return 63; }
+    } else {
+        if (ch == 45) { return 62; }
+        if (ch == 95) { return 63; }
+    }
+    return 0 - 1;
+}
+
+# The message for a byte that is not in the alphabet: the other alphabet's two
+# characters are named, so mixing the two reads as what it is.
+fn _b64_bad_byte(ch, url): i64 {
+    if (url == 0 && (ch == 45 || ch == 95)) {
+        return _b64_refuse("base64: '-' or '_' is base64url's alphabet, not base64's");
+    }
+    if (url == 1 && (ch == 43 || ch == 47)) {
+        return _b64_refuse("base64url: '+' or '/' is base64's alphabet, not base64url's");
+    }
+    if (ch == 61) { return _b64_refuse("base64: '=' is padding, and may only end the last group"); }
+    return _b64_refuse("base64: a byte outside the alphabet");
+}
+
+# Decode the `n` data characters at encoded[0, n) (no padding; n % 4 != 1) in
+# alphabet `url` into a fresh {data_ptr, length} pair, refusing what is not
+# canonical. 0 on any refusal, with the reason recorded.
+fn _b64_decode_core(encoded, n, url): i64 {
+    var rem = n % 4;
+    if (rem == 1) { return _b64_refuse("base64: a last group of one character cannot hold a byte"); }
+    var out_len = (n / 4) * 3;
+    if (rem == 2) { out_len = out_len + 1; }
+    if (rem == 3) { out_len = out_len + 2; }
+    var out = alloc(out_len + 1);
+    if (out == 0) { return _b64_refuse("base64: out of memory"); }
+    var acc = 0;
+    var bits = 0;
+    var di = 0;
+    var i = 0;
+    while (i < n) {
+        var ch = load8(encoded + i);
+        var v = _b64_val(ch, url);
+        if (v < 0) { return _b64_bad_byte(ch, url); }
+        acc = ((acc << 6) | v) & 0xFFFFFF;
+        bits = bits + 6;
+        if (bits >= 8) {
+            bits = bits - 8;
+            store8(out + di, (acc >> bits) & 255);
+            di = di + 1;
+        }
+        i = i + 1;
+    }
+    # 2 or 4 bits are left after a short last group: RFC 4648 section 3.5 makes
+    # them zero, and anything else is a second spelling of the same bytes.
+    if ((acc & ((1 << bits) - 1)) != 0) {
+        return _b64_refuse("base64: the bits below the last byte are not zero (not canonical)");
+    }
+    store8(out + out_len, 0);
+    var result = alloc(16);
+    if (result == 0) { return _b64_refuse("base64: out of memory"); }
+    store64(result, out);
+    store64(result + 8, out_len);
+    _b64_err = 0;
+    return result;
 }
 
 # Decode base64 string to buffer. Returns {data_ptr, length} as alloc'd pair,
-# or 0 when the input is not valid base64.
+# or 0 when the input is not canonical base64 (the reason in
+# bayan_base64_last_error(); see above).
+#
+# LENGTH (1.5.1 — this was a null-pointer write): bayan_base64_decode("=", 1)
+# computed an output length of -1 and wrote through 0xFFFFFFFFFFFFFFFF. Base64
+# is a 4-character-group encoding, so a length that is negative or not a
+# multiple of 4 is refused. 0 returns an empty result, not an error.
 fn bayan_base64_decode(encoded, enc_len): i64 {
-    # Build decode table
-    var dtbl = alloc(256);
-    memset(dtbl, 255, 256);
-    var i = 0;
-    while (i < 64) {
-        store8(dtbl + load8(_b64_enc + i), i);
-        i = i + 1;
+    if (enc_len < 0) { return _b64_refuse("base64: a negative length"); }
+    if (enc_len % 4 != 0) { return _b64_refuse("base64: the length is not a multiple of 4"); }
+    var n = enc_len;
+    var pad = 0;
+    while (n > 0 && pad < 3 && load8(encoded + n - 1) == 61) { n = n - 1; pad = pad + 1; }
+    # "x===" and "====": three '=' would leave one character (or none) of a
+    # last group; a fourth '=' before them is caught as a byte below.
+    if (pad > 2 || (pad > 0 && n % 4 == 1)) {
+        return _b64_refuse("base64: too much padding: at most \"==\", after two characters");
     }
-    # LENGTH VALIDATION (1.5.1 — this was a null-pointer write).
-    #
-    # out_len was `(enc_len / 4) * 3` decremented once per trailing '='. For
-    # the one-byte input "=" that is 0 - 1 == -1; nothing re-clamped it,
-    # `alloc(-1 + 1)` is `alloc(0)` which returns 0, and the unconditional
-    # terminator `store8(out + out_len, 0)` then wrote through address
-    # 0xFFFFFFFFFFFFFFFF. Verified: bayan_base64_decode("=", 1) took SIGSEGV.
-    #
-    # Base64 is a 4-character-group encoding, so a length that is negative or
-    # not a multiple of 4 is not base64 at all and is refused rather than
-    # decoded to something plausible. 0 returns an empty result, not an error.
-    if (enc_len < 0)     { return 0; }
-    if (enc_len % 4 != 0) { return 0; }
-    var out_len = (enc_len / 4) * 3;
-    if (enc_len > 0) {
-        if (load8(encoded + enc_len - 1) == 61) { out_len = out_len - 1; }
-        if (enc_len > 1) { if (load8(encoded + enc_len - 2) == 61) { out_len = out_len - 1; } }
-    }
-    if (out_len < 0) { return 0; }
-    var out = alloc(out_len + 1);
-    if (out == 0) { return 0; }
-    var si = 0;
-    var di = 0;
-    while (si < enc_len) {
-        # ALPHABET VALIDATION (1.5.1). memset filled dtbl with 255, so a byte
-        # outside the alphabet used to decode as 0xFF filler and produce
-        # confident garbage — decode("!!!!", 4) returned three 0xFF bytes.
-        # Reject instead: silently accepting non-base64 is the shape that lets
-        # a caller treat corrupt input as a valid value.
-        var a = _b64_dec_at(dtbl, encoded, si, enc_len);
-        var b = _b64_dec_at(dtbl, encoded, si + 1, enc_len);
-        var c = _b64_dec_at(dtbl, encoded, si + 2, enc_len);
-        var d = _b64_dec_at(dtbl, encoded, si + 3, enc_len);
-        if (a < 0 || b < 0 || c < 0 || d < 0) { return 0; }
-        if (di < out_len) { store8(out + di, (a << 2) | (b >> 4)); }
-        if (di + 1 < out_len) { store8(out + di + 1, ((b & 15) << 4) | (c >> 2)); }
-        if (di + 2 < out_len) { store8(out + di + 2, ((c & 3) << 6) | d); }
-        si = si + 4;
-        di = di + 3;
-    }
-    store8(out + out_len, 0);
-    # Return {ptr, len} pair
-    var result = alloc(16);
-    store64(result, out);
-    store64(result + 8, out_len);
-    return result;
+    return _b64_decode_core(encoded, n, 0);
 }
 
 # ================================================================
@@ -160,58 +217,17 @@ fn bayan_base64url_encode(buf, len): i64 {
 
 # Decode base64url cstr (with or without `=` padding) of length enc_len.
 # Returns {data_ptr, decoded_len} as a 16-byte alloc'd pair, same shape
-# as bayan_base64_decode. Returns 0 on invalid input character.
+# as bayan_base64_decode, or 0 when the input is not canonical base64url (the
+# reason in bayan_base64_last_error()). Padding is optional, but when present it
+# is exactly what pads the input to a multiple of 4 (1.11.1: any run of '=' was
+# stripped, and a dangling character dropped).
 fn bayan_base64url_decode(encoded, enc_len): i64 {
-    var dtbl = alloc(256);
-    memset(dtbl, 255, 256);
-    var i = 0;
-    while (i < 64) {
-        store8(dtbl + load8(_b64u_enc + i), i);
-        i = i + 1;
+    if (enc_len < 0) { return _b64_refuse("base64url: a negative length"); }
+    var n = enc_len;
+    var pad = 0;
+    while (n > 0 && load8(encoded + n - 1) == 61) { n = n - 1; pad = pad + 1; }
+    if (pad > 0 && (enc_len % 4 != 0 || pad > 2)) {
+        return _b64_refuse("base64url: padding must be absent or pad to a multiple of 4");
     }
-    # Strip trailing padding if present (compatibility with implementations
-    # that include it despite the spec).
-    var elen = enc_len;
-    while (elen > 0 && load8(encoded + elen - 1) == 61) { elen = elen - 1; }
-
-    # Output length: (full_quads * 3) + tail bytes (1 char→0, 2→1, 3→2)
-    var quads = elen / 4;
-    var rem = elen - (quads * 4);
-    var out_len = quads * 3;
-    if (rem == 2) { out_len = out_len + 1; }
-    if (rem == 3) { out_len = out_len + 2; }
-    var out = alloc(out_len + 1);
-    var si = 0;
-    var di = 0;
-    while (si + 4 <= elen) {
-        var a = load8(dtbl + load8(encoded + si));
-        var b = load8(dtbl + load8(encoded + si + 1));
-        var c = load8(dtbl + load8(encoded + si + 2));
-        var d = load8(dtbl + load8(encoded + si + 3));
-        if (a == 255 || b == 255 || c == 255 || d == 255) { return 0; }
-        store8(out + di,     ((a << 2) | (b >> 4)) & 0xFF);
-        store8(out + di + 1, (((b & 15) << 4) | (c >> 2)) & 0xFF);
-        store8(out + di + 2, (((c & 3) << 6) | d) & 0xFF);
-        si = si + 4;
-        di = di + 3;
-    }
-    if (rem == 2) {
-        var ta = load8(dtbl + load8(encoded + si));
-        var tb = load8(dtbl + load8(encoded + si + 1));
-        if (ta == 255 || tb == 255) { return 0; }
-        store8(out + di, ((ta << 2) | (tb >> 4)) & 0xFF);
-    }
-    if (rem == 3) {
-        var ua = load8(dtbl + load8(encoded + si));
-        var ub = load8(dtbl + load8(encoded + si + 1));
-        var uc = load8(dtbl + load8(encoded + si + 2));
-        if (ua == 255 || ub == 255 || uc == 255) { return 0; }
-        store8(out + di,     ((ua << 2) | (ub >> 4)) & 0xFF);
-        store8(out + di + 1, (((ub & 15) << 4) | (uc >> 2)) & 0xFF);
-    }
-    store8(out + out_len, 0);
-    var result = alloc(16);
-    store64(result, out);
-    store64(result + 8, out_len);
-    return result;
+    return _b64_decode_core(encoded, n, 1);
 }

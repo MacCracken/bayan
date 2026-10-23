@@ -2208,6 +2208,96 @@ assert_neq(b64_ok, 0, "base64: valid input still decodes");
 assert_eq(load64(b64_ok + 8), 3, "base64: with the right length");
 assert_eq(memeq(load64(b64_ok), "foo", 3), 1, "base64: and the right bytes");
 
+test_group("base64: the decoders refuse what is not canonical, by name (1.11.1)");
+# A '=' anywhere decoded as six zero bits, '====' gave one 00 byte, QR== decoded as QQ== does,
+# and base64url dropped a dangling character and any run of '='. Each is refused now, with
+# the reason in bayan_base64_last_error(), and the two alphabets never mix.
+fn _b64_no(s, why): i64 {
+    if (bayan_base64_decode(s, strlen(s)) != 0) { return 0; }
+    return streq(bayan_base64_last_error(), why);
+}
+fn _b64u_no(s, why): i64 {
+    if (bayan_base64url_decode(s, strlen(s)) != 0) { return 0; }
+    return streq(bayan_base64_last_error(), why);
+}
+var B64_EQ = "base64: '=' is padding, and may only end the last group";
+var B64_PAD = "base64: too much padding: at most \"==\", after two characters";
+var B64_BITS = "base64: the bits below the last byte are not zero (not canonical)";
+var B64_ONE = "base64: a last group of one character cannot hold a byte";
+var B64U_PAD = "base64url: padding must be absent or pad to a multiple of 4";
+assert_eq(_b64_no("QQ==QUFB", B64_EQ), 1, "base64: QQ==QUFB (was 41 00 00 41 41 41)");
+assert_eq(_b64_no("=AAA", B64_EQ), 1, "base64: =AAA (was 00 00 00)");
+assert_eq(_b64_no("====", B64_PAD), 1, "base64: ==== (was one 00)");
+assert_eq(_b64_no("A===", B64_PAD), 1, "base64: A=== (was 00)");
+assert_eq(_b64_no("Q=Q=", B64_EQ), 1, "base64: Q=Q= (was 40 04)");
+assert_eq(_b64_no("AB=C", B64_EQ), 1, "base64: a byte after the padding");
+assert_eq(_b64_no("AAAA====", B64_PAD), 1, "base64: a whole group of padding");
+assert_eq(_b64_no("QR==", B64_BITS), 1, "base64: QR== is not QQ== spelled twice");
+assert_eq(_b64_no("QUF=", B64_BITS), 1, "base64: nor QUF= QUE=");
+assert_eq(_b64_no("Zm9", "base64: the length is not a multiple of 4"), 1, "base64: the standard decoder wants padding");
+assert_eq(_b64_no("__79", "base64: '-' or '_' is base64url's alphabet, not base64's"), 1,
+  "base64: base64url's characters are refused by name");
+assert_eq(_b64u_no("//79", "base64url: '+' or '/' is base64's alphabet, not base64url's"), 1,
+  "base64url: and base64's by base64url");
+assert_eq(_b64u_no("Q", B64_ONE), 1, "base64url: Q (was an empty result)");
+assert_eq(_b64u_no("QUFBQ", B64_ONE), 1, "base64url: QUFBQ (was 41 41 41, the Q dropped)");
+assert_eq(_b64u_no("QQ=====", B64U_PAD), 1, "base64url: QQ===== (was 41)");
+assert_eq(_b64u_no("QQ=", B64U_PAD), 1, "base64url: padding that does not reach a multiple of 4");
+assert_eq(_b64u_no("QR", B64_BITS), 1, "base64url: QR (was 41)");
+assert_eq(_b64u_no("QQ=A", B64_EQ), 1, "base64url: '=' inside the data");
+var b64c = bayan_base64_decode("QQ==", 4);
+assert_eq(load64(b64c + 8), 1, "base64: QQ== still decodes, to one byte");
+assert_eq(load8(load64(b64c)), 65, "base64: 41");
+assert_eq(streq(bayan_base64_last_error(), ""), 1, "base64: and a decode that succeeds clears the reason");
+assert_eq(load64(bayan_base64url_decode("QQ==", 4) + 8), 1, "base64url: padded exactly is accepted");
+assert_eq(load64(bayan_base64url_decode("QQ", 2) + 8), 1, "base64url: as is no padding");
+assert_eq(load64(bayan_base64_decode("", 0) + 8), 0, "base64: empty is empty");
+# One spelling per byte string: every two- and three-character tail the decoders accept is the
+# one their encoders write, and the accepted count is the canonical count (4 of 64 second
+# characters after one byte, 16 of 64 third characters after two).
+var b64_alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+var b64_buf = alloc(8);
+var b64_n2 = 0;
+var b64_n3 = 0;
+var b64_bad = 0;
+var b64_x = 0;
+while (b64_x < 64) {
+    var b64_y = 0;
+    while (b64_y < 64) {
+        store8(b64_buf, 81);
+        store8(b64_buf + 1, load8(b64_alpha + b64_x));
+        store8(b64_buf + 2, 61);
+        store8(b64_buf + 3, 61);
+        if (b64_y == 0) {
+            var b64_r2 = bayan_base64_decode(b64_buf, 4);
+            if (b64_r2 != 0) {
+                b64_n2 = b64_n2 + 1;
+                if (memeq(bayan_base64_encode(load64(b64_r2), 1), b64_buf, 4) == 0) { b64_bad = b64_bad + 1; }
+            }
+        }
+        store8(b64_buf + 2, load8(b64_alpha + b64_y));
+        var b64_r3 = bayan_base64_decode(b64_buf, 4);
+        if (b64_r3 != 0) {
+            b64_n3 = b64_n3 + 1;
+            if (memeq(bayan_base64_encode(load64(b64_r3), 2), b64_buf, 4) == 0) { b64_bad = b64_bad + 1; }
+        }
+        b64_y = b64_y + 1;
+    }
+    b64_x = b64_x + 1;
+}
+assert_eq(b64_n2, 4, "base64: 4 of 64 characters end a one-byte group");
+assert_eq(b64_n3, 64 * 16, "base64: 16 of 64 end a two-byte group, after any second");
+assert_eq(b64_bad, 0, "base64: and each accepted one is what the encoder writes");
+# A refused allocation returns 0; the url decoder stored through a refused table.
+var b64_max = ALLOC_MAX;
+ALLOC_MAX = 0;
+var b64_r0 = bayan_base64url_decode("QUFB", 4);
+var b64_s0 = bayan_base64_decode("QUFB", 4);
+ALLOC_MAX = b64_max;
+assert_eq(b64_r0, 0, "base64url: a refused allocation returns 0, not a fault");
+assert_eq(b64_s0, 0, "base64: as does the standard decoder");
+assert_eq(streq(bayan_base64_last_error(), "base64: out of memory"), 1, "base64: by name");
+
 test_group("bigint: u256 multiply propagates carries");
 # The three-term inner sum detected overflow with ONE comparison, missing the
 # case where lo + carry wrapped on its own: 220 of 400 random 256-bit products
