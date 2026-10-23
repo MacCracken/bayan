@@ -66,9 +66,11 @@ assert_eq(json_v_obj_get(doc, "b"), want_b, "deprecated json_v_obj_get: the same
 assert_eq(json_v_obj_get(doc, "a"), arr, "deprecated json_v_obj_get: the first key too");
 assert_eq(json_v_obj_get(doc, "zz"), 0, "deprecated json_v_obj_get: absent key -> 0");
 
-# A repeated key is kept as a second pair; every lookup answers the FIRST.
-var DUP = "{\"a\":1,\"a\":2}";
-var dup = bayan_json_v_parse_buf(DUP, strlen(DUP));
+# A repeated key; every lookup answers the FIRST. A parse refuses one (1.11.1), so the
+# fixture is built by hand: obj_set appends.
+var dup = bayan_json_v_obj_new();
+bayan_json_v_obj_set(dup, str_from("a"), bayan_json_v_int_new(1));
+bayan_json_v_obj_set(dup, str_from("a"), bayan_json_v_int_new(2));
 var first = bayan_json_v_obj_get_by_str(dup, str_from("a"));
 assert_eq(bayan_json_v_int(first), 1, "the fixture's first \"a\" is 1");
 assert_eq(bayan_json_v_obj_get(dup, "a"), first, "deprecated bayan_json_v_obj_get picks the FIRST of a repeated key");
@@ -79,7 +81,9 @@ assert_eq(bayan_json_v_obj_get(doc, 0), 0, "deprecated bayan_json_v_obj_get: nul
 assert_eq(json_v_obj_get(doc, 0), 0, "deprecated json_v_obj_get: null key -> 0");
 
 # --- 1.11.0: the flat lookups --------------------------------------------------------------
-var JF = bayan_json_parse(str_from("{\"name\": \"demo\", \"count\": 42, \"name\": \"second\"}"));
+# A parse refuses a repeated key (1.11.1), so the second "name" is pushed by hand.
+var JF = bayan_json_parse(str_from("{\"name\": \"demo\", \"count\": 42}"));
+vec_push(JF, bayan_json_pair_new(str_from("name"), str_from("second")));
 var jf_name = bayan_json_get_by_str(JF, str_from("name"));
 assert_eq(str_eq_cstr(jf_name, "demo"), 1, "the json fixture's first name is demo");
 assert_eq(bayan_json_get(JF, str_from("name")), jf_name, "deprecated bayan_json_get: the FIRST of a repeated key, as _by_str");

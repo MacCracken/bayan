@@ -96,6 +96,144 @@ fn bayan_json_value(p): i64 { return load64(p + 8); }
 # 1.7.0 — Which form this pair's value took (a JSON_K_* value).
 fn bayan_json_pair_kind(p): i64 { return load64(p + 16); }
 
+# --- Duplicate object keys (1.11.1) ----------------------------------------
+#
+# A DUPLICATE KEY IS REFUSED, by every parser in this file and by yaml's mapping
+# parser: "duplicate key" with the byte offset of the second one (the user's
+# decision at the 6.7.18 audit). Until 1.11.1 JSON accepted them and answered the
+# FIRST, the opposite of most readers: {"role":"user","role":"admin"} read
+# role=user here, bayan_json_v_build re-emitted both pairs, and every last-wins
+# reader downstream saw admin, so a bayan component that validated a body and
+# another that acted on it disagreed about a role, the shape yaml and toml in
+# this fold already refuse. Keys compare DECODED: "\u0061dmin" is "admin".
+#
+# The key set is one object's keys while it is parsed, a stack local of the
+# parsing frame (_JK_SIZE bytes): up to _JK_INLINE keys compare in place, with no
+# allocation, so an object of 32 keys or fewer allocates exactly what it did
+# before 1.11.1; past that an open-addressing table, doubled at half
+# full, finds a key in O(1), so an object of n keys costs O(n), not the O(n^2) of
+# a walk of the keys before it (yaml's mapping parser, until 1.11.1). It borrows
+# the key bytes, so they must outlive the parse of the object.
+#   +0  a       the allocator the table comes from
+#   +8  n       keys added
+#   +16 slots   0 while n <= _JK_INLINE; then cap slots of {hash, ptr, len + 1}
+#   +24 cap     a power of two
+#   +32         _JK_INLINE x {ptr, len}
+const _JK_INLINE = 32;
+const _JK_SIZE = 544;
+
+fn _jk_init(ks, a): i64 {
+    store64(ks, a);
+    store64(ks + 8, 0);
+    store64(ks + 16, 0);
+    store64(ks + 24, 0);
+    return 0;
+}
+
+# FNV-1a over the key bytes, then a multiply and a shift so the low bits, which
+# pick the slot, depend on every byte.
+fn _jk_hash(p, n): i64 {
+    var h = 0xCBF29CE484222325;
+    var i = 0;
+    while (i < n) {
+        h = (h ^ load8(p + i)) * 0x100000001B3;
+        i = i + 1;
+    }
+    h = h * 0x9E3779B97F4A7C15;
+    return h ^ (h >> 29);
+}
+
+# Put {h, p, n} into the table `slots` of mask + 1 slots, which has room.
+fn _jk_put(slots, mask, h, p, n): i64 {
+    var i = h & mask;
+    while (load64(slots + i * 24 + 16) != 0) { i = (i + 1) & mask; }
+    var s = slots + i * 24;
+    store64(s, h);
+    store64(s + 8, p);
+    store64(s + 16, n + 1);
+    return 0;
+}
+
+# A zeroed table of `cap` slots holding the set's keys so far, or 0 if refused.
+fn _jk_table(ks, cap): i64 {
+    var t = alloc_via(load64(ks), cap * 24);
+    if (t == 0) { return 0; }
+    memset(t, 0, cap * 24);
+    var old = load64(ks + 16);
+    var i = 0;
+    if (old == 0) {
+        while (i < load64(ks + 8)) {
+            var e = ks + 32 + i * 16;
+            _jk_put(t, cap - 1, _jk_hash(load64(e), load64(e + 8)), load64(e), load64(e + 8));
+            i = i + 1;
+        }
+        return t;
+    }
+    var ocap = load64(ks + 24);
+    while (i < ocap) {
+        var o = old + i * 24;
+        if (load64(o + 16) != 0) { _jk_put(t, cap - 1, load64(o), load64(o + 8), load64(o + 16) - 1); }
+        i = i + 1;
+    }
+    free_via(load64(ks), old);
+    return t;
+}
+
+# Add the key p[0, n) to the set: 1 when it is new, 0 when the set already holds
+# it, -1 when the table's allocation is refused.
+fn _jk_add(ks, p, n): i64 {
+    var cnt = load64(ks + 8);
+    var slots = load64(ks + 16);
+    if (slots == 0) {
+        var i = 0;
+        while (i < cnt) {
+            var e = ks + 32 + i * 16;
+            if (load64(e + 8) == n) {
+                if (memeq(load64(e), p, n) == 1) { return 0; }
+            }
+            i = i + 1;
+        }
+        if (cnt < _JK_INLINE) {
+            store64(ks + 32 + cnt * 16, p);
+            store64(ks + 32 + cnt * 16 + 8, n);
+            store64(ks + 8, cnt + 1);
+            return 1;
+        }
+        # Four slots per key held, so the table starts under half full.
+        slots = _jk_table(ks, _JK_INLINE * 4);
+        if (slots == 0) { return 0 - 1; }
+        store64(ks + 16, slots);
+        store64(ks + 24, _JK_INLINE * 4);
+    }
+    var cap = load64(ks + 24);
+    var h = _jk_hash(p, n);
+    var j = h & (cap - 1);
+    while (load64(slots + j * 24 + 16) != 0) {
+        var s = slots + j * 24;
+        if (load64(s) == h && load64(s + 16) == n + 1) {
+            if (memeq(load64(s + 8), p, n) == 1) { return 0; }
+        }
+        j = (j + 1) & (cap - 1);
+    }
+    if ((cnt + 1) * 2 > cap) {
+        slots = _jk_table(ks, cap * 2);
+        if (slots == 0) { return 0 - 1; }
+        store64(ks + 16, slots);
+        store64(ks + 24, cap * 2);
+        cap = cap * 2;
+    }
+    _jk_put(slots, cap - 1, h, p, n);
+    store64(ks + 8, cnt + 1);
+    return 1;
+}
+
+# Give the set's table, if it grew one, back to its allocator.
+fn _jk_free(ks): i64 {
+    if (load64(ks + 16) != 0) { free_via(load64(ks), load64(ks + 16)); }
+    store64(ks + 16, 0);
+    return 0;
+}
+
 # Index of the first byte at or after data[i] that is not JSON whitespace, or
 # slen. JSON whitespace is space, TAB, LF and CR (RFC 8259 section 2); the flat
 # parser's bare-value scan used to end a value only at space and LF, so TAB and
@@ -273,9 +411,43 @@ fn _json_flat_span_end(data, slen, i): i64 {
 # missing, doubled or trailing commas between members; and unvalidated bare
 # values (`{"n":abc}` gives n = abc).
 #
+# A DUPLICATE KEY REFUSES THE DOCUMENT (1.11.1): 0, with "duplicate key" and the
+# byte offset of the second one in bayan_json_last_error() / _pos() (a parse that
+# returns pairs clears them). Not a stop with the pairs before it: those would be
+# the FIRST value, and a last-wins reader of the same bytes acts on the last. The
+# keys compare decoded, as the tree parser's do, so {"admin":1,"\u0061dmin":2}
+# is refused too; only the top-level object's keys are this parser's to compare.
+#
+# THE LOOKUPS COMPARE RAW KEYS. A key comes back as its source bytes, escapes as
+# written, and bayan_json_get_by_cstr / _by_str compare those bytes: for
+# {"\u0061dmin":true} they answer "admin" absent where the tree parser answers it
+# present. Do not decide an allowlist or a denylist by a flat lookup of a key a
+# peer wrote; parse with bayan_json_v_parse, whose keys are decoded.
+#
 # Parse one JSON object's top-level members into a vec of raw key/value pairs (0 on a refused alloc).
 fn bayan_json_parse(src): i64 {
     return bayan_json_parse_a(default_alloc(), src);
+}
+
+# The decoded form of the key whose opening quote is data[kq], to compare it with
+# the document's other keys: 0 when it has no escape (its raw bytes are its
+# decoded form), the decoded Str, or -1 when `a` refuses the allocation. A key
+# whose escapes do not decode (the flat parser does not validate them) compares
+# as its raw bytes.
+fn _json_flat_key_dec(a, data, slen, kq, ke): i64 {
+    var i = kq + 1;
+    while (i < ke) {
+        if (load8(data + i) == 92) { break; }
+        i = i + 1;
+    }
+    if (i >= ke) { return 0; }
+    var kps[_JP_STATE_SIZE];
+    _jp_state_init(&kps, data, slen);
+    store64(&kps + 16, kq);
+    var d = _jp_parse_string_a(a, &kps);
+    if (d != 0) { return d; }
+    if (streq(load64(&kps + 24), "out of memory in string") == 1) { return 0 - 1; }
+    return 0;
 }
 
 # 1.5.10 — Allocator-as-first-arg variant of bayan_json_parse: every allocation
@@ -286,9 +458,14 @@ fn bayan_json_parse(src): i64 {
 fn bayan_json_parse_a(a, src): i64 {
     var pairs = vec_new_a(a);
     if (pairs == 0) { return 0; }
+    _json_err_msg = 0;
+    _json_err_pos = 0;
     if (src == 0) { return pairs; }
     var data = str_data(src);
     var slen = str_len(src);
+    # The top-level keys so far, decoded: a duplicate refuses the document.
+    var kset[_JK_SIZE];
+    _jk_init(&kset, a);
     var ji = 0;
     # Skip to the first `{` byte (see PASS AN OBJECT DOCUMENT above).
     while (ji < slen) {
@@ -347,6 +524,17 @@ fn bayan_json_parse_a(a, src): i64 {
             # A value followed by `:` was the next KEY: this key had none.
             ji = _json_flat_skip_ws(data, slen, ji);
             if (ji < slen && load8(data + ji) == 58) { break; }
+            var kd = _json_flat_key_dec(a, data, slen, ks - 1, ke);
+            if (kd < 0) { return 0; }
+            var fresh = 0;
+            if (kd == 0) { fresh = _jk_add(&kset, data + ks, ke - ks); }
+            else { fresh = _jk_add(&kset, str_data(kd), str_len(kd)); }
+            if (fresh < 0) { return 0; }
+            if (fresh == 0) {
+                _json_err_msg = "duplicate key";
+                _json_err_pos = ks - 1;
+                return 0;
+            }
             var k = str_new_a(a, data + ks, ke - ks);
             if (k == 0) { return 0; }
             var v = str_new_a(a, data + vs, ve - vs);
@@ -360,6 +548,7 @@ fn bayan_json_parse_a(a, src): i64 {
             break;
         }
     }
+    _jk_free(&kset);
     return pairs;
 }
 
@@ -1546,10 +1735,17 @@ fn _jp_parse_object_a(a, ps): i64 {
         store64(ps + 16, load64(ps + 16) + 1);
         return obj;
     }
+    # The object's keys so far: a duplicate is refused (1.11.1; see the key set).
+    var ks[_JK_SIZE];
+    _jk_init(&ks, a);
     while (1 == 1) {
         _jp_skip_ws(ps);
+        var kpos = load64(ps + 16);
         var k = _jp_parse_string_a(a, ps);
         if (k == 0) { return 0; }
+        var fresh = _jk_add(&ks, str_data(k), str_len(k));
+        if (fresh == 0) { _jp_set_err(ps, "duplicate key", kpos); return 0; }
+        if (fresh < 0) { _jp_set_err(ps, "out of memory in object", kpos); return 0; }
         _jp_skip_ws(ps);
         if (load64(ps + 16) >= len) { _jp_set_err(ps, "unterminated object", load64(ps + 16)); return 0; }
         if (load8(buf + load64(ps + 16)) != 58) {
@@ -1566,7 +1762,7 @@ fn _jp_parse_object_a(a, ps): i64 {
         if (load64(ps + 16) >= len) { _jp_set_err(ps, "unterminated object", load64(ps + 16)); return 0; }
         var c = load8(buf + load64(ps + 16));
         if (c == 44) { store64(ps + 16, load64(ps + 16) + 1); }
-        elif (c == 125) { store64(ps + 16, load64(ps + 16) + 1); return obj; }
+        elif (c == 125) { store64(ps + 16, load64(ps + 16) + 1); _jk_free(&ks); return obj; }
         else { _jp_set_err(ps, "expected ',' or '}'", load64(ps + 16)); return 0; }
     }
     return 0;
@@ -2063,10 +2259,21 @@ fn _js_parse_object(ps, h): i64 {
         if (fp_e != 0) { fncall1(fp_e, _js_ctx(h)); }
         return 0;
     }
+    # A duplicate key is refused before its JS_EV_KEY fires (1.11.1).
+    var ks[_JK_SIZE];
+    _jk_init(&ks, default_alloc());
     while (1 == 1) {
         _jp_skip_ws(ps);
+        var kpos = load64(ps + 16);
         var k = _jp_parse_string(ps);
         if (k == 0) { _js_relay_err(ps, h); return 0 - 1; }
+        var fresh = _jk_add(&ks, str_data(k), str_len(k));
+        if (fresh <= 0) {
+            if (fresh == 0) { _jp_set_err(ps, "duplicate key", kpos); }
+            else { _jp_set_err(ps, "out of memory in object", kpos); }
+            _js_relay_err(ps, h);
+            return 0 - 1;
+        }
         var fp_k = _js_cb(h, JS_EV_KEY);
         if (fp_k != 0) { fncall2(fp_k, _js_ctx(h), k); }
         _jp_skip_ws(ps);
@@ -2080,6 +2287,7 @@ fn _js_parse_object(ps, h): i64 {
         if (c == 44) { store64(ps + 16, load64(ps + 16) + 1); }
         elif (c == 125) {
             store64(ps + 16, load64(ps + 16) + 1);
+            _jk_free(&ks);
             var fp_e2 = _js_cb(h, JS_EV_OBJECT_END);
             if (fp_e2 != 0) { fncall1(fp_e2, _js_ctx(h)); }
             return 0;

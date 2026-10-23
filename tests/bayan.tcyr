@@ -2076,6 +2076,72 @@ assert_eq(_strm_int, 5, "json stream: 0, -0, 10 and both i64 bounds are ints");
 assert_eq(_strm_acc, 9, "json stream: summing to 9 (10, and the two bounds sum to -1)");
 assert_neq(bayan_json_v_parse_buf(_num_ok, strlen(_num_ok)), 0, "json tree: the same shapes parse");
 
+test_group("json: a duplicate key refuses the document, in every parser (1.11.1)");
+# {"role":"user","role":"admin"} parsed, every bayan lookup answered the FIRST (user),
+# bayan_json_v_build re-emitted both pairs, and every last-wins reader downstream saw admin.
+# Each parser now refuses it: "duplicate key", at the second key's quote. Keys compare decoded.
+var jd_role = "{\"role\":\"user\",\"role\":\"admin\"}";
+assert_eq(bayan_json_v_parse_buf(jd_role, strlen(jd_role)), 0, "json dup: the tree parser refuses role twice");
+assert_eq(streq(bayan_json_last_error(), "duplicate key"), 1, "json dup: tree, by name");
+assert_eq(bayan_json_last_error_pos(), 15, "json dup: tree, at the second key's quote");
+var jd_esc = "{\"admin\":1,\"\\u0061dmin\":2}";
+assert_eq(bayan_json_v_parse_buf(jd_esc, strlen(jd_esc)), 0, "json dup: tree, \\u0061dmin is admin");
+var jd_nest = "{\"a\":{\"x\":1,\"x\":2}}";
+assert_eq(bayan_json_v_parse_buf(jd_nest, strlen(jd_nest)), 0, "json dup: tree, inside a nested object");
+var jd_sib = "{\"a\":{\"x\":1},\"b\":{\"x\":1},\"x\":[{\"x\":0},{\"x\":0}]}";
+assert_neq(bayan_json_v_parse_buf(jd_sib, strlen(jd_sib)), 0, "json dup: one key in sibling objects is no duplicate");
+# Past 32 keys the set is a hash table: 1000 distinct keys parse, and a repeat of the 4th
+# (met while the keys still compare in place, refused after the table exists) does not.
+fn _jd_doc(n, rep): i64 {
+    var sb = str_builder_new();
+    str_builder_putc(sb, 123);
+    var i = 0;
+    while (i < n) {
+        if (i > 0) { str_builder_putc(sb, 44); }
+        str_builder_add_cstr(sb, "\"key");
+        str_builder_add_int(sb, i);
+        str_builder_add_cstr(sb, "\":0");
+        i = i + 1;
+    }
+    if (rep >= 0) {
+        str_builder_add_cstr(sb, ",\"key");
+        str_builder_add_int(sb, rep);
+        str_builder_add_cstr(sb, "\":1");
+    }
+    str_builder_putc(sb, 125);
+    return str_builder_build(sb);
+}
+var jd_1000 = _jd_doc(1000, 0 - 1);
+var jd_v = bayan_json_v_parse(jd_1000);
+assert_eq(bayan_json_v_obj_len(jd_v), 1000, "json dup: 1000 distinct keys parse");
+assert_eq(bayan_json_v_parse(_jd_doc(1000, 3)), 0, "json dup: a repeat of key3 after 1000 keys is refused");
+assert_eq(bayan_json_v_parse(_jd_doc(1000, 999)), 0, "json dup: and of the last key");
+assert_eq(bayan_json_v_parse(_jd_doc(32, 31)), 0, "json dup: and of the 32nd, the last kept in place");
+assert_eq(vec_len(bayan_json_parse(jd_1000)), 1000, "json dup: the flat parser reads the 1000 too");
+assert_eq(bayan_json_parse(_jd_doc(1000, 500)), 0, "json dup: and refuses a repeat among them");
+# The flat parser: 0 and the error, never the FIRST value (a stop would keep role=user).
+assert_eq(bayan_json_parse(str_from(jd_role)), 0, "json dup: the flat parser refuses role twice");
+assert_eq(streq(bayan_json_last_error(), "duplicate key"), 1, "json dup: flat, by name");
+assert_eq(bayan_json_last_error_pos(), 15, "json dup: flat, at the second key's quote");
+assert_eq(bayan_json_parse(str_from(jd_esc)), 0, "json dup: flat compares the keys decoded");
+assert_eq(vec_len(bayan_json_parse(str_from(jd_nest))), 1, "json dup: flat compares only its own level's keys");
+assert_eq(streq(bayan_json_last_error(), ""), 1, "json dup: and a parse that returns pairs clears the error");
+assert_eq(bayan_json_get_by_cstr(bayan_json_parse(str_from(jd_role)), "role"), 0, "json dup: so a flat lookup answers absent");
+# The streaming parser refuses before the duplicate's JS_EV_KEY fires.
+_strm_reset();
+assert_eq(bayan_json_stream_parse(jd_role, strlen(jd_role), sh), 0 - 1, "json dup: the stream parser refuses role twice");
+assert_eq(_strm_key, 1, "json dup: stream, the repeated key's event never fires");
+assert_eq(_strm_err, 1, "json dup: stream, on_error fires");
+assert_eq(streq(bayan_json_last_error(), "duplicate key"), 1, "json dup: stream, by name");
+_strm_reset();
+assert_eq(bayan_json_stream_parse(jd_esc, strlen(jd_esc), sh), 0 - 1, "json dup: stream, decoded");
+_strm_reset();
+assert_eq(bayan_json_stream_parse(jd_sib, strlen(jd_sib), sh), 0, "json dup: stream, sibling objects are fine");
+assert_eq(_strm_key, 7, "json dup: stream, all seven keys");
+var jd_big = _jd_doc(1000, 7);
+_strm_reset();
+assert_eq(bayan_json_stream_parse(str_data(jd_big), str_len(jd_big), sh), 0 - 1, "json dup: stream, past the in-place keys");
+
 test_group("json: the flat parser honours escapes (was key injection)");
 # The value scan stopped at the first quote regardless of a preceding
 # backslash, so a string value could terminate early and the parser
@@ -3103,13 +3169,16 @@ assert_eq(jo_none, 0, "json flat: a refused vec returns 0");
 assert_eq(bayan_json_get_by_str(jo_none, str_from("a")), 0, "json flat: and get() on that 0 answers absent");
 # 17 members, so the 17th push grows the vec from 16 slots to 32 (256 bytes).
 # ALLOC_MAX = 128 grants the vec (24 and 128 bytes) and every Str and pair (16)
-# and refuses only that growth.
+# and refuses only that growth. The keys are k0 .. k16: a repeated key refuses
+# the document (1.11.1), and 17 keys compare in place, allocating nothing.
 var jo_sb = str_builder_new();
 str_builder_putc(jo_sb, 123);
 var jo_i = 0;
 while (jo_i < 17) {
     if (jo_i > 0) { str_builder_putc(jo_sb, 44); }
-    str_builder_add_cstr(jo_sb, "\"k\":\"v\"");
+    str_builder_add_cstr(jo_sb, "\"k");
+    str_builder_add_int(jo_sb, jo_i);
+    str_builder_add_cstr(jo_sb, "\":\"v\"");
     jo_i = jo_i + 1;
 }
 str_builder_putc(jo_sb, 125);
@@ -3224,13 +3293,16 @@ assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, "ab"), bayan_json_v_obj_get_by_str(
   "json: _by_cstr and _by_str return the same node");
 assert_eq(bayan_json_v_obj_get_by_cstr(jk_o, ""), bayan_json_v_obj_get_by_str(jk_o, str_from("")),
   "json: _by_cstr and _by_str agree on the empty key");
-# A repeated key is kept as a second pair (the parser accepts it; obj_set appends). Every
-# lookup answers the FIRST, the rule src/yaml.cyr documents, so the typed lookups and the two
-# deprecated names (forwarding to _by_cstr; pinned in tests/deprecated_lookup.cyr since
-# 1.5.12) must pick the same pair. The suite above has no repeated key, so a last-match
-# lookup in either typed spelling passed it.
+# A repeated key is kept as a second pair by obj_set, which appends. Every lookup answers the
+# FIRST, the rule src/yaml.cyr documents, so the typed lookups and the two deprecated names
+# (forwarding to _by_cstr; pinned in tests/deprecated_lookup.cyr since 1.5.12) must pick the
+# same pair. The suite above has no repeated key, so a last-match lookup in either typed
+# spelling passed it. A parse refuses a repeated key (1.11.1), so this tree is built by hand.
 var jk_d = "{\"a\":1,\"a\":2}";
-var jk_do = bayan_json_v_parse_buf(jk_d, strlen(jk_d));
+assert_eq(bayan_json_v_parse_buf(jk_d, strlen(jk_d)), 0, "json: a parse refuses the repeated key");
+var jk_do = bayan_json_v_obj_new();
+bayan_json_v_obj_set(jk_do, str_from("a"), bayan_json_v_int_new(1));
+bayan_json_v_obj_set(jk_do, str_from("a"), bayan_json_v_int_new(2));
 var jk_first = bayan_json_v_obj_get_by_str(jk_do, str_from("a"));
 assert_eq(bayan_json_v_obj_len(jk_do), 2, "json: a repeated key is kept as a second pair");
 assert_eq(bayan_json_v_int(jk_first), 1, "json: _by_str answers the FIRST of a repeated key");
@@ -5528,11 +5600,13 @@ test_group("flat lookups: each names its key type (1.11.0)");
 # _by_cstr takes a C string or a literal; _by_str a Str, compared by its length. A Str cut from a
 # longer one (str_sub) is not NUL-terminated, so _by_str must read exactly its length: "name" cut
 # from "namex" finds name, and "nam" cut from it finds nam, never name. The json lookups answer
-# the FIRST of a repeated key, the toml ones the LAST, as the deprecated bare names did.
+# the FIRST of a repeated key, the toml ones the LAST, as the deprecated bare names did. A json
+# parse refuses a repeated key (1.11.1), so the second "name" is pushed by hand.
 var fl_whole = str_from("namex");
 var fl_cut = str_sub(fl_whole, 0, 4);
 var fl_cut3 = str_sub(fl_whole, 0, 3);
-var fl_j = bayan_json_parse(str_from("{\"name\": \"demo\", \"count\": 42, \"name\": \"second\", \"nam\": \"short\"}"));
+var fl_j = bayan_json_parse(str_from("{\"name\": \"demo\", \"count\": 42, \"nam\": \"short\"}"));
+vec_push(fl_j, bayan_json_pair_new(str_from("name"), str_from("second")));
 assert_eq(str_eq_cstr(bayan_json_get_by_cstr(fl_j, "name"), "demo"), 1, "flat: json _by_cstr, the FIRST of a repeated key");
 assert_eq(bayan_json_get_by_str(fl_j, fl_cut), bayan_json_get_by_cstr(fl_j, "name"), "flat: json _by_str, a cut Str by its length");
 assert_eq(str_eq_cstr(bayan_json_get_by_str(fl_j, fl_cut3), "short"), 1, "flat: json _by_str, nam is nam, not name");

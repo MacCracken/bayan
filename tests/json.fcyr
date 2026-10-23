@@ -16,6 +16,8 @@
 #            a member nested 120..135 levels deep, across the tree parser's cap.
 #   DAMAGED  each valid document again after 1..3 random edits (replace, insert,
 #            delete a byte, or cut the document short).
+#   REPEATED a valid document whose last member's key repeats the first's, as
+#            written or with its final capital spelled \u0041 (1.11.1).
 #   SOUP     short random strings over `{ } [ ] " : , \` whitespace and `a1`.
 #
 # Properties. Any failure prints the document and exits non-zero:
@@ -36,6 +38,12 @@
 #       document with a member past the depth cap is refused by the tree parser,
 #       and the flat parse stops at that member. The same tree comparison runs on
 #       every DAMAGED document the tree parser still accepts as an object.
+#   (f) a document whose pairs (the reference's, up to its first defect) hold
+#       two equal keys, compared decoded, is refused: 0, with "duplicate key"
+#       (1.11.1). The generator makes every object's keys distinct (each ends
+#       in its own capital letter, a byte fz_body never writes), so the valid
+#       corpus is refused only by a bug, and the damaged and soup corpora meet
+#       duplicates by chance.
 #   (e) no load past the source. Every document is parsed a second time from
 #       the END of a mapping whose next page is PROT_NONE, and so is every
 #       prefix of the edge documents in fz_edges, so a load at data[slen] is a
@@ -213,7 +221,7 @@ fn fz_value(p, room): i64 {
     while (i < n) {
         if (i > 0) { p = fz_ws(p); p = fz_put(p, 44); p = fz_ws(p); }
         if (obj == 1) {
-            p = fz_put(p, 34); p = fz_body(p); p = fz_put(p, 34);
+            p = fz_put(p, 34); p = fz_body(p); p = fz_put(p, 65 + i); p = fz_put(p, 34);
             p = fz_ws(p); p = fz_put(p, 58); p = fz_ws(p);
         }
         p = fz_value(p, room - 1);
@@ -241,6 +249,10 @@ fn fz_chain(p, depth): i64 {
     return p;
 }
 
+# g_dup: 0, or the REPEATED corpus's mode: 1 writes the last member's key as a
+# copy of the first's, 2 the same with its final capital spelled \u0041.
+var g_dup = 0;
+
 # A whole VALID document; returns its length. Records each member in g_mem and,
 # in g_stop, the first member whose value nests past the cap: the top-level
 # object is level 1, as in the tree parser, so 127 levels inside it are allowed.
@@ -258,7 +270,16 @@ fn fz_document(): i64 {
         if (i > 0) { p = fz_ws(p); p = fz_put(p, 44); p = fz_ws(p); }
         p = fz_put(p, 34);
         store64(g_mem + i * 32, p);
-        p = fz_body(p);
+        if (g_dup > 0 && i > 0 && i == n - 1) {
+            var k0 = load64(g_mem);
+            var kl = load64(g_mem + 8);
+            var q = 0;
+            while (q < kl - 1) { p = fz_put(p, load8(g_doc + k0 + q)); q = q + 1; }
+            if (g_dup == 1) { p = fz_put(p, 65); } else { p = fz_puts(p, "\\u0041"); }
+        } else {
+            p = fz_body(p);
+            p = fz_put(p, 65 + i);
+        }
         store64(g_mem + i * 32 + 8, p - load64(g_mem + i * 32));
         p = fz_put(p, 34);
         p = fz_ws(p); p = fz_put(p, 58); p = fz_ws(p);
@@ -417,6 +438,7 @@ fn fz_reference(d, len): i64 {
 # ---------------------------------------------------------------------------
 
 var g_pairs = 0;
+var g_dups = 0;
 
 # 1 when pair p borrows exactly the spans in record r ({ ks, kl, vs, vl } as
 # offsets into d).
@@ -428,9 +450,39 @@ fn fz_pair_at(p, d, r): i64 {
     return 1;
 }
 
-# (a) (b) (c) on any document. `pairs` is bayan_json_parse's result.
+# A reference pair's key, decoded as the tree parser decodes a string; its raw
+# bytes when it does not decode (the flat parser does not validate escapes).
+fn fz_key_dec(d, r): i64 {
+    var kd = bayan_json_v_parse_buf(d + load64(r) - 1, load64(r + 8) + 2);
+    if (kd != 0) { return bayan_json_v_str(kd); }
+    return str_new(d + load64(r), load64(r + 8));
+}
+
+# (f): 1 when two of the reference's first rn pairs have equal decoded keys.
+fn fz_ref_dup(d, rn): i64 {
+    var i = 0;
+    while (i < rn) {
+        var ki = fz_key_dec(d, g_ref + i * 32);
+        var j = i + 1;
+        while (j < rn) {
+            if (str_eq(ki, fz_key_dec(d, g_ref + j * 32)) == 1) { return 1; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# (a) (b) (c) (f) on any document. `pairs` is bayan_json_parse's result.
 fn fz_check_any(len, pairs): i64 {
     var d = g_doc;
+    if (pairs == 0) {
+        var why = bayan_json_last_error();
+        if (fz_ref_dup(d, fz_reference(d, len)) == 0) { fz_fail("(f) refused, with no duplicate key", len); return 0; }
+        if (streq(why, "duplicate key") == 0) { fz_fail("(f) refused, but not by name", len); return 0; }
+        g_dups = g_dups + 1;
+        return 1;
+    }
     var n = vec_len(pairs);
     var i = 0;
     while (i < n) {
@@ -462,6 +514,7 @@ fn fz_check_any(len, pairs): i64 {
     }
     if (n > rn) { fz_fail("(c) a pair after a defect", len); return 0; }
     if (n < rn) { fz_fail("(c) the parse stopped before a defect", len); return 0; }
+    if (fz_ref_dup(d, rn) == 1) { fz_fail("(f) a duplicate key accepted", len); return 0; }
     g_pairs = g_pairs + n;
     return 1;
 }
@@ -506,6 +559,7 @@ fn fz_check_valid(len, pairs): i64 {
     var d = g_doc;
     var want = g_n;
     if (g_stop >= 0) { want = g_stop; }
+    if (pairs == 0) { fz_fail("(d) a valid document refused", len); return 0; }
     if (vec_len(pairs) != want) { fz_fail("(d) pair count differs from the generator's", len); return 0; }
     var i = 0;
     while (i < want) {
@@ -648,11 +702,30 @@ fn main(): i64 {
             fz_check_any(dl, dp);
             var tree = bayan_json_v_parse_buf(g_doc, dl);
             if (tree != 0 && bayan_json_v_is_obj(tree) == 1) {
-                fz_check_tree(dl, dp, tree);
+                if (dp == 0) { fz_fail("(f) a duplicate the tree parser accepted", dl); }
+                else { fz_check_tree(dl, dp, tree); }
                 ntree = ntree + 1;
             }
             ndamaged = ndamaged + 1;
             r = r + 1;
+        }
+        it = it + 1;
+    }
+    var nrep = 0;
+    it = 0;
+    while (it < 20000) {
+        alloc_reset();
+        g_dup = 1 + (it & 1);
+        var rl = fz_document();
+        g_dup = 0;
+        if (rl > FZ_CAP) { it = it + 1; continue; }
+        fz_fenced(g_doc, rl);
+        fz_check_any(rl, bayan_json_parse(str_new(g_doc, rl)));
+        if (g_n >= 2 && g_stop < 0) {
+            # The tree parser refuses the same documents, by the same name.
+            if (bayan_json_v_parse_buf(g_doc, rl) != 0) { fz_fail("(f) the tree parser accepted a repeated key", rl); }
+            elif (streq(bayan_json_last_error(), "duplicate key") == 0) { fz_fail("(f) the tree parser refused it, not by name", rl); }
+            nrep = nrep + 1;
         }
         it = it + 1;
     }
@@ -671,8 +744,9 @@ fn main(): i64 {
 
     fz_say("json fuzz: "); fz_num(nvalid); fz_say(" valid ("); fz_num(ndeep);
     fz_say(" past the depth cap), "); fz_num(ndamaged); fz_say(" damaged ("); fz_num(ntree);
-    fz_say(" still valid objects), "); fz_num(nsoup); fz_say(" soup; ");
-    fz_num(g_pairs); fz_say(" pairs checked; every document and the prefixes of ");
+    fz_say(" still valid objects), "); fz_num(nrep); fz_say(" repeated, "); fz_num(nsoup); fz_say(" soup; ");
+    fz_num(g_pairs); fz_say(" pairs checked, "); fz_num(g_dups);
+    fz_say(" duplicate-key refusals; every document and the prefixes of ");
     fz_num(nedge); fz_say(" edge documents parsed at a PROT_NONE page; "); fz_num(g_bad); fz_say(" wrong\n");
     if (g_bad > 0) { return 1; }
     return 0;
