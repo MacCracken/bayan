@@ -1,0 +1,454 @@
+# json parsers fuzz harness — the tree, streaming and flat parsers over seeded, mutated documents
+# (1.11.1).
+#
+# cyrius 6.7.18's security audit fuzzes the parsers a network peer feeds, and JSON is one of them:
+# bayan_json_v_parse_ctx_a, bayan_json_stream_parse and bayan_json_parse_a. tests/json.fcyr checks
+# the flat parser's pairs against an independent reader; this one feeds all three the same
+# peer-shaped bytes and checks what needs no oracle.
+#
+#   SEEDS    hand-written valid documents covering the grammar: every value kind, escapes and
+#            surrogate pairs, the integer bounds, floats at the edge of the range, nesting near
+#            the cap, whitespace of all four kinds.
+#   MUTANTS  each seed, many times over, after 1..4 seeded mutations: a truncation; a byte
+#            replaced, inserted or deleted; a span repeated elsewhere or two spans swapped (out of
+#            order); a number replaced by a boundary one (0, 2^31, 2^63, 2^64, their neighbours and
+#            the malformed shapes `01` `-` `1.` `1e`); the first member of an object repeated (a
+#            duplicate key); the whole document wrapped 126 to 129 levels deep.
+#
+# Properties. A failure prints the iteration and the document and exits non-zero:
+#   (a) no fault: every parse returns, from a fresh parser state, accepted or refused with a
+#       message. (A fault ends the process; `<binary> N` replays iteration N alone, printing its
+#       document first, so it reproduces.)
+#   (b) the tree and the streaming parsers accept the same documents, refuse the rest with the
+#       same message, and when they accept, the stream's events match the tree: as many keys, as
+#       many values, the same sum of integers.
+#   (c) an accepted tree serialises to JSON that parses back to the same serialisation.
+#   (d) when the tree accepts an object, the flat parser returns that many members.
+#   (e) no read past the input. Every document is parsed twice by each parser: flush against a
+#       PROT_NONE page, where a read at buf[len] is a SIGSEGV, and inside a larger buffer whose
+#       bytes after len (`1]}"e5,`) would change the answer if read; the answers must agree. The
+#       parsers read through bounds-checked slices (1.11.1), so a read past len there is a trap.
+#
+# xorshift64, each iteration seeded from its index, so every iteration replays alone. The heap is
+# rewound before every document. `cyrius fuzz` runs it plain; it also passes under --poison,
+# --poison=ab and --bounds.
+
+# NOTE: a file carrying include directives skips the [deps].stdlib auto-prepend, so the stdlib
+# prerequisites are listed explicitly here, exactly as src/main.cyr does.
+
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fmt.cyr"
+include "lib/math.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/mmap.cyr"
+include "lib/args.cyr"
+
+include "src/dtoa.cyr"
+include "src/json.cyr"
+
+var ITERS = 60000;
+var FZ_CAP = 8192;      # a document's largest size; a mutant past it is skipped
+var g_x = 0;
+
+fn xs64(): i64 {
+    g_x = g_x ^ (g_x << 13);
+    g_x = g_x ^ (g_x >> 7);
+    g_x = g_x ^ (g_x << 17);
+    return g_x;
+}
+# Uniform in 0..n-1.
+fn fz_rand(n): i64 { return ((xs64() >> 1) % n); }
+
+fn fz_say(s): i64 { print(s, strlen(s)); return 0; }
+fn fz_num(n): i64 { var b[24]; var l = fmt_int_buf(n, &b); print(&b, l); return 0; }
+
+# The buffers live in anonymous mappings, not on the heap (main rewinds it every document).
+var g_doc = 0;          # FZ_CAP: the document
+var g_tmp = 0;          # FZ_CAP: scratch for a mutation
+var g_emb = 0;          # FZ_CAP + 64: the document inside a larger buffer
+var g_span = 0;         # FZ_CAP: a span a mutation copies
+var g_fence = 0;        # the end of a mapping whose next page is PROT_NONE
+var g_h = 0;            # the stream handler (96 bytes, outside the heap)
+var g_iter = 0;
+var g_bad = 0;
+
+# Print a document with its control bytes made visible.
+fn fz_show(p, len): i64 {
+    fz_say("[");
+    var i = 0;
+    while (i < len && i < 600) {
+        var c = load8(p + i);
+        if (c == 10) { fz_say("\\n"); }
+        elif (c == 13) { fz_say("\\r"); }
+        elif (c == 9) { fz_say("\\t"); }
+        elif (c < 32 || c > 126) { fz_say("\\x"); fz_num(c); }
+        else { print(p + i, 1); }
+        i = i + 1;
+    }
+    if (len > 600) { fz_say("..."); }
+    fz_say("]\n");
+    return 0;
+}
+
+fn fz_fail(what, len): i64 {
+    if (g_bad < 10) {
+        fz_say("  iteration "); fz_num(g_iter); fz_say(": "); fz_say(what); fz_say(" ");
+        fz_show(g_doc, len);
+    }
+    g_bad = g_bad + 1;
+    return 0;
+}
+
+# --- the seeds ---------------------------------------------------------------------------------
+
+var g_seeds = 0;        # vec of cstrings
+
+fn fz_seeds(): i64 {
+    g_seeds = vec_new();
+    vec_push(g_seeds, "{\"a\":1,\"b\":[true,false,null],\"c\":{\"d\":\"e\\u00e9\\n\",\"f\":-0.5e-3}}");
+    vec_push(g_seeds, "[0,-0,1,-1,2147483647,2147483648,-2147483648,9223372036854775807,-9223372036854775808]");
+    vec_push(g_seeds, "{\"s\":\"\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\ud83d\\ude00\"}");
+    vec_push(g_seeds, "[[[[[]]]],{},[{}],{\"\":\"\"}]");
+    vec_push(g_seeds, " \t\r\n{ \"k\" : [ 1 , 2 ] , \"l\" : { } }\n");
+    vec_push(g_seeds, "\"just a string\"");
+    vec_push(g_seeds, "123.456e+78");
+    vec_push(g_seeds, "{\"role\":\"user\",\"roles\":[\"admin\",\"user\"],\"n\":null}");
+    vec_push(g_seeds, "[1e308,-1e-308,4.9e-324,1.7976931348623157e308,0.1,1E2,1e-2]");
+    vec_push(g_seeds, "{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":[1,{\"f\":[2,{\"g\":3}]}]}}}}}");
+    vec_push(g_seeds, "true");
+    vec_push(g_seeds, "null");
+    vec_push(g_seeds, "{\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9}");
+    vec_push(g_seeds, "{\"\\u0061\":1,\"b\":{\"\\u0061\":2},\"c\":[{\"a\":3},{\"a\":4}]}");
+    return 0;
+}
+
+# --- mutations -------------------------------------------------------------------------------------
+
+# A byte that matters to the grammar, most of the time.
+fn fz_palette(): i64 {
+    var k = fz_rand(20);
+    if (k == 0) { return 123; }
+    if (k == 1) { return 125; }
+    if (k == 2) { return 91; }
+    if (k == 3) { return 93; }
+    if (k == 4) { return 34; }
+    if (k == 5) { return 58; }
+    if (k == 6) { return 44; }
+    if (k == 7) { return 92; }
+    if (k == 8) { return 32; }
+    if (k == 9) { return 45; }
+    if (k == 10) { return 46; }
+    if (k == 11) { return 101; }
+    if (k == 12) { return 48; }
+    if (k == 13) { return 49 + fz_rand(9); }
+    if (k == 14) { return 117; }
+    if (k == 15) { return 116; }
+    if (k == 16) { return 110; }
+    return fz_rand(256);
+}
+
+# The boundary numbers, well and badly formed.
+fn fz_boundary(): i64 {
+    var k = fz_rand(22);
+    if (k == 0) { return "0"; }
+    if (k == 1) { return "-0"; }
+    if (k == 2) { return "2147483647"; }
+    if (k == 3) { return "2147483648"; }
+    if (k == 4) { return "-2147483649"; }
+    if (k == 5) { return "9223372036854775807"; }
+    if (k == 6) { return "9223372036854775808"; }
+    if (k == 7) { return "-9223372036854775808"; }
+    if (k == 8) { return "-9223372036854775809"; }
+    if (k == 9) { return "18446744073709551615"; }
+    if (k == 10) { return "18446744073709551616"; }
+    if (k == 11) { return "1e308"; }
+    if (k == 12) { return "1e309"; }
+    if (k == 13) { return "4.9e-324"; }
+    if (k == 14) { return "01"; }
+    if (k == 15) { return "-"; }
+    if (k == 16) { return "1."; }
+    if (k == 17) { return "1e"; }
+    if (k == 18) { return "-e5"; }
+    if (k == 19) { return ".5"; }
+    if (k == 20) { return "00"; }
+    return "1e+";
+}
+
+# Replace doc[at, at + n) with the m bytes at src; the new length (unchanged if it would not fit).
+fn fz_splice(len, at, n, src, m): i64 {
+    if (len - n + m > FZ_CAP) { return len; }
+    memcpy(g_tmp, g_doc + at + n, len - at - n);
+    memcpy(g_doc + at, src, m);
+    memcpy(g_doc + at + m, g_tmp, len - at - n);
+    return len - n + m;
+}
+
+# Wrap the document `d` levels deep, in arrays or one-key objects.
+fn fz_wrap(len, d): i64 {
+    var obj = fz_rand(2);
+    var open = 1;
+    if (obj == 1) { open = 5; }
+    if (len + d * (open + 1) > FZ_CAP) { return len; }
+    memcpy(g_tmp, g_doc, len);
+    var p = 0;
+    var i = 0;
+    while (i < d) {
+        if (obj == 1) { memcpy(g_doc + p, "{\"k\":", 5); p = p + 5; }
+        else { store8(g_doc + p, 91); p = p + 1; }
+        i = i + 1;
+    }
+    memcpy(g_doc + p, g_tmp, len);
+    p = p + len;
+    i = 0;
+    while (i < d) {
+        if (obj == 1) { store8(g_doc + p, 125); } else { store8(g_doc + p, 93); }
+        p = p + 1;
+        i = i + 1;
+    }
+    return p;
+}
+
+# Repeat an object's first member right after its `{`: a duplicate key, if one is there.
+fn fz_dup_member(len): i64 {
+    var i = 0;
+    while (i + 1 < len) {
+        if (load8(g_doc + i) == 123 && load8(g_doc + i + 1) == 34) { break; }
+        i = i + 1;
+    }
+    if (i + 1 >= len) { return len; }
+    var e = i + 2;
+    var depth = 0;
+    var instr = 1;
+    while (e < len) {
+        var c = load8(g_doc + e);
+        if (instr == 1) {
+            if (c == 92) { e = e + 1; }
+            elif (c == 34) { instr = 0; }
+        } else {
+            if (c == 34) { instr = 1; }
+            elif (c == 123 || c == 91) { depth = depth + 1; }
+            elif (c == 125 || c == 93) { if (depth == 0) { break; } depth = depth - 1; }
+            elif (c == 44 && depth == 0) { break; }
+        }
+        e = e + 1;
+    }
+    if (e >= len) { return len; }
+    var m = e - (i + 1);
+    if (len + m + 1 > FZ_CAP) { return len; }
+    memcpy(g_span, g_doc + i + 1, m);
+    store8(g_span + m, 44);
+    return fz_splice(len, i + 1, 0, g_span, m + 1);
+}
+
+fn fz_mutate(len): i64 {
+    var k = fz_rand(10);
+    if (len == 0) { k = 2; }
+    var at = 0;
+    if (len > 0) { at = fz_rand(len); }
+    if (k == 0) { return at; }                                          # truncate
+    if (k == 1) { store8(g_doc + at, fz_palette()); return len; }        # replace
+    if (k == 2) { var b[8]; store8(&b, fz_palette()); return fz_splice(len, at, 0, &b, 1); }
+    if (k == 3) { return fz_splice(len, at, 1, g_doc, 0); }              # delete
+    if (k == 4) {                                                        # repeat a span
+        var n = 1 + fz_rand(16);
+        if (at + n > len) { n = len - at; }
+        memcpy(g_span, g_doc + at, n);
+        return fz_splice(len, fz_rand(len + 1), 0, g_span, n);
+    }
+    if (k == 5) {                                                        # swap two spans
+        var n2 = 1 + fz_rand(8);
+        if (at + 2 * n2 > len) { return len; }
+        memcpy(g_span, g_doc + at, n2);
+        memcpy(g_doc + at, g_doc + at + n2, n2);
+        memcpy(g_doc + at + n2, g_span, n2);
+        return len;
+    }
+    if (k == 6 || k == 7) {                                              # a boundary number
+        var i = at;
+        while (i < len) {
+            var c = load8(g_doc + i);
+            if (c >= 48 && c <= 57) { break; }
+            i = i + 1;
+        }
+        if (i >= len) { return len; }
+        var s = i;
+        if (s > 0 && load8(g_doc + s - 1) == 45) { s = s - 1; }
+        var e = i;
+        while (e < len) {
+            var c2 = load8(g_doc + e);
+            if ((c2 >= 48 && c2 <= 57) || c2 == 46 || c2 == 101 || c2 == 69 || c2 == 43 || c2 == 45) { e = e + 1; }
+            else { break; }
+        }
+        var nb = fz_boundary();
+        return fz_splice(len, s, e - s, nb, strlen(nb));
+    }
+    if (k == 8) { return fz_dup_member(len); }
+    return fz_wrap(len, 126 + fz_rand(4));
+}
+
+# --- the parsers ---------------------------------------------------------------------------------
+
+var g_keys = 0;
+var g_vals = 0;
+var g_isum = 0;
+fn cb_key(ctx, k): i64 { g_keys = g_keys + 1; return 0; }
+fn cb_val1(ctx): i64 { g_vals = g_vals + 1; return 0; }
+fn cb_val2(ctx, v): i64 { g_vals = g_vals + 1; return 0; }
+fn cb_int(ctx, v): i64 { g_vals = g_vals + 1; g_isum = g_isum + v; return 0; }
+
+# Nodes, keys and the integer sum of a tree, into out[0..3).
+fn fz_count(v, out): i64 {
+    store64(out, load64(out) + 1);
+    var t = bayan_json_v_tag(v);
+    if (t == JTAG_INT) { store64(out + 16, load64(out + 16) + bayan_json_v_int(v)); }
+    if (t == JTAG_ARR) {
+        var i = 0;
+        while (i < bayan_json_v_arr_len(v)) { fz_count(bayan_json_v_arr_get(v, i), out); i = i + 1; }
+    }
+    if (t == JTAG_OBJ) {
+        var j = 0;
+        while (j < bayan_json_v_obj_len(v)) {
+            store64(out + 8, load64(out + 8) + 1);
+            fz_count(bayan_json_v_obj_val(v, j), out);
+            j = j + 1;
+        }
+    }
+    return 0;
+}
+
+# One run of the three parsers over buf[0, len): the answers, into r[0..8):
+#   +0 tree (0 refused)  +8 tree message  +16 its serialisation (a Str, 0 if refused)
+#   +24 stream rc  +32 stream message  +40 flat result (0 or a vec)  +48 stream counts ok (1/0)
+fn fz_parse(buf, len, r): i64 {
+    var ps[_JP_STATE_SIZE];
+    var v = bayan_json_v_parse_ctx_a(default_alloc(), &ps, buf, len);
+    store64(r, v);
+    store64(r + 8, bayan_json_state_error(&ps));
+    store64(r + 16, 0);
+    if (v != 0) { store64(r + 16, bayan_json_v_build(v)); }
+    g_keys = 0;
+    g_vals = 0;
+    g_isum = 0;
+    var rc = bayan_json_stream_parse(buf, len, g_h);
+    store64(r + 24, rc);
+    store64(r + 32, bayan_json_last_error());
+    store64(r + 48, 1);
+    if (v != 0 && rc == 0) {
+        var cnt: i64[3];
+        store64(&cnt, 0);
+        store64(&cnt + 8, 0);
+        store64(&cnt + 16, 0);
+        fz_count(v, &cnt);
+        if (load64(&cnt) != g_vals || load64(&cnt + 8) != g_keys || load64(&cnt + 16) != g_isum) { store64(r + 48, 0); }
+    }
+    store64(r + 40, bayan_json_parse(str_new(buf, len)));
+    return 0;
+}
+
+# The properties, on the document in g_doc[0, len).
+fn fz_check(len): i64 {
+    var ra: i64[8];
+    var rb: i64[8];
+    # (e) at the fence, and inside a buffer whose next bytes would change the answer.
+    memcpy(g_fence - len, g_doc, len);
+    fz_parse(g_fence - len, len, &ra);
+    memcpy(g_emb, g_doc, len);
+    memcpy(g_emb + len, "1]}\"e5,1]}\"e5,", 14);
+    fz_parse(g_emb, len, &rb);
+    var tv = load64(&ra);
+    if ((tv == 0) != (load64(&rb) == 0)) { return fz_fail("(e) the tree parser's answer moved with the bytes after len", len); }
+    if (tv != 0 && str_eq(load64(&ra + 16), load64(&rb + 16)) != 1) { return fz_fail("(e) the tree moved with the bytes after len", len); }
+    if (load64(&ra + 24) != load64(&rb + 24)) { return fz_fail("(e) the stream parser's answer moved with the bytes after len", len); }
+    var fa = load64(&ra + 40);
+    var fb = load64(&rb + 40);
+    if ((fa == 0) != (fb == 0)) { return fz_fail("(e) the flat parser's answer moved with the bytes after len", len); }
+    if (fa != 0 && vec_len(fa) != vec_len(fb)) { return fz_fail("(e) the flat pairs moved with the bytes after len", len); }
+    # (a) a refusal says why.
+    if (tv == 0 && streq(load64(&ra + 8), "") == 1) { return fz_fail("(a) the tree parser refused without a message", len); }
+    # (b) the two descents agree.
+    if ((tv == 0) != (load64(&ra + 24) != 0)) { return fz_fail("(b) the tree and stream parsers disagree on acceptance", len); }
+    if (tv == 0 && streq(load64(&ra + 8), load64(&ra + 32)) != 1) { return fz_fail("(b) the tree and stream parsers refuse with different messages", len); }
+    if (load64(&ra + 48) != 1) { return fz_fail("(b) the stream's events do not match the tree", len); }
+    if (tv == 0) { return 1; }
+    # (c) the serialisation parses back to itself.
+    var s1 = load64(&ra + 16);
+    var back = bayan_json_v_parse_buf(str_data(s1), str_len(s1));
+    if (back == 0) { return fz_fail("(c) the serialisation does not parse", len); }
+    if (str_eq(bayan_json_v_build(back), s1) != 1) { return fz_fail("(c) the serialisation does not round-trip", len); }
+    # (d) an object's members, flat.
+    if (bayan_json_v_is_obj(tv) == 1) {
+        if (fa == 0) { return fz_fail("(d) the flat parser refused an object the tree accepts", len); }
+        if (vec_len(fa) != bayan_json_v_obj_len(tv)) { return fz_fail("(d) the flat parser's member count differs", len); }
+    }
+    return 1;
+}
+
+# Iteration i: its seed document after 1..4 mutations (or the seed alone, one in sixteen).
+fn fz_build(i): i64 {
+    g_x = 0x9E3779B97F4A7C15 ^ ((i + 1) * 0xBF58476D1CE4E5B9);
+    xs64(); xs64();
+    var sd = vec_get(g_seeds, fz_rand(vec_len(g_seeds)));
+    var len = strlen(sd);
+    memcpy(g_doc, sd, len);
+    if (fz_rand(16) == 0) { return len; }
+    var m = 1 + fz_rand(4);
+    while (m > 0) { len = fz_mutate(len); m = m - 1; }
+    return len;
+}
+
+fn main(): i64 {
+    alloc_init();
+    args_init();
+    var fm = mmap_anon(FZ_CAP + 4096);
+    var stride = FZ_CAP + 4096;
+    var m = mmap_anon(stride * 4 + 4096);
+    if (fm == 0 || m == 0) { fz_say("json parsers fuzz: mmap failed\n"); return 1; }
+    if (cyr_mprotect(fm + FZ_CAP, 4096, 0) != 0) { fz_say("json parsers fuzz: mprotect failed\n"); return 1; }
+    g_fence = fm + FZ_CAP;
+    g_doc = m;
+    g_tmp = m + stride;
+    g_emb = m + stride * 2;
+    g_span = m + stride * 3;
+    g_h = m + stride * 4;
+    bayan_json_stream_on(g_h, JS_EV_KEY, &cb_key);
+    bayan_json_stream_on(g_h, JS_EV_OBJECT_START, &cb_val1);
+    bayan_json_stream_on(g_h, JS_EV_ARRAY_START, &cb_val1);
+    bayan_json_stream_on(g_h, JS_EV_NULL, &cb_val1);
+    bayan_json_stream_on(g_h, JS_EV_STRING, &cb_val2);
+    bayan_json_stream_on(g_h, JS_EV_FLOAT, &cb_val2);
+    bayan_json_stream_on(g_h, JS_EV_BOOL, &cb_val2);
+    bayan_json_stream_on(g_h, JS_EV_INT, &cb_int);
+    var from = 0;
+    var to = ITERS;
+    if (argc() > 1) {
+        from = str_to_int(str_from(argv(1)));
+        to = from + 1;
+    }
+    var accepted = 0;
+    g_iter = from;
+    while (g_iter < to) {
+        alloc_reset();
+        fz_seeds();
+        var len = fz_build(g_iter);
+        if (to - from == 1) { fz_say("iteration "); fz_num(g_iter); fz_say(": "); fz_show(g_doc, len); }
+        if (fz_check(len) == 1) {
+            if (bayan_json_v_parse_buf(g_doc, len) != 0) { accepted = accepted + 1; }
+        }
+        g_iter = g_iter + 1;
+    }
+    fz_say("json parsers fuzz: "); fz_num(to - from); fz_say(" documents ("); fz_num(accepted);
+    fz_say(" accepted) through the tree, stream and flat parsers, each at a PROT_NONE page and");
+    fz_say(" inside a larger buffer; "); fz_num(g_bad); fz_say(" wrong\n");
+    if (g_bad > 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+syscall(60, r);
