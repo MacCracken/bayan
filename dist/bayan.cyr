@@ -2969,8 +2969,11 @@ fn bayan_toml_parse(src): i64 {
     # Dotted sub-tables of the current header live at index >= scope, indexed
     # by name in `ix` once there are more than _TOML_DOT_WALK of them.
     var scope = 1;
+    # A local array starts as whatever the stack held, so it is zeroed here, not
+    # reset: a reset frees a non-0 slots word, and that was a free of stack
+    # garbage under any allocator that frees. CHANGELOG [1.11.1]
     var ix: i64[3];
-    _toml_dot_reset_a(a, &ix);
+    memset(&ix, 0, 24);
 
     while (pos < slen) {
         var c = load8(data + pos);
@@ -3078,6 +3081,9 @@ fn bayan_toml_parse(src): i64 {
             }
         }
     }
+    # The index is the parse's scratch: the last header's goes back too, not
+    # only those a later header dropped. CHANGELOG [1.11.1]
+    _toml_dot_reset_a(a, &ix);
     return sections;
 }
 
@@ -12007,8 +12013,11 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
         # compile error on one backend (G13)" — true of cx until cyrius v6.5.13,
         # which gave cx `callind`; fncall4 stays for consistency, not necessity.)
         # No f64 crosses this boundary; nothing here is a float.
+        # Every refusal past this point gives `dst` back, as a rejected attempt
+        # does; two returned holding it. CHANGELOG [1.11.1]
         var n = fncall4(_pdf_inflate_fp, src, len, dst, cap);
         if (n > cap) {
+            free_via(a, dst);
             _pdfz_err(doc,
               "FlateDecode: the inflate hook reported more bytes than the buffer holds",
               0 - 1);
@@ -12017,7 +12026,12 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
         if (n >= 0) {
             if (n < cap) {
                 store8(dst + n, 0);
-                return str_new_a(a, dst, n);
+                var out = str_new_a(a, dst, n);
+                if (out == 0) {
+                    free_via(a, dst);
+                    _pdfz_err(doc, "FlateDecode: out of memory wrapping the output", 0 - 1);
+                }
+                return out;
             }
         } elif (n != 0 - 2) {
             free_via(a, dst);
@@ -12077,20 +12091,30 @@ fn _pdfz_deflate_a(a, doc, src, len): Str {
             _pdfz_err(doc, "deflate: out of memory sizing the output buffer", 0 - 1);
             return 0;
         }
+        # Every attempt's buffer but the output's goes back, as inflate's do;
+        # none did. CHANGELOG [1.11.1]
         var n = fncall4(_pdf_deflate_fp, src, len, dst, cap);
         if (n > cap) {
+            free_via(a, dst);
             _pdfz_err(doc, "deflate: the hook reported more bytes than the buffer holds", 0 - 1);
             return 0;
         }
         if (n >= 0) {
             if (n < cap) {
                 store8(dst + n, 0);
-                return str_new_a(a, dst, n);
+                var out = str_new_a(a, dst, n);
+                if (out == 0) {
+                    free_via(a, dst);
+                    _pdfz_err(doc, "deflate: out of memory wrapping the output", 0 - 1);
+                }
+                return out;
             }
         } elif (n != 0 - 2) {
+            free_via(a, dst);
             _pdfz_err(doc, "deflate failed (the compression hook reported an error)", 0 - 1);
             return 0;
         }
+        free_via(a, dst);
         if (cap >= _PDF_MAX_INFLATE) {
             _pdfz_err(doc, "deflate output exceeds the per-stream limit", 0 - 1);
             return 0;

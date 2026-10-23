@@ -48,8 +48,11 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   sets the stream's cache to the static empty Str, so it is decoded once; each attempt charges
   its buffer before allocating it (a buffer the budget cannot cover shrinks to the room left, and
   no room is the refusal, so `/DL` is trusted no further); a rejected attempt's buffer goes back
-  through `free_via`. The audit's files hold at 42 MB and 7.9 MB. Row: `tests/pdf_flate.tcyr`
-  "a failing Flate stream is decoded once, and charged".
+  through `free_via` on every refusal, a hook reporting more bytes than the buffer holds among
+  them, and a refused `Str` header after an output that fitted is named ("FlateDecode: out of
+  memory wrapping the output"; the stream used to read "" with no error). The audit's files hold
+  at 42 MB and 7.9 MB. Rows: `tests/pdf_flate.tcyr` "a failing Flate stream is decoded once, and
+  charged" and "an inflate attempt's buffer goes back on every refusal".
 
 ### Fixed
 
@@ -63,7 +66,10 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   every key before it, 14.4 s for 40,000 keys (480 KB). It uses json's new O(1) key set.
 - **The flat TOML parser was quadratic in dotted-key tables** (Finding 17): each dotted key
   walked every table since the header, 4.0 s for 20,000 (300 KB). Past 8 tables under a header
-  they are indexed by name; every smaller document allocates what it did.
+  they are indexed by name; every smaller document allocates what it did. The index is the
+  parse's scratch: zeroed before first use and freed when a header drops it and when the parse
+  returns. Row: `tests/bayan.tcyr` "the dotted-key index frees only what it built", under an
+  allocator that frees.
 - **The streaming JSON parser wrapped out-of-range integers and accepted digitless numbers**
   (Finding 16). Both descents now share one scanner, `_jp_scan_number`, and the stream checks
   the i64 range as the tree does.
@@ -82,6 +88,12 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   256-byte table (unchecked, never freed); every allocation is checked.
 - **`bayan_base64url_encode` stored through a refused output buffer**; it returns 0, as
   `bayan_base64_encode` has since 1.5.9.
+- **The PDF writer's deflate loop freed none of its attempt buffers.** Each "too small" retry,
+  a hook error, a hook reporting more bytes than the buffer holds and a refused `Str` header
+  (which also recorded no reason) kept its buffer under an allocator that frees. Every buffer
+  but the output's goes back, as inflate's do, and the header refusal is named ("deflate: out
+  of memory wrapping the output"). Row: `tests/pdf_flate.tcyr` "a deflate attempt's buffer goes
+  back unless it is the output".
 
 ### Hardening
 
@@ -103,7 +115,7 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   corpus; its generator now writes distinct keys.
 - `tests/parse_scaling.cyr` (new, a CI step on x86_64 and aarch64): yaml mapping keys, the json
   tree, flat and stream parsers' object keys and flat toml dotted keys must cost linearly.
-- `tests/bayan.tcyr` +91 (1,987 → 2,078), `tests/pdf_flate.tcyr` +24 (19 → 43). The rows that
+- `tests/bayan.tcyr` +95 (1,987 → 2,082), `tests/pdf_flate.tcyr` +40 (19 → 59). The rows that
   leaned on an accepted duplicate key now build their repeats by hand.
 
 Public API: 1 function added (`bayan_base64_last_error`), none removed or deprecated.

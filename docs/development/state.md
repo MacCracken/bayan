@@ -446,7 +446,7 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **2,078 asserts and 99 `#assert`s, green** @1.11.1 on x86_64 (1,987 @1.11.0, 1,889 @1.10.0, 1,781 @1.9.0, 1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **2,082 asserts and 99 `#assert`s, green** @1.11.1 on x86_64 (1,987 @1.11.0, 1,889 @1.10.0, 1,781 @1.9.0, 1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the
@@ -590,8 +590,9 @@ this is mutation-verified.
   the protocol completes and agrees with itself (300× green on a Pi; the 1.5.10 code did not show
   the race in 300 Pi runs either).
 - `tests/pdf_flate.tcyr` — the compression path, isolated because it is the
-  only test that pulls in `lib/sankoch.cyr`. **43 asserts, green** (19 before 1.11.1, which added
-  the CYRIUS-2026-0045 rows and the page-content budget's, on PDFs it builds in the test).
+  only test that pulls in `lib/sankoch.cyr`. **59 asserts, green** (19 before 1.11.1, which added
+  the CYRIUS-2026-0045 rows, the page-content budget's, and inflate's and deflate's attempt
+  buffers going back under an allocator that frees, on PDFs it builds in the test).
 - `tests/mulmod_speed.cyr` — **new at 1.5.10**, run by its own CI step on
   x86_64 and under qemu-aarch64: per-call mulmod cost against a plain `(a*b)%m`
   call in the same process, failing above 50×. It sees a fall back to a bit-serial

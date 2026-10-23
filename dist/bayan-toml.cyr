@@ -1242,8 +1242,11 @@ fn bayan_toml_parse(src): i64 {
     # Dotted sub-tables of the current header live at index >= scope, indexed
     # by name in `ix` once there are more than _TOML_DOT_WALK of them.
     var scope = 1;
+    # A local array starts as whatever the stack held, so it is zeroed here, not
+    # reset: a reset frees a non-0 slots word, and that was a free of stack
+    # garbage under any allocator that frees. CHANGELOG [1.11.1]
     var ix: i64[3];
-    _toml_dot_reset_a(a, &ix);
+    memset(&ix, 0, 24);
 
     while (pos < slen) {
         var c = load8(data + pos);
@@ -1351,6 +1354,9 @@ fn bayan_toml_parse(src): i64 {
             }
         }
     }
+    # The index is the parse's scratch: the last header's goes back too, not
+    # only those a later header dropped. CHANGELOG [1.11.1]
+    _toml_dot_reset_a(a, &ix);
     return sections;
 }
 
