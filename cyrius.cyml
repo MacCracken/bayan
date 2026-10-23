@@ -20,6 +20,8 @@ output = "bayan"
 # consumer's hand-written include list needs lib/math.cyr before bayan.
 # `slice` (1.11.1): json's parsers read the document through bounds-checked
 # slices (cyrius 6.7.18 D1), so lib/slice.cyr comes before bayan too.
+# `hashseed` (1.11.1): json's duplicate-key set hashes peer-chosen keys with
+# the stdlib's per-process seed, so lib/hashseed.cyr comes before bayan too.
 # `unicode` (1.9.0): markdown's emphasis rules need the general category of
 # the characters around a delimiter (unicode_category) and its link labels
 # match under full case folding (unicode_fold), so lib/unicode/categories.cyr
@@ -29,7 +31,7 @@ output = "bayan"
 [deps]
 stdlib = [
     "string", "fmt", "alloc", "io", "vec", "str", "syscalls",
-    "assert", "bench", "result", "fnptr", "tagged", "atomic", "math", "slice",
+    "assert", "bench", "result", "fnptr", "tagged", "atomic", "math", "slice", "hashseed",
     "unicode/_decode", "unicode/categories", "unicode/_categories_data",
     "unicode/casefold", "unicode/_casefold_data",
 ]

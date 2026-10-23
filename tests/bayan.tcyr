@@ -12,6 +12,7 @@ include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fmt.cyr"
 include "lib/slice.cyr"
+include "lib/hashseed.cyr"
 include "lib/math.cyr"
 include "lib/tagged.cyr"
 include "lib/result.cyr"
@@ -2174,6 +2175,56 @@ assert_eq(_strm_key, 7, "json dup: stream, all seven keys");
 var jd_big = _jd_doc(1000, 7);
 _strm_reset();
 assert_eq(bayan_json_stream_parse(str_data(jd_big), str_len(jd_big), sh), 0 - 1, "json dup: stream, past the in-place keys");
+
+test_group("json: the key set's hash is seeded per process (1.11.1)");
+# The key set picks a slot from the LOW bits of its hash, probing linearly. Unseeded, that hash
+# was published constants (FNV-1a, a multiply, a shift), so a peer precomputed, once and offline,
+# keys that share a slot and sent them to every bayan process: each insert then walked every key
+# before it, the O(n^2) the set replaced (10,000 such keys, 147 KB: 309 ms in each JSON parser
+# against 6 ms for ordinary keys, quadratic from there). _jkf_pub is that offline computation;
+# 400 keys it puts in one slot of 1024 must not form one run of 400 in the live table.
+fn _jkf_pub(p, n): i64 {
+    var h = 0xCBF29CE484222325;
+    var i = 0;
+    while (i < n) {
+        h = (h ^ load8(p + i)) * 0x100000001B3;
+        i = i + 1;
+    }
+    h = h * 0x9E3779B97F4A7C15;
+    return h ^ (h >> 29);
+}
+var jkf_set[_JK_SIZE];
+_jk_init(&jkf_set, default_alloc());
+var jkf_fresh = 0;
+var jkf_cand = 0;
+var jkf_last = 0;
+while (jkf_fresh < 400) {
+    var jkf_sb = str_builder_new();
+    str_builder_add_cstr(jkf_sb, "f");
+    str_builder_add_int(jkf_sb, jkf_cand);
+    var jkf_k = str_builder_build(jkf_sb);
+    if ((_jkf_pub(str_data(jkf_k), str_len(jkf_k)) & 1023) == 0) {
+        jkf_fresh = jkf_fresh + _jk_add(&jkf_set, str_data(jkf_k), str_len(jkf_k));
+        jkf_last = jkf_k;
+    }
+    jkf_cand = jkf_cand + 1;
+}
+assert_eq(_jk_add(&jkf_set, str_data(jkf_last), str_len(jkf_last)), 0, "json key set: still a set");
+assert_eq(load64(&jkf_set + 24), 1024, "json key set: 400 keys in 1024 slots");
+# The longest run of occupied slots, walked twice round so a run that wraps is whole.
+var jkf_slots = load64(&jkf_set + 16);
+var jkf_run = 0;
+var jkf_max = 0;
+var jkf_i = 0;
+while (jkf_i < 2048) {
+    if (load64(jkf_slots + (jkf_i & 1023) * 24 + 16) != 0) {
+        jkf_run = jkf_run + 1;
+        if (jkf_run > jkf_max) { jkf_max = jkf_run; }
+    } else { jkf_run = 0; }
+    jkf_i = jkf_i + 1;
+}
+assert_lt(jkf_max, 64, "json key set: keys precomputed from the published hash do not share one run");
+_jk_free(&jkf_set);
 
 test_group("json: the flat parser honours escapes (was key injection)");
 # The value scan stopped at the first quote regardless of a preceding

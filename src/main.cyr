@@ -10,8 +10,9 @@
 # supply — `result` in particular (Result/`?`), which is NOT in cyrius's own
 # stdlib auto-prepend set, `math` (1.5.14: bayan_f64_parse delegates to its
 # f64_parse_n), `unicode/categories` + `unicode/casefold` (1.9.0: markdown's
-# emphasis rules and link-label matching), and `slice` (1.11.1: json's parsers
-# read through bounds-checked slices).
+# emphasis rules and link-label matching), `slice` (1.11.1: json's parsers
+# read through bounds-checked slices), and `hashseed` (1.11.1: json's
+# duplicate-key set hashes with the stdlib's per-process seed).
 
 include "lib/syscalls.cyr"
 include "lib/string.cyr"
@@ -21,6 +22,7 @@ include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fmt.cyr"
 include "lib/slice.cyr"
+include "lib/hashseed.cyr"
 include "lib/math.cyr"
 include "lib/tagged.cyr"
 include "lib/result.cyr"
