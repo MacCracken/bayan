@@ -96,4 +96,152 @@ var fl_plain = bayan_pdf_parse(fl_raw);
 assert_eq(str_eq(bayan_pdf_extract_text(fl_back), bayan_pdf_extract_text(fl_plain)), 1,
   "flate: compressed and uncompressed extract IDENTICAL text");
 
+test_group("pdf: a failing Flate stream is decoded once, and charged (1.11.1, CYRIUS-2026-0045)");
+# The audit's file: N pages naming one /FlateDecode stream the hook cannot
+# inflate (sankoch's 16 MiB ceiling on 20,000,000 spaces). 1.11.0 memoised only
+# a success, so every page inflated it again into fresh buffers, and a failure
+# was never charged to the per-document budget: 48 pages of a 25 KB file reached
+# 1.9 GB. fb_hook is that ceiling in miniature: "too small" below 1 MiB, then a
+# hard error, so one stream costs 9 attempts (4096 .. 1 MiB, about 2 MiB).
+var fb_calls = 0;
+fn fb_hook(src, n, dst, cap): i64 {
+    fb_calls = fb_calls + 1;
+    if (cap < 1048576) { return 0 - 2; }
+    return 0 - 1;
+}
+
+# Ten digits, zero-padded: an xref entry's offset field.
+fn fb_pad10(sb, n): i64 {
+    var d = 1000000000;
+    while (d > 0) {
+        str_builder_putc(sb, 48 + (n / d) % 10);
+        d = d / 10;
+    }
+    return 0;
+}
+
+# A PDF of `npages` pages, each naming a 4-byte /FlateDecode stream. Objects 3,
+# 4, 5, ...: odd ones are streams, even ones pages. Mode 0: pages 4, 6, ... all
+# name stream 3. Mode 1: ONE page object (4) that /Kids repeats `npages` times.
+# Mode 2: page 4 + 2i names its own stream, 5 + 2i.
+fn fb_pdf(npages, mode): Str {
+    var sb = str_builder_new();
+    var offs = vec_new();
+    str_builder_add_cstr(sb, "%PDF-1.4\n");
+    vec_push(offs, load64(sb + 8));
+    str_builder_add_cstr(sb, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    vec_push(offs, load64(sb + 8));
+    str_builder_add_cstr(sb, "2 0 obj\n<< /Type /Pages /Kids [");
+    var i = 0;
+    while (i < npages) {
+        var kid = 4 + 2 * i;
+        if (mode == 1) { kid = 4; }
+        str_builder_add_int(sb, kid);
+        str_builder_add_cstr(sb, " 0 R ");
+        i = i + 1;
+    }
+    str_builder_add_cstr(sb, "] /Count ");
+    str_builder_add_int(sb, npages);
+    str_builder_add_cstr(sb, " >>\nendobj\n");
+    var last = 2 + 2 * npages;
+    if (mode == 1) { last = 4; }
+    if (mode == 2) { last = last + 1; }
+    var k = 3;
+    while (k <= last) {
+        vec_push(offs, load64(sb + 8));
+        str_builder_add_int(sb, k);
+        if ((k & 1) == 1) {
+            str_builder_add_cstr(sb, " 0 obj\n<< /Length 4 /Filter /FlateDecode >>\nstream\nxxxx\nendstream\nendobj\n");
+        } else {
+            str_builder_add_cstr(sb, " 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ");
+            if (mode == 2) { str_builder_add_int(sb, k + 1); } else { str_builder_add_int(sb, 3); }
+            str_builder_add_cstr(sb, " 0 R >>\nendobj\n");
+        }
+        k = k + 1;
+    }
+    var xref = load64(sb + 8);
+    var n = vec_len(offs);
+    str_builder_add_cstr(sb, "xref\n0 ");
+    str_builder_add_int(sb, n + 1);
+    str_builder_add_cstr(sb, "\n0000000000 65535 f \n");
+    i = 0;
+    while (i < n) {
+        fb_pad10(sb, vec_get(offs, i));
+        str_builder_add_cstr(sb, " 00000 n \n");
+        i = i + 1;
+    }
+    str_builder_add_cstr(sb, "trailer\n<< /Size ");
+    str_builder_add_int(sb, n + 1);
+    str_builder_add_cstr(sb, " /Root 1 0 R >>\nstartxref\n");
+    str_builder_add_int(sb, xref);
+    str_builder_add_cstr(sb, "\n%%EOF\n");
+    return str_builder_build(sb);
+}
+
+# Parse, extract every page's text, and answer the bytes the extraction
+# allocated; fb_calls counts the hook's attempts, and fb_doc keeps the document.
+var fb_doc = 0;
+fn fb_cost(npages, mode): i64 {
+    fb_calls = 0;
+    fb_doc = bayan_pdf_parse(fb_pdf(npages, mode));
+    if (fb_doc == 0) { return 0 - 1; }
+    var before = alloc_used();
+    bayan_pdf_extract_text(fb_doc);
+    return alloc_used() - before;
+}
+
+bayan_pdf_set_inflate(&fb_hook);
+var fb_one = fb_cost(1, 0);
+assert_gt(fb_one, 1048576, "flate bomb: one failing stream costs its attempts (over 1 MiB)");
+assert_eq(fb_calls, 9, "flate bomb: nine attempts, 4096 bytes doubling to 1 MiB");
+var fb_shared = fb_cost(64, 0);
+assert_eq(bayan_pdf_page_count(fb_doc), 64, "flate bomb: 64 pages naming one stream all walk");
+assert_eq(fb_calls, 9, "flate bomb: the failing stream is decoded ONCE for 64 pages, not 64 times");
+assert_lt(fb_shared, fb_one + 262144, "flate bomb: so 64 pages allocate what one page does");
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fb_doc)),
+    "FlateDecode failed (the inflate hook reported an error)"), 1,
+  "flate bomb: and the failure is named");
+var fb_rep = fb_cost(64, 1);
+assert_eq(bayan_pdf_page_count(fb_doc), 64,
+  "flate bomb: one page object repeated 64 times in /Kids walks 64 pages");
+assert_eq(fb_calls, 9, "flate bomb: the repeated page's stream is decoded once too");
+assert_lt(fb_rep, fb_one + 262144, "flate bomb: and costs what one page does");
+
+# Distinct failing streams: each costs its attempts, and the attempts are
+# charged, so the per-document budget stops the document. At 8 MiB four streams
+# (about 2 MiB each) fit and the fifth is cut short; 1.11.0 charged none of
+# them, called the hook 576 times and allocated about 128 MiB.
+var fb_saved = _PDF_MAX_INFTOT;
+_PDF_MAX_INFTOT = 8388608;
+var fb_many = fb_cost(64, 2);
+_PDF_MAX_INFTOT = fb_saved;
+assert_lt(fb_many, 8388608 + 1048576,
+  "flate bomb: 64 distinct failing streams stop at the per-document budget");
+assert_lt(fb_calls, 64, "flate bomb: and the hook is not called once the budget is spent");
+assert_gt(bayan_pdf_doc_error_count(fb_doc), 60, "flate bomb: every refused page is counted");
+
+# A stream that fits in what the budget has left still decodes: the last
+# attempt is shrunk to the room left, not refused.
+fn fb_ok_hook(src, n, dst, cap): i64 {
+    if (cap < 3) { return 0 - 2; }
+    store8(dst, 81);
+    store8(dst + 1, 82);
+    return 2;
+}
+bayan_pdf_set_inflate(&fb_ok_hook);
+_PDF_MAX_INFTOT = 100;
+var fb_small = bayan_pdf_parse(fb_pdf(1, 0));
+assert_eq(str_len(bayan_pdf_stream_data(fb_small, bayan_pdf_obj(fb_small, 3))), 2,
+  "flate budget: an output that fits the room left decodes (its buffer shrinks to it)");
+assert_eq(bayan_pdf_doc_error_count(fb_small), 0, "flate budget: with no error");
+_PDF_MAX_INFTOT = 50;
+var fb_none = bayan_pdf_parse(fb_pdf(2, 2));
+bayan_pdf_stream_data(fb_none, bayan_pdf_obj(fb_none, 3));
+assert_eq(str_len(bayan_pdf_stream_data(fb_none, bayan_pdf_obj(fb_none, 5))), 0,
+  "flate budget: with no room left, the next stream is refused");
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fb_none)),
+    "decoded stream bytes exceed the per-document limit"), 1, "flate budget: by name");
+_PDF_MAX_INFTOT = fb_saved;
+bayan_pdf_set_inflate(&zlib_decompress);
+
 var r = assert_summary();

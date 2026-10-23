@@ -2090,6 +2090,13 @@ fn _pdfz_budget(doc, n): i64 {
     return 1;
 }
 
+# Bytes `doc` may still be charged: _PDF_MAX_INFTOT less its total, or
+# _PDF_MAX_INFLATE + 1 for doc == 0 (a standalone decode, bounded per stream).
+fn _pdfz_budget_room(doc): i64 {
+    if (doc == 0) { return _PDF_MAX_INFLATE + 1; }
+    return _PDF_MAX_INFTOT - _pdfz_budget_total(doc);
+}
+
 # --- filter names -----------------------------------------------------------
 
 # Exact-length byte compare against a literal. memeq, never strcmp: a /Filter
@@ -2228,6 +2235,20 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
     # answers "too small" forever, not a real bound on the size search.
     var iter = 0;
     while (iter < 32) {
+        # EVERY ATTEMPT IS CHARGED, before its buffer exists (1.11.1,
+        # CYRIUS-2026-0045). Only a success's n used to be, after the fact, so a
+        # stream that fails — the hook's own ceiling, a ratio cap, a corrupt tail
+        # — doubled its way to 64 MiB of buffers the per-document guard never
+        # saw. A buffer the budget cannot cover is shrunk to what is left (an
+        # output that fits still decodes), and nothing left is the refusal; a
+        # /DL hint is trusted no further than that either.
+        var room = _pdfz_budget_room(doc);
+        if (cap + 1 > room) { cap = room - 1; }
+        if (cap < 1) {
+            _pdfz_err(doc, "decoded stream bytes exceed the per-document limit", 0 - 1);
+            return 0;
+        }
+        if (_pdfz_budget(doc, cap + 1) == 0) { return 0; }
         # +1 for the NUL str_builder_build_a would have written; callers that
         # hand the decoded bytes to a cstring-shaped API get a terminator, and
         # the length is still authoritative for binary payloads.
@@ -2249,14 +2270,17 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
         }
         if (n >= 0) {
             if (n < cap) {
-                if (_pdfz_budget(doc, n) == 0) { return 0; }
                 store8(dst + n, 0);
                 return str_new_a(a, dst, n);
             }
         } elif (n != 0 - 2) {
+            free_via(a, dst);
             _pdfz_err(doc, "FlateDecode failed (the inflate hook reported an error)", 0 - 1);
             return 0;
         }
+        # A rejected attempt's buffer goes back to an allocator that frees (the
+        # default bump allocator does not; the charge above is what bounds it).
+        free_via(a, dst);
         if (cap >= _PDF_MAX_INFLATE) {
             _pdfz_err(doc, "FlateDecode output exceeds the per-stream inflate limit", 0 - 1);
             return 0;
@@ -6339,6 +6363,14 @@ fn bayan_pdf_dict_lookup(doc, d, key: cstring): i64 {
 #
 # "" with a named error on failure: a missing hook, an unsupported or unknown
 # filter, an image codec, a bad predictor, or the per-document budget.
+#
+# A FAILURE IS MEMOISED TOO (1.11.1, CYRIUS-2026-0045). Only a success used to
+# be, so every page naming one failing /FlateDecode stream inflated it again
+# into fresh buffers, none of them charged to the budget: a 25 KB file of 48
+# pages sharing one stream that fails reached 1.9 GB. The failure is recorded
+# once, the cell's c becomes the static empty Str, and every later ask answers
+# "" at once. So install the inflate hook BEFORE asking for a stream's bytes: a
+# stream that failed for want of one stays failed in that document.
 fn bayan_pdf_stream_data_a(a, doc, st): Str {
     if (_pdfe_magic(doc, 0 - 1) == 0) { return _pdfo_empty_bytes(); }
     if (_pdfo_tag(st) != PTAG_STREAM) {
@@ -6347,9 +6379,13 @@ fn bayan_pdf_stream_data_a(a, doc, st): Str {
         return _pdfo_empty_bytes();
     }
     var c = _pdfo_c(st);
+    if (c == &_PDFO_NIL) { return _pdfo_empty_bytes(); }
     if (c != 0) { return c; }
     var d = _pdfp_decode_chain_a(a, doc, st);
-    if (d == 0) { return _pdfo_empty_bytes(); }
+    if (d == 0) {
+        _pdfo_set_c(st, _pdfo_empty_bytes());
+        return _pdfo_empty_bytes();
+    }
     _pdfo_set_c(st, d);
     return d;
 }
