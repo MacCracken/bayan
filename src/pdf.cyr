@@ -2340,20 +2340,30 @@ fn _pdfz_deflate_a(a, doc, src, len): Str {
             _pdfz_err(doc, "deflate: out of memory sizing the output buffer", 0 - 1);
             return 0;
         }
+        # Every attempt's buffer but the output's goes back, as inflate's do;
+        # none did. CHANGELOG [1.11.1]
         var n = fncall4(_pdf_deflate_fp, src, len, dst, cap);
         if (n > cap) {
+            free_via(a, dst);
             _pdfz_err(doc, "deflate: the hook reported more bytes than the buffer holds", 0 - 1);
             return 0;
         }
         if (n >= 0) {
             if (n < cap) {
                 store8(dst + n, 0);
-                return str_new_a(a, dst, n);
+                var out = str_new_a(a, dst, n);
+                if (out == 0) {
+                    free_via(a, dst);
+                    _pdfz_err(doc, "deflate: out of memory wrapping the output", 0 - 1);
+                }
+                return out;
             }
         } elif (n != 0 - 2) {
+            free_via(a, dst);
             _pdfz_err(doc, "deflate failed (the compression hook reported an error)", 0 - 1);
             return 0;
         }
+        free_via(a, dst);
         if (cap >= _PDF_MAX_INFLATE) {
             _pdfz_err(doc, "deflate output exceeds the per-stream limit", 0 - 1);
             return 0;

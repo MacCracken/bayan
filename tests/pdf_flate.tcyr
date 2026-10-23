@@ -325,18 +325,23 @@ test_group("pdf: an inflate attempt's buffer goes back on every refusal (1.11.1)
 # handed out and not had back. The baseline is a hook's hard error, which frees the buffer:
 # every refusal leaves what that one does. fr_refuse_after refuses the request that follows one
 # of that size, here the 16-byte header after the 4097-byte output buffer.
-var fr_ptr: i64[512];
-var fr_size: i64[512];
+var fr_ptr: i64[8192];
+var fr_size: i64[8192];
 var fr_n = 0;
 var fr_live = 0;
 var fr_last = 0;
 var fr_refuse_after = 0;
+var fr_refuse_next = 0;
 fn fr_alloc(state, size): i64 {
     var prev = fr_last;
     fr_last = size;
     if (fr_refuse_after != 0 && prev == fr_refuse_after) { return 0; }
+    if (fr_refuse_next == 1) {
+        fr_refuse_next = 0;
+        return 0;
+    }
     var p = alloc(size);
-    if (p != 0 && fr_n < 512) {
+    if (p != 0 && fr_n < 8192) {
         store64(&fr_ptr + fr_n * 8, p);
         store64(&fr_size + fr_n * 8, size);
         fr_n = fr_n + 1;
@@ -394,5 +399,73 @@ fr_refuse_after = 0;
 assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fr_doc)), "FlateDecode: out of memory wrapping the output"), 1,
   "inflate frees: and that refusal is named, not an empty stream with no error");
 bayan_pdf_set_inflate(&zlib_decompress);
+
+test_group("pdf: a deflate attempt's buffer goes back unless it is the output (1.11.1)");
+# _pdfz_deflate_a, the writer's twin of the inflate loop, freed nothing: each "too small" retry,
+# a hook error, a hook claiming more than the buffer holds and a refused Str header (which also
+# recorded no reason) all kept their buffer under an allocator that frees. fr_dz_hook lists
+# every buffer it is handed, answers "too small" fr_dz_retries times, then answers by
+# fr_dz_mode: 0 a hard error, 1 more bytes than the buffer holds, 2 a two-byte output, 3 that
+# output with the next request (str_new_a's header) refused.
+var fr_dst: i64[64];
+var fr_ndst = 0;
+var fr_dz_retries = 0;
+var fr_dz_mode = 0;
+fn fr_dz_hook(src, n, dst, cap): i64 {
+    if (fr_ndst < 64) {
+        store64(&fr_dst + fr_ndst * 8, dst);
+        fr_ndst = fr_ndst + 1;
+    }
+    if (fr_ndst <= fr_dz_retries) { return 0 - 2; }
+    if (fr_dz_mode == 0) { return 0 - 1; }
+    if (fr_dz_mode == 1) { return cap + 1; }
+    store8(dst, 120);
+    store8(dst + 1, 1);
+    if (fr_dz_mode == 3) { fr_refuse_next = 1; }
+    return 2;
+}
+fn fr_is_live(p): i64 {
+    var i = 0;
+    while (i < fr_n) {
+        if (load64(&fr_ptr + i * 8) == p) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+# Write a one-page compressed document through FR; answer how many of the buffers the hook was
+# handed FR still holds. fr_w keeps the document, fr_out the bytes.
+var fr_w = 0;
+var fr_out = 0;
+fn fr_dz_held(retries, mode): i64 {
+    fr_ndst = 0;
+    fr_dz_retries = retries;
+    fr_dz_mode = mode;
+    fr_w = bayan_pdf_new();
+    var pg = bayan_pdf_add_page(fr_w, bayan_pdf_page_size_w(PDF_PAGE_A4), bayan_pdf_page_size_h(PDF_PAGE_A4));
+    bayan_pdf_text_at(pg, PDF_FONT_HELVETICA, 11000, 72000, 700000, str_from("deflate"));
+    bayan_pdf_set_compress(fr_w, 1);
+    fr_out = bayan_pdf_to_bytes_a(FR, fr_w);
+    var held = 0;
+    var i = 0;
+    while (i < fr_ndst) {
+        held = held + fr_is_live(load64(&fr_dst + i * 8));
+        i = i + 1;
+    }
+    return held;
+}
+bayan_pdf_set_deflate(&fr_dz_hook);
+assert_eq(fr_dz_held(3, 0), 0, "deflate frees: three \"too small\"s and a hook error hold none of their buffers");
+assert_eq(fr_ndst, 4, "deflate frees: (four attempts)");
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fr_w)), "deflate failed (the compression hook reported an error)"),
+  1, "deflate frees: (the hook's error, by name)");
+assert_eq(fr_dz_held(0, 1), 0, "deflate frees: a hook claiming more bytes than the buffer holds holds none");
+assert_eq(fr_dz_held(2, 2), 1, "deflate frees: two \"too small\"s then an output hold only the output's buffer");
+assert_eq(fr_is_live(load64(&fr_dst + 16)), 1, "deflate frees: (the last one)");
+assert_gt(str_len(fr_out), 0, "deflate frees: and the document is written");
+assert_eq(fr_dz_held(0, 3), 0, "deflate frees: an output whose Str header is refused holds none");
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fr_w)), "deflate: out of memory wrapping the output"), 1,
+  "deflate frees: and that refusal is named");
+assert_lt(fr_n, 8192, "deflate frees: (FR listed every block it handed out)");
+bayan_pdf_set_deflate(&zlib_compress);
 
 var r = assert_summary();
