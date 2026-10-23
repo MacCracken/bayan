@@ -698,6 +698,85 @@ assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 35))), 1, "toml dot index
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 36))), 2, "toml dot index: and e11 holds x and y");
 assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 33))), 1, "toml dot index: the first [[t]]'s e11 kept one pair");
 
+test_group("toml: the dotted-key index frees only what it built (1.11.1)");
+# bayan_toml_parse keeps the index in a stack array (`var ix: i64[3]`), and its first act was
+# _toml_dot_reset_a, which hands load64(ix) to free_via when it is not 0: whatever an earlier
+# call left in that stack slot was freed. The default allocator's free is a no-op, so only an
+# allocator that frees shows it. For one parse the default vtable's alloc and free are swapped
+# for a freeing pair: every block handed out is listed, a free of a listed block scribbles it
+# (as reuse would) and counts it, and a free of anything else counts as foreign. _tf_dirty
+# first leaves a pattern where the parse's frame will be, as any earlier call can.
+var tf_ptr: i64[4096];
+var tf_size: i64[4096];
+var tf_n = 0;
+var tf_freed = 0;
+var tf_foreign = 0;
+fn _tf_alloc(state, size): i64 {
+    var p = alloc(size);
+    if (p != 0 && tf_n < 4096) {
+        store64(&tf_ptr + tf_n * 8, p);
+        store64(&tf_size + tf_n * 8, size);
+        tf_n = tf_n + 1;
+    }
+    return p;
+}
+fn _tf_free(state, ptr): i64 {
+    var i = 0;
+    while (i < tf_n) {
+        if (load64(&tf_ptr + i * 8) == ptr) {
+            memset(ptr, 219, load64(&tf_size + i * 8));
+            store64(&tf_ptr + i * 8, 0);
+            tf_freed = tf_freed + 1;
+            return 0;
+        }
+        i = i + 1;
+    }
+    tf_foreign = tf_foreign + 1;
+    return 0;
+}
+fn _tf_dirty(): i64 {
+    var junk: i64[1024];
+    var i = 0;
+    while (i < 1024) {
+        store64(&junk + i * 8, 0x5EED0000DEAD0000 + i * 8);
+        i = i + 1;
+    }
+    return load64(&junk);
+}
+# 20 dotted tables under the root (indexed past the walk's 8), a header (which drops that
+# index), then 12 more under it (a second index).
+var tf_sb = str_builder_new();
+var tf_i = 0;
+while (tf_i < 20) {
+    str_builder_add_cstr(tf_sb, "d");
+    str_builder_add_int(tf_sb, tf_i);
+    str_builder_add_cstr(tf_sb, ".x = 1\n");
+    tf_i = tf_i + 1;
+}
+str_builder_add_cstr(tf_sb, "[h]\n");
+tf_i = 0;
+while (tf_i < 12) {
+    str_builder_add_cstr(tf_sb, "e");
+    str_builder_add_int(tf_sb, tf_i);
+    str_builder_add_cstr(tf_sb, ".x = 1\n");
+    tf_i = tf_i + 1;
+}
+var tf_src = str_builder_build(tf_sb);
+var tf_d = default_alloc();
+var tf_oa = load64(tf_d);
+var tf_of = load64(tf_d + 16);
+store64(tf_d, &_tf_alloc);
+store64(tf_d + 16, &_tf_free);
+_tf_dirty();
+var tf_doc = bayan_toml_parse(tf_src);
+store64(tf_d, tf_oa);
+store64(tf_d + 16, tf_of);
+assert_eq(tf_foreign, 0, "toml dot index: no free of a block the allocator never handed out");
+assert_gt(tf_freed, 0, "toml dot index: the root's index is freed when [h] moves the scope");
+assert_eq(vec_len(tf_doc), 1 + 20 + 1 + 12, "toml dot index: and the parse under a freeing allocator is whole");
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(tf_doc, 33)), "h.e11"), 1,
+  "toml dot index: (its last table named as the walk would)");
+
 test_group("toml: inline tables (1.5.4)");
 # `k = { a = 1 }` was captured verbatim with no accessor and was not listed
 # as a subset limit anywhere a caller reads — so a consumer needing one had
