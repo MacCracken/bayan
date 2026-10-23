@@ -2262,8 +2262,11 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
         # compile error on one backend (G13)" — true of cx until cyrius v6.5.13,
         # which gave cx `callind`; fncall4 stays for consistency, not necessity.)
         # No f64 crosses this boundary; nothing here is a float.
+        # Every refusal past this point gives `dst` back, as a rejected attempt
+        # does; two returned holding it. CHANGELOG [1.11.1]
         var n = fncall4(_pdf_inflate_fp, src, len, dst, cap);
         if (n > cap) {
+            free_via(a, dst);
             _pdfz_err(doc,
               "FlateDecode: the inflate hook reported more bytes than the buffer holds",
               0 - 1);
@@ -2272,7 +2275,12 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
         if (n >= 0) {
             if (n < cap) {
                 store8(dst + n, 0);
-                return str_new_a(a, dst, n);
+                var out = str_new_a(a, dst, n);
+                if (out == 0) {
+                    free_via(a, dst);
+                    _pdfz_err(doc, "FlateDecode: out of memory wrapping the output", 0 - 1);
+                }
+                return out;
             }
         } elif (n != 0 - 2) {
             free_via(a, dst);

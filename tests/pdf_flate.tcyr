@@ -317,4 +317,82 @@ assert_lt(fc_cut * 4, fc_whole, "content budget: the refused join stopped before
 _PDF_MAX_CONTENT = fc_saved;
 fb_body = 0;
 
+test_group("pdf: an inflate attempt's buffer goes back on every refusal (1.11.1)");
+# _pdfz_inflate_a frees a rejected attempt's buffer (CYRIUS-2026-0045), but two refusals
+# returned with it still held: a hook reporting more bytes than the buffer holds, and a refused
+# Str header after an output that fitted (which also recorded no reason, so the stream read ""
+# with no error). The default bump allocator frees nothing; FR does, and fr_live is what it has
+# handed out and not had back. The baseline is a hook's hard error, which frees the buffer:
+# every refusal leaves what that one does. fr_refuse_after refuses the request that follows one
+# of that size, here the 16-byte header after the 4097-byte output buffer.
+var fr_ptr: i64[512];
+var fr_size: i64[512];
+var fr_n = 0;
+var fr_live = 0;
+var fr_last = 0;
+var fr_refuse_after = 0;
+fn fr_alloc(state, size): i64 {
+    var prev = fr_last;
+    fr_last = size;
+    if (fr_refuse_after != 0 && prev == fr_refuse_after) { return 0; }
+    var p = alloc(size);
+    if (p != 0 && fr_n < 512) {
+        store64(&fr_ptr + fr_n * 8, p);
+        store64(&fr_size + fr_n * 8, size);
+        fr_n = fr_n + 1;
+        fr_live = fr_live + size;
+    }
+    return p;
+}
+fn fr_realloc(state, old, osz, nsz): i64 {
+    var p = fr_alloc(state, nsz);
+    if (p == 0) { return 0; }
+    var m = osz;
+    if (nsz < m) { m = nsz; }
+    memcpy(p, old, m);
+    return p;
+}
+fn fr_free(state, ptr): i64 {
+    var i = 0;
+    while (i < fr_n) {
+        if (ptr != 0 && load64(&fr_ptr + i * 8) == ptr) {
+            fr_live = fr_live - load64(&fr_size + i * 8);
+            store64(&fr_ptr + i * 8, 0);
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+fn fr_reset(state): i64 { return 0; }
+var FR = allocator_new(&fr_alloc, &fr_realloc, &fr_free, &fr_reset, 0);
+fn fr_err_hook(src, n, dst, cap): i64 { return 0 - 1; }
+fn fr_over_hook(src, n, dst, cap): i64 { return cap + 1; }
+# The bytes FR still holds after one /FlateDecode stream (4 bytes, no hint: a 4097-byte
+# buffer) is asked for through `hook`; fr_doc keeps the document.
+var fr_doc = 0;
+fn fr_held(hook): i64 {
+    bayan_pdf_set_inflate(hook);
+    fr_doc = bayan_pdf_parse(fb_pdf(1, 0));
+    var before = fr_live;
+    var d = bayan_pdf_stream_data_a(FR, fr_doc, bayan_pdf_obj(fr_doc, 3));
+    if (str_len(d) != 0) { return 0 - 1; }
+    return fr_live - before;
+}
+var fr_base = fr_held(&fr_err_hook);
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fr_doc)),
+    "FlateDecode failed (the inflate hook reported an error)"), 1, "inflate frees: the baseline is the hook's error");
+assert_lt(fr_base, 4097, "inflate frees: whose buffer is back");
+assert_eq(fr_held(&fr_over_hook), fr_base,
+  "inflate frees: a hook claiming more bytes than the buffer holds leaves no buffer held");
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fr_doc)),
+    "FlateDecode: the inflate hook reported more bytes than the buffer holds"), 1, "inflate frees: (refused by name)");
+fr_last = 0;
+fr_refuse_after = 4097;
+assert_eq(fr_held(&fb_ok_hook), fr_base, "inflate frees: an output whose Str header is refused leaves no buffer held");
+fr_refuse_after = 0;
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fr_doc)), "FlateDecode: out of memory wrapping the output"), 1,
+  "inflate frees: and that refusal is named, not an empty stream with no error");
+bayan_pdf_set_inflate(&zlib_decompress);
+
 var r = assert_summary();
