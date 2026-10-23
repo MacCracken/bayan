@@ -2024,6 +2024,16 @@ fn _pdfz_out_a(a, doc, buf, n, msg: cstring): Str {
     return s;
 }
 
+# Give back a filter stage's output — its buffer and its header — once the next
+# stage has read it, or refused. Every decoder allocates both from `a` (an empty
+# Flate output too), so both are `a`'s to free. 0 is a no-op. CHANGELOG [1.11.1]
+fn _pdfz_drop_a(a, s): i64 {
+    if (s == 0) { return 0; }
+    free_via(a, str_data(s));
+    free_via(a, s);
+    return 0;
+}
+
 # --- the decompression budget ----------------------------------------------
 #
 # _PDF_MAX_INFLATE caps ONE stream; a zip bomb spreads itself over a thousand
@@ -2233,7 +2243,17 @@ fn _pdfz_inflate_a(a, doc, src, len, hint): Str {
         _pdfz_err(doc, "FlateDecode: negative source length", 0 - 1);
         return 0;
     }
-    if (len == 0) { return str_from_a(a, ""); }
+    if (len == 0) {
+        # Its own empty buffer, not str_from_a's static "": a chain gives every
+        # stage's output back (_pdfz_drop_a). CHANGELOG [1.11.1]
+        var e = alloc_via(a, 1);
+        if (e == 0) {
+            _pdfz_err(doc, "FlateDecode: out of memory sizing the output buffer", 0 - 1);
+            return 0;
+        }
+        store8(e, 0);
+        return _pdfz_out_a(a, doc, e, 0, "FlateDecode: out of memory wrapping the output");
+    }
 
     var cap = 0;
     if (hint > 0) {
@@ -5470,15 +5490,19 @@ fn _pdfp_decode_one_a(a, doc, id, src, len, hint, parms): Str {
     # interpreted, so a present-but-wrong-typed value must refuse rather than
     # fall back to a default that silently changes the output.
     var pred = _pdfp_dict_num_strict(doc, parms, "Predictor", 1);
-    if (pred == _PDF_NUM_BAD) { return 0; }
+    if (pred == _PDF_NUM_BAD) { return _pdfz_drop_a(a, out); }
     if (pred <= 1) { return out; }
     var colors  = _pdfp_dict_num_strict(doc, parms, "Colors", 1);
     var bpc     = _pdfp_dict_num_strict(doc, parms, "BitsPerComponent", 8);
     var columns = _pdfp_dict_num_strict(doc, parms, "Columns", 1);
-    if (colors == _PDF_NUM_BAD || bpc == _PDF_NUM_BAD) { return 0; }
-    if (columns == _PDF_NUM_BAD) { return 0; }
-    return _pdfz_unpredict_a(a, doc, str_data(out), str_len(out),
+    if (colors == _PDF_NUM_BAD || bpc == _PDF_NUM_BAD) { return _pdfz_drop_a(a, out); }
+    if (columns == _PDF_NUM_BAD) { return _pdfz_drop_a(a, out); }
+    # The predictor copies the filter's output (pred > 1 here), so that output
+    # goes back whatever it answers; it used to be kept. CHANGELOG [1.11.1]
+    var un = _pdfz_unpredict_a(a, doc, str_data(out), str_len(out),
       pred, colors, bpc, columns);
+    _pdfz_drop_a(a, out);
+    return un;
 }
 
 # Decode a stream through its whole /Filter chain, left to right.
@@ -5512,6 +5536,9 @@ fn _pdfp_decode_chain_a(a, doc, st): Str {
         return 0;
     }
 
+    # `cur` is the raw bytes (the document's), then each stage's output, which is
+    # given back once the next stage has read it or the chain refuses; only the
+    # last is kept. They used to be kept, every one. CHANGELOG [1.11.1]
     var cur = raw;
     var i = 0;
     while (i < nf) {
@@ -5520,27 +5547,33 @@ fn _pdfp_decode_chain_a(a, doc, st): Str {
         if (_pdfo_tag(nm) != PTAG_NAME) {
             _pdfe_doc_err(doc, "stream /Filter array holds something that is not a name",
               0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         var id = _pdfz_filter_id(bayan_pdf_obj_name(nm));
         if (id < 0) {
             _pdfe_doc_err(doc, "stream uses an unrecognised /Filter", 0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         if (_pdfz_filter_is_image(id)) {
             _pdfe_doc_err(doc,
               "stream is image data (DCT/JPX/CCITT/JBIG2) and is never decoded here",
               0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         if (_pdfz_filter_supported(id) == 0) {
             _pdfe_doc_err(doc, "stream uses a filter this build does not implement",
               0 - 1);
+            if (cur != raw) { _pdfz_drop_a(a, cur); }
             return 0;
         }
         var p = _pdfp_parms_at(doc, parms, i, nf);
-        cur = _pdfp_decode_one_a(a, doc, id, str_data(cur), str_len(cur), hint, p);
-        if (cur == 0) { return 0; }
+        var next = _pdfp_decode_one_a(a, doc, id, str_data(cur), str_len(cur), hint, p);
+        if (cur != raw) { _pdfz_drop_a(a, cur); }
+        if (next == 0) { return 0; }
+        cur = next;
         i = i + 1;
     }
     return cur;

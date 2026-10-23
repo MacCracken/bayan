@@ -6014,4 +6014,56 @@ tf_refuse_16 = 0;
 assert_eq(_tf_err_is("predictor: out of memory wrapping the output"), 1, "pdf filter frees: (/Predictor 1's, by name)");
 assert_lt(tf_n, 4096, "pdf filter frees: (TFA listed every block it handed out)");
 
+test_group("pdf: a filter chain gives back each stage's output once the next has read it (1.11.1)");
+# bayan_pdf_stream_data_a runs a stream's /Filter chain left to right, then its predictor, each
+# stage reading the one before. A stage's output was never given back: not when the next stage
+# had copied it out, not when the next stage or a /DecodeParms value refused. Under TFA a decoded
+# stream holds its answer (a buffer and a header) and nothing else; a refused one, nothing.
+var tf_pdoc = bayan_pdf_new();
+# The blocks still live after `data` is decoded through /Filter `f` (and /DecodeParms `parms`).
+var tf_got = 0;
+fn _tf_chain_held(f, parms, data): i64 {
+    var d = bayan_pdf_obj_dict_new();
+    bayan_pdf_obj_dict_set(d, "Filter", f);
+    if (parms != 0) { bayan_pdf_obj_dict_set(d, "DecodeParms", parms); }
+    # A stream as the reader leaves it: its raw bytes at +16 and no decoded bytes at +24 yet (the
+    # writer's constructor stores a payload already decoded).
+    var st = bayan_pdf_obj_stream_new(d, str_from(""));
+    store64(st + 16, str_from(data));
+    store64(st + 24, 0);
+    var m = tf_n;
+    tf_got = bayan_pdf_stream_data_a(TFA, tf_pdoc, st);
+    return _tf_live(m);
+}
+fn _tf_names(n1, n2): i64 {
+    var arr = bayan_pdf_obj_array_new();
+    bayan_pdf_obj_array_push(arr, bayan_pdf_obj_name_new(n1));
+    bayan_pdf_obj_array_push(arr, bayan_pdf_obj_name_new(n2));
+    return arr;
+}
+fn _tf_png_parms(pred): i64 {
+    var d = bayan_pdf_obj_dict_new();
+    bayan_pdf_obj_dict_set(d, "Predictor", pred);
+    bayan_pdf_obj_dict_set(d, "Columns", bayan_pdf_obj_int_new(2));
+    return d;
+}
+var tf_ahx = bayan_pdf_obj_name_new("ASCIIHexDecode");
+assert_eq(_tf_chain_held(tf_ahx, 0, "4142>"), 2, "pdf chain frees: one stage holds its answer");
+# "343134323E>" is hex of "4142>", which is hex of "AB".
+assert_eq(_tf_chain_held(_tf_names("ASCIIHexDecode", "ASCIIHexDecode"), 0, "343134323E>"), 2,
+  "pdf chain frees: two stages hold only the second's answer");
+assert_eq(str_eq_cstr(tf_got, "AB"), 1, "pdf chain frees: (which is AB)");
+assert_eq(_tf_chain_held(_tf_names("ASCIIHexDecode", "ASCIIHexDecode"), 0, "343147323E>"), 0,
+  "pdf chain frees: a second stage that refuses (41G2>) leaves the first's output held by nothing");
+assert_eq(_tf_chain_held(_tf_names("ASCIIHexDecode", "DCTDecode"), 0, "4142>"), 0,
+  "pdf chain frees: so does a second filter the chain refuses (image data)");
+assert_eq(_tf_chain_held(tf_ahx, _tf_png_parms(bayan_pdf_obj_int_new(12)), "004142>"), 2,
+  "pdf chain frees: a PNG predictor's answer is all a predicted stream holds");
+assert_eq(str_eq_cstr(tf_got, "AB"), 1, "pdf chain frees: (which is AB)");
+assert_eq(_tf_chain_held(tf_ahx, _tf_png_parms(bayan_pdf_obj_int_new(12)), "054142>"), 0,
+  "pdf chain frees: a predictor that refuses (row type 5) leaves nothing held");
+assert_eq(_tf_chain_held(tf_ahx, _tf_png_parms(bayan_pdf_obj_name_new("Twelve")), "004142>"), 0,
+  "pdf chain frees: so does a /Predictor that is not a number");
+assert_lt(tf_n, 4096, "pdf chain frees: (TFA listed every block it handed out)");
+
 var r = assert_summary();

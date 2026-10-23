@@ -357,6 +357,7 @@ fn fr_realloc(state, old, osz, nsz): i64 {
     memcpy(p, old, m);
     return p;
 }
+var fr_foreign = 0;             # frees of memory FR never handed out
 fn fr_free(state, ptr): i64 {
     var i = 0;
     while (i < fr_n) {
@@ -367,6 +368,7 @@ fn fr_free(state, ptr): i64 {
         }
         i = i + 1;
     }
+    fr_foreign = fr_foreign + 1;
     return 0;
 }
 fn fr_reset(state): i64 { return 0; }
@@ -467,5 +469,24 @@ assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fr_w)), "deflate: out of memo
   "deflate frees: and that refusal is named");
 assert_lt(fr_n, 8192, "deflate frees: (FR listed every block it handed out)");
 bayan_pdf_set_deflate(&zlib_compress);
+
+test_group("pdf: an empty Flate stage is its own buffer, so a chain can give it back (1.11.1)");
+# A filter chain gives each stage's output back once the next stage has read it (tests/bayan.tcyr
+# has the chain's rows). An empty Flate stream's output was str_from_a's static "", which is no
+# allocator's to free: [/FlateDecode /ASCIIHexDecode] over no bytes handed it to free_via. It is
+# now a one-byte buffer of its own. The stream is built as the reader leaves one: raw bytes at
+# +16, no decoded bytes at +24.
+var fr_ed = bayan_pdf_obj_dict_new();
+var fr_ef = bayan_pdf_obj_array_new();
+bayan_pdf_obj_array_push(fr_ef, bayan_pdf_obj_name_new("FlateDecode"));
+bayan_pdf_obj_array_push(fr_ef, bayan_pdf_obj_name_new("ASCIIHexDecode"));
+bayan_pdf_obj_dict_set(fr_ed, "Filter", fr_ef);
+var fr_es = bayan_pdf_obj_stream_new(fr_ed, str_from(""));
+store64(fr_es + 16, str_from(""));
+store64(fr_es + 24, 0);
+fr_foreign = 0;
+var fr_eout = bayan_pdf_stream_data_a(FR, bayan_pdf_new(), fr_es);
+assert_eq(fr_foreign, 0, "empty flate: the chain frees nothing FR never handed out");
+assert_eq(str_len(fr_eout), 0, "empty flate: and the stream decodes to no bytes");
 
 var r = assert_summary();
