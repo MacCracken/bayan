@@ -283,6 +283,22 @@ jobs:
       - name: Fuzz
         run: ./scripts/no-warnings.sh cyrius fuzz
 
+      # json's parsers read the document through bounds-checked slices (1.11.1; cyrius 6.7.18
+      # D1): a read past the input is "slice bounds violation" and exit 134 in every build, not
+      # a read of the byte that follows. Each mode of the probe makes such a read through one
+      # of the parsers' readers (its header has them); each must trap.
+      - name: JSON reads are bounds-checked
+        run: |
+          set -euo pipefail
+          ./scripts/no-warnings.sh cyrius build tests/json_slice_trap.cyr build/json-slice-trap
+          for m in 1 2; do
+            set +e; ./build/json-slice-trap "$m" 2> "${RUNNER_TEMP}/trap.err"; rc=$?; set -e
+            test "$rc" -eq 134 || { echo "::error::json-slice-trap mode $m exited $rc, not the slice trap's 134"; exit 1; }
+            grep -q "slice bounds violation" "${RUNNER_TEMP}/trap.err" || {
+              echo "::error::json-slice-trap mode $m did not report a slice bounds violation"; exit 1; }
+          done
+          echo "json reads trap past the input (2 modes)"
+
       - name: Bench harness compiles and runs
         run: ./scripts/no-warnings.sh cyrius bench
 

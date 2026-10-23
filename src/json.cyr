@@ -2,8 +2,18 @@
 # Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-json.cyr" (sublib).
 #        `lib/json.cyr` was the pre-carve stdlib module and no longer ships —
 #        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
-# Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, io.cyr
+# Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, io.cyr, slice.cyr (1.11.1)
 # Internally includes: fnptr.cyr (for streaming-parser fncallN dispatch)
+#
+# THE PARSERS READ THROUGH SLICES (1.11.1; cyrius 6.7.18 D1, the user's
+# decision). Every fn of the three parsers that reads the document wraps its
+# (buf, len) in a fn-local `var bs: [u8]` (slice_set) and reads bs[i], which is
+# bounds-checked in EVERY build: an index outside [0, len) is not a read past
+# the input but "slice bounds violation" and exit 134. A peer's document is the
+# input these parsers see most, and before this the bytes were raw load8(buf +
+# i) reads that cyrius's #bounds mode cannot see. The cost is a call per byte.
+# lib/slice.cyr is therefore a requirement of this module (the bundles' Requires
+# block names it).
 #
 # bayan_json_parse, the flat key/value API just below, reads ONE object's
 # top-level members into key/value pairs of raw source bytes (callers convert
@@ -245,8 +255,10 @@ fn _jk_free(ks): i64 {
 # whole parse 37% slower than 1.5.9's on a 1 MB document (measured); a shift and
 # a mask is one test. tests/bayan.tcyr walks all 256 bytes through every class.
 fn _json_flat_skip_ws(data, slen, i): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, data, slen);
     while (i < slen) {
-        var c = load8(data + i);
+        var c = bs[i];
         if (c > 32) { return i; }
         if (((0x100002600 >> c) & 1) == 0) { return i; }
         i = i + 1;
@@ -275,8 +287,10 @@ fn _json_flat_skip_ws(data, slen, i): i64 {
 # LAST byte steps i past slen; the loop test fails before anything is read
 # there, so the -1 costs no out-of-bounds load.
 fn _json_flat_str_end(data, slen, i): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, data, slen);
     while (i < slen) {
-        var c = load8(data + i);
+        var c = bs[i];
         if (c == 34) { return i; }
         if (c == 92) { i = i + 1; }
         i = i + 1;
@@ -293,8 +307,10 @@ fn _json_flat_str_end(data, slen, i): i64 {
 # 0x0400100500002600: bits 9 10 13 32 34 44 58 (whitespace, `"` `,` `:`);
 # 0x2800000028000000: bits 27 29 59 61, i.e. bytes 91 93 123 125 (`[` `]` `{` `}`).
 fn _json_flat_bare_end(data, slen, i): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, data, slen);
     while (i < slen) {
-        var c = load8(data + i);
+        var c = bs[i];
         if (c < 64) {
             if (((0x0400100500002600 >> c) & 1) == 1) { return i; }
         } elif (c < 128) {
@@ -318,10 +334,12 @@ fn _json_flat_bare_end(data, slen, i): i64 {
 # linear and never recurses: a 100,000-deep `[[[...` is refused at the cap after
 # one pass over its first 128 bytes.
 fn _json_flat_span_end(data, slen, i): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, data, slen);
     var kinds[16];
     var depth = 0;
     while (i < slen) {
-        var c = load8(data + i);
+        var c = bs[i];
         if (c == 34) {
             i = _json_flat_str_end(data, slen, i + 1);
             if (i < 0) { return 0 - 1; }
@@ -435,9 +453,11 @@ fn bayan_json_parse(src): i64 {
 # whose escapes do not decode (the flat parser does not validate them) compares
 # as its raw bytes.
 fn _json_flat_key_dec(a, data, slen, kq, ke): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, data, slen);
     var i = kq + 1;
     while (i < ke) {
-        if (load8(data + i) == 92) { break; }
+        if (bs[i] == 92) { break; }
         i = i + 1;
     }
     if (i >= ke) { return 0; }
@@ -463,19 +483,21 @@ fn bayan_json_parse_a(a, src): i64 {
     if (src == 0) { return pairs; }
     var data = str_data(src);
     var slen = str_len(src);
+    var bs: [u8] = 0;
+    slice_set(&bs, data, slen);
     # The top-level keys so far, decoded: a duplicate refuses the document.
     var kset[_JK_SIZE];
     _jk_init(&kset, a);
     var ji = 0;
     # Skip to the first `{` byte (see PASS AN OBJECT DOCUMENT above).
     while (ji < slen) {
-        if (load8(data + ji) == 123) { ji = ji + 1; break; }
+        if (bs[ji] == 123) { ji = ji + 1; break; }
         ji = ji + 1;
     }
     # One member per pass. Every `break` but the `}` one is a defect: it ends the
     # parse with the pairs read so far.
     while (ji < slen) {
-        var c = load8(data + ji);
+        var c = bs[ji];
         # Whitespace or `,`. Space and `,` are tested first: they are most of the
         # bytes between members, and on indented or space-heavy documents the
         # two compares beat the bitmap alone (measured). 0x100100002600 is the
@@ -489,10 +511,10 @@ fn bayan_json_parse_a(a, src): i64 {
             if (ke < 0) { break; }
             # The key's own `:`, after whitespace — not the next `:` anywhere.
             ji = _json_flat_skip_ws(data, slen, ke + 1);
-            if (ji >= slen || load8(data + ji) != 58) { break; }
+            if (ji >= slen || bs[ji] != 58) { break; }
             ji = _json_flat_skip_ws(data, slen, ji + 1);
             if (ji >= slen) { break; }
-            var vc = load8(data + ji);
+            var vc = bs[ji];
             var vs = ji;
             var ve = 0;
             var vk = JSON_K_BARE;
@@ -517,13 +539,13 @@ fn bayan_json_parse_a(a, src): i64 {
                 # Cut: bare_end stops only at whitespace (every such byte is
                 # <= 32) or a structural byte, and of those only `,` and `}`
                 # may follow a whole value.
-                var tc = load8(data + ve);
+                var tc = bs[ve];
                 if (tc > 32 && tc != 44 && tc != 125) { break; }
                 ji = ve;
             }
             # A value followed by `:` was the next KEY: this key had none.
             ji = _json_flat_skip_ws(data, slen, ji);
-            if (ji < slen && load8(data + ji) == 58) { break; }
+            if (ji < slen && bs[ji] == 58) { break; }
             var kd = _json_flat_key_dec(a, data, slen, ks - 1, ke);
             if (kd < 0) { return 0; }
             var fresh = 0;
@@ -1304,14 +1326,30 @@ fn _jp_set_err(ps, msg, pos): i64 {
 fn _jp_skip_ws(ps): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
     var pos = load64(ps + 16);
     while (pos < len) {
-        var c = load8(buf + pos);
+        var c = bs[pos];
         if (c == 32 || c == 9 || c == 10 || c == 13) { pos = pos + 1; }
         else { store64(ps + 16, pos); return 0; }
     }
     store64(ps + 16, pos);
     return 0;
+}
+
+# 1 when buf[at, at + n) holds the n bytes of the literal `w`. The caller has
+# checked at + n <= len; the slice turns a wrong check into a trap, not a read
+# past the input (6.7.18 D1, below).
+fn _jp_word(buf, len, at, w, n): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
+    var i = 0;
+    while (i < n) {
+        if (bs[at + i] != load8(w + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
 }
 
 # Decode a hex digit (returns -1 if not a hex digit).
@@ -1353,9 +1391,11 @@ fn _jp_emit_utf8(dst, cp): i64 {
 fn _jp_parse_string_a(a, ps): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
     var pos = load64(ps + 16);
     if (pos >= len) { _jp_set_err(ps, "unexpected EOF in string", pos); return 0; }
-    if (load8(buf + pos) != 34) { _jp_set_err(ps, "expected string", pos); return 0; }
+    if (bs[pos] != 34) { _jp_set_err(ps, "expected string", pos); return 0; }
     pos = pos + 1;
     # Size the buffer from THIS STRING'S span, not from the rest of the
     # document (1.5.1 — this was a quadratic memory blowup).
@@ -1375,7 +1415,7 @@ fn _jp_parse_string_a(a, ps): i64 {
     # for 4 — so the raw span is always a sufficient cap.
     var scan = pos;
     while (scan < len) {
-        var sc = load8(buf + scan);
+        var sc = bs[scan];
         if (sc == 34) { break; }
         # Consume the backslash AND the byte it escapes, so an escaped quote
         # does not end the scan. A trailing lone backslash pushes scan past
@@ -1392,13 +1432,13 @@ fn _jp_parse_string_a(a, ps): i64 {
     var oi = 0;
     while (1 == 1) {
         if (pos >= len) { _jp_set_err(ps, "unterminated string", pos); return 0; }
-        var c = load8(buf + pos);
+        var c = bs[pos];
         if (c == 34) { pos = pos + 1; store64(ps + 16, pos); store8(out + oi, 0); return str_new_a(a, out, oi); }
         if (c == 92) {
             # Escape sequence
             pos = pos + 1;
             if (pos >= len) { _jp_set_err(ps, "unterminated escape", pos); return 0; }
-            var e = load8(buf + pos);
+            var e = bs[pos];
             pos = pos + 1;
             if      (e == 34)  { store8(out + oi,  34); oi = oi + 1; }
             elif    (e == 92)  { store8(out + oi,  92); oi = oi + 1; }
@@ -1410,10 +1450,10 @@ fn _jp_parse_string_a(a, ps): i64 {
             elif    (e == 116) { store8(out + oi,   9); oi = oi + 1; }
             elif    (e == 117) {
                 if (pos + 3 >= len) { _jp_set_err(ps, "\\u needs 4 hex digits", pos); return 0; }
-                var d0 = _jp_hex(load8(buf + pos));
-                var d1 = _jp_hex(load8(buf + pos + 1));
-                var d2 = _jp_hex(load8(buf + pos + 2));
-                var d3 = _jp_hex(load8(buf + pos + 3));
+                var d0 = _jp_hex(bs[pos]);
+                var d1 = _jp_hex(bs[pos + 1]);
+                var d2 = _jp_hex(bs[pos + 2]);
+                var d3 = _jp_hex(bs[pos + 3]);
                 if (d0 < 0 || d1 < 0 || d2 < 0 || d3 < 0) { _jp_set_err(ps, "\\u: bad hex digit", pos); return 0; }
                 pos = pos + 4;
                 var cp = (d0 << 12) | (d1 << 8) | (d2 << 4) | d3;
@@ -1421,15 +1461,15 @@ fn _jp_parse_string_a(a, ps): i64 {
                 if (cp >= 0xD800 && cp <= 0xDBFF) {
                     # High surrogate — expect low surrogate next
                     if (pos + 5 >= len) { _jp_set_err(ps, "incomplete surrogate pair", pos); return 0; }
-                    if (load8(buf + pos) != 92 || load8(buf + pos + 1) != 117) {
+                    if (bs[pos] != 92 || bs[pos + 1] != 117) {
                         _jp_set_err(ps, "expected low surrogate after high", pos);
                         return 0;
                     }
                     pos = pos + 2;
-                    var l0 = _jp_hex(load8(buf + pos));
-                    var l1 = _jp_hex(load8(buf + pos + 1));
-                    var l2 = _jp_hex(load8(buf + pos + 2));
-                    var l3 = _jp_hex(load8(buf + pos + 3));
+                    var l0 = _jp_hex(bs[pos]);
+                    var l1 = _jp_hex(bs[pos + 1]);
+                    var l2 = _jp_hex(bs[pos + 2]);
+                    var l3 = _jp_hex(bs[pos + 3]);
                     if (l0 < 0 || l1 < 0 || l2 < 0 || l3 < 0) {
                         _jp_set_err(ps, "low surrogate: bad hex", pos); return 0;
                     }
@@ -1477,45 +1517,47 @@ fn _jp_parse_string(ps): i64 {
 fn _jp_scan_number(ps, out): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
     var pos = load64(ps + 16);
     var start = pos;
     store64(out, 0);
-    if (pos < len && load8(buf + pos) == 45) { pos = pos + 1; }
+    if (pos < len && bs[pos] == 45) { pos = pos + 1; }
     var int_start = pos;
     while (pos < len) {
-        var c = load8(buf + pos);
+        var c = bs[pos];
         if (c >= 48 && c <= 57) { pos = pos + 1; }
         else { break; }
     }
     if (pos == int_start) { _jp_set_err(ps, "expected number", start); return 0 - 1; }
-    if (pos - int_start > 1 && load8(buf + int_start) == 48) {
+    if (pos - int_start > 1 && bs[int_start] == 48) {
         _jp_set_err(ps, "a number may not have a leading zero", start);
         return 0 - 1;
     }
     store64(out + 8, pos);
-    if (pos < len && load8(buf + pos) == 46) {
+    if (pos < len && bs[pos] == 46) {
         store64(out, 1);
         pos = pos + 1;
         var frac_start = pos;
         while (pos < len) {
-            var c2 = load8(buf + pos);
+            var c2 = bs[pos];
             if (c2 >= 48 && c2 <= 57) { pos = pos + 1; }
             else { break; }
         }
         if (pos == frac_start) { _jp_set_err(ps, "expected digits after the decimal point", pos); return 0 - 1; }
     }
     if (pos < len) {
-        var ec = load8(buf + pos);
+        var ec = bs[pos];
         if (ec == 101 || ec == 69) {
             store64(out, 1);
             pos = pos + 1;
             if (pos < len) {
-                var sg = load8(buf + pos);
+                var sg = bs[pos];
                 if (sg == 43 || sg == 45) { pos = pos + 1; }
             }
             var exp_start = pos;
             while (pos < len) {
-                var c3 = load8(buf + pos);
+                var c3 = bs[pos];
                 if (c3 >= 48 && c3 <= 57) { pos = pos + 1; }
                 else { break; }
             }
@@ -1570,11 +1612,13 @@ fn _jp_parse_number(ps): i64 {
 # obvious check — accumulate and see if it went negative — is exactly the
 # wrapping this exists to detect.
 fn _jp_int_fits(buf, len): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
     var i = 0;
     var neg = 0;
-    if (len > 0 && load8(buf) == 45) { neg = 1; i = 1; }
+    if (len > 0 && bs[0] == 45) { neg = 1; i = 1; }
     # Leading zeros do not count toward magnitude.
-    while (i < len && load8(buf + i) == 48) { i = i + 1; }
+    while (i < len && bs[i] == 48) { i = i + 1; }
     var digits = len - i;
     if (digits < 19) { return 1; }
     if (digits > 19) { return 0; }
@@ -1582,7 +1626,7 @@ fn _jp_int_fits(buf, len): i64 {
     if (neg == 1) { bound = "9223372036854775808"; }
     var k = 0;
     while (k < 19) {
-        var d = load8(buf + i + k);
+        var d = bs[i + k];
         var b = load8(bound + k);
         if (d < b) { return 1; }
         if (d > b) { return 0; }
@@ -1592,12 +1636,14 @@ fn _jp_int_fits(buf, len): i64 {
 }
 
 fn _jp_atoi(buf, len): i64 {
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
     var i = 0;
     var sign = 1;
-    if (len > 0 && load8(buf) == 45) { sign = 0 - 1; i = 1; }
+    if (len > 0 && bs[0] == 45) { sign = 0 - 1; i = 1; }
     var n = 0;
     while (i < len) {
-        n = n * 10 + (load8(buf + i) - 48);
+        n = n * 10 + (bs[i] - 48);
         i = i + 1;
     }
     return sign * n;
@@ -1622,9 +1668,11 @@ fn _jp_parse_value_a(a, ps): i64 {
     _jp_skip_ws(ps);
     var buf = load64(ps);
     var len = load64(ps + 8);
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
     var pos = load64(ps + 16);
     if (pos >= len) { _jp_set_err(ps, "unexpected EOF", pos); return 0; }
-    var c = load8(buf + pos);
+    var c = bs[pos];
     if (c == 123 || c == 91) {
         # Containers recurse — bound the descent before entering (scalars can't
         # recurse, so only these two branches touch the depth counter).
@@ -1650,7 +1698,7 @@ fn _jp_parse_value_a(a, ps): i64 {
         return sv;
     }
     if (c == 116) {
-        if (pos + 3 < len && memeq(buf + pos + 1, "rue", 3) == 1) {
+        if (pos + 3 < len && _jp_word(buf, len, pos + 1, "rue", 3) == 1) {
             store64(ps + 16, pos + 4);
             var tv = bayan_json_v_bool_new_a(a, 1);
             if (tv == 0) { _jp_set_err(ps, "out of memory building a boolean", pos); }
@@ -1659,7 +1707,7 @@ fn _jp_parse_value_a(a, ps): i64 {
         _jp_set_err(ps, "expected 'true'", pos); return 0;
     }
     if (c == 102) {
-        if (pos + 4 < len && memeq(buf + pos + 1, "alse", 4) == 1) {
+        if (pos + 4 < len && _jp_word(buf, len, pos + 1, "alse", 4) == 1) {
             store64(ps + 16, pos + 5);
             var fv = bayan_json_v_bool_new_a(a, 0);
             if (fv == 0) { _jp_set_err(ps, "out of memory building a boolean", pos); }
@@ -1668,7 +1716,7 @@ fn _jp_parse_value_a(a, ps): i64 {
         _jp_set_err(ps, "expected 'false'", pos); return 0;
     }
     if (c == 110) {
-        if (pos + 3 < len && memeq(buf + pos + 1, "ull", 3) == 1) {
+        if (pos + 3 < len && _jp_word(buf, len, pos + 1, "ull", 3) == 1) {
             store64(ps + 16, pos + 4);
             var nv = bayan_json_v_null_a(a);
             if (nv == 0) { _jp_set_err(ps, "out of memory building null", pos); }
@@ -1692,12 +1740,14 @@ fn _jp_parse_value(ps): i64 {
 fn _jp_parse_array_a(a, ps): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
-    if (load8(buf + load64(ps + 16)) != 91) { _jp_set_err(ps, "expected '['", load64(ps + 16)); return 0; }
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
+    if (bs[load64(ps + 16)] != 91) { _jp_set_err(ps, "expected '['", load64(ps + 16)); return 0; }
     store64(ps + 16, load64(ps + 16) + 1);
     var arr = bayan_json_v_arr_new_a(a);
     if (arr == 0) { _jp_set_err(ps, "out of memory in array", load64(ps + 16)); return 0; }
     _jp_skip_ws(ps);
-    if (load64(ps + 16) < len && load8(buf + load64(ps + 16)) == 93) {
+    if (load64(ps + 16) < len && bs[load64(ps + 16)] == 93) {
         store64(ps + 16, load64(ps + 16) + 1);
         return arr;
     }
@@ -1709,7 +1759,7 @@ fn _jp_parse_array_a(a, ps): i64 {
         }
         _jp_skip_ws(ps);
         if (load64(ps + 16) >= len) { _jp_set_err(ps, "unterminated array", load64(ps + 16)); return 0; }
-        var c = load8(buf + load64(ps + 16));
+        var c = bs[load64(ps + 16)];
         if (c == 44) { store64(ps + 16, load64(ps + 16) + 1); _jp_skip_ws(ps); }
         elif (c == 93) { store64(ps + 16, load64(ps + 16) + 1); return arr; }
         else { _jp_set_err(ps, "expected ',' or ']'", load64(ps + 16)); return 0; }
@@ -1726,12 +1776,14 @@ fn _jp_parse_array(ps): i64 {
 fn _jp_parse_object_a(a, ps): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
-    if (load8(buf + load64(ps + 16)) != 123) { _jp_set_err(ps, "expected '{'", load64(ps + 16)); return 0; }
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
+    if (bs[load64(ps + 16)] != 123) { _jp_set_err(ps, "expected '{'", load64(ps + 16)); return 0; }
     store64(ps + 16, load64(ps + 16) + 1);
     var obj = bayan_json_v_obj_new_a(a);
     if (obj == 0) { _jp_set_err(ps, "out of memory in object", load64(ps + 16)); return 0; }
     _jp_skip_ws(ps);
-    if (load64(ps + 16) < len && load8(buf + load64(ps + 16)) == 125) {
+    if (load64(ps + 16) < len && bs[load64(ps + 16)] == 125) {
         store64(ps + 16, load64(ps + 16) + 1);
         return obj;
     }
@@ -1748,7 +1800,7 @@ fn _jp_parse_object_a(a, ps): i64 {
         if (fresh < 0) { _jp_set_err(ps, "out of memory in object", kpos); return 0; }
         _jp_skip_ws(ps);
         if (load64(ps + 16) >= len) { _jp_set_err(ps, "unterminated object", load64(ps + 16)); return 0; }
-        if (load8(buf + load64(ps + 16)) != 58) {
+        if (bs[load64(ps + 16)] != 58) {
             _jp_set_err(ps, "expected ':' after key", load64(ps + 16)); return 0;
         }
         store64(ps + 16, load64(ps + 16) + 1);
@@ -1760,7 +1812,7 @@ fn _jp_parse_object_a(a, ps): i64 {
         }
         _jp_skip_ws(ps);
         if (load64(ps + 16) >= len) { _jp_set_err(ps, "unterminated object", load64(ps + 16)); return 0; }
-        var c = load8(buf + load64(ps + 16));
+        var c = bs[load64(ps + 16)];
         if (c == 44) { store64(ps + 16, load64(ps + 16) + 1); }
         elif (c == 125) { store64(ps + 16, load64(ps + 16) + 1); _jk_free(&ks); return obj; }
         else { _jp_set_err(ps, "expected ',' or '}'", load64(ps + 16)); return 0; }
@@ -2218,12 +2270,14 @@ fn _js_parse_number(ps, h): i64 {
 fn _js_parse_array(ps, h): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
-    if (load8(buf + load64(ps + 16)) != 91) { _js_emit_error(ps, h, "expected '['"); return 0 - 1; }
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
+    if (bs[load64(ps + 16)] != 91) { _js_emit_error(ps, h, "expected '['"); return 0 - 1; }
     store64(ps + 16, load64(ps + 16) + 1);
     var fp_s = _js_cb(h, JS_EV_ARRAY_START);
     if (fp_s != 0) { fncall1(fp_s, _js_ctx(h)); }
     _jp_skip_ws(ps);
-    if (load64(ps + 16) < len && load8(buf + load64(ps + 16)) == 93) {
+    if (load64(ps + 16) < len && bs[load64(ps + 16)] == 93) {
         store64(ps + 16, load64(ps + 16) + 1);
         var fp_e = _js_cb(h, JS_EV_ARRAY_END);
         if (fp_e != 0) { fncall1(fp_e, _js_ctx(h)); }
@@ -2233,7 +2287,7 @@ fn _js_parse_array(ps, h): i64 {
         if (_js_parse_value(ps, h) != 0) { return 0 - 1; }
         _jp_skip_ws(ps);
         if (load64(ps + 16) >= len) { _js_emit_error(ps, h, "unterminated array"); return 0 - 1; }
-        var c = load8(buf + load64(ps + 16));
+        var c = bs[load64(ps + 16)];
         if (c == 44) { store64(ps + 16, load64(ps + 16) + 1); _jp_skip_ws(ps); }
         elif (c == 93) {
             store64(ps + 16, load64(ps + 16) + 1);
@@ -2248,12 +2302,14 @@ fn _js_parse_array(ps, h): i64 {
 fn _js_parse_object(ps, h): i64 {
     var buf = load64(ps);
     var len = load64(ps + 8);
-    if (load8(buf + load64(ps + 16)) != 123) { _js_emit_error(ps, h, "expected '{'"); return 0 - 1; }
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
+    if (bs[load64(ps + 16)] != 123) { _js_emit_error(ps, h, "expected '{'"); return 0 - 1; }
     store64(ps + 16, load64(ps + 16) + 1);
     var fp_s = _js_cb(h, JS_EV_OBJECT_START);
     if (fp_s != 0) { fncall1(fp_s, _js_ctx(h)); }
     _jp_skip_ws(ps);
-    if (load64(ps + 16) < len && load8(buf + load64(ps + 16)) == 125) {
+    if (load64(ps + 16) < len && bs[load64(ps + 16)] == 125) {
         store64(ps + 16, load64(ps + 16) + 1);
         var fp_e = _js_cb(h, JS_EV_OBJECT_END);
         if (fp_e != 0) { fncall1(fp_e, _js_ctx(h)); }
@@ -2278,12 +2334,12 @@ fn _js_parse_object(ps, h): i64 {
         if (fp_k != 0) { fncall2(fp_k, _js_ctx(h), k); }
         _jp_skip_ws(ps);
         if (load64(ps + 16) >= len) { _js_emit_error(ps, h, "unterminated object"); return 0 - 1; }
-        if (load8(buf + load64(ps + 16)) != 58) { _js_emit_error(ps, h, "expected ':' after key"); return 0 - 1; }
+        if (bs[load64(ps + 16)] != 58) { _js_emit_error(ps, h, "expected ':' after key"); return 0 - 1; }
         store64(ps + 16, load64(ps + 16) + 1);
         if (_js_parse_value(ps, h) != 0) { return 0 - 1; }
         _jp_skip_ws(ps);
         if (load64(ps + 16) >= len) { _js_emit_error(ps, h, "unterminated object"); return 0 - 1; }
-        var c = load8(buf + load64(ps + 16));
+        var c = bs[load64(ps + 16)];
         if (c == 44) { store64(ps + 16, load64(ps + 16) + 1); }
         elif (c == 125) {
             store64(ps + 16, load64(ps + 16) + 1);
@@ -2300,9 +2356,11 @@ fn _js_parse_value(ps, h): i64 {
     _jp_skip_ws(ps);
     var buf = load64(ps);
     var len = load64(ps + 8);
+    var bs: [u8] = 0;
+    slice_set(&bs, buf, len);
     var pos = load64(ps + 16);
     if (pos >= len) { _js_emit_error(ps, h, "unexpected EOF"); return 0 - 1; }
-    var c = load8(buf + pos);
+    var c = bs[pos];
     if (c == 123 || c == 91) {
         # Same depth bound as _jp_parse_value — the streaming descent recurses
         # through _js_parse_array/_js_parse_object identically.
@@ -2323,7 +2381,7 @@ fn _js_parse_value(ps, h): i64 {
         return 0;
     }
     if (c == 116) {
-        if (pos + 3 < len && memeq(buf + pos + 1, "rue", 3) == 1) {
+        if (pos + 3 < len && _jp_word(buf, len, pos + 1, "rue", 3) == 1) {
             store64(ps + 16, pos + 4);
             var fp_b = _js_cb(h, JS_EV_BOOL);
             if (fp_b != 0) { fncall2(fp_b, _js_ctx(h), 1); }
@@ -2333,7 +2391,7 @@ fn _js_parse_value(ps, h): i64 {
         return 0 - 1;
     }
     if (c == 102) {
-        if (pos + 4 < len && memeq(buf + pos + 1, "alse", 4) == 1) {
+        if (pos + 4 < len && _jp_word(buf, len, pos + 1, "alse", 4) == 1) {
             store64(ps + 16, pos + 5);
             var fp_b = _js_cb(h, JS_EV_BOOL);
             if (fp_b != 0) { fncall2(fp_b, _js_ctx(h), 0); }
@@ -2343,7 +2401,7 @@ fn _js_parse_value(ps, h): i64 {
         return 0 - 1;
     }
     if (c == 110) {
-        if (pos + 3 < len && memeq(buf + pos + 1, "ull", 3) == 1) {
+        if (pos + 3 < len && _jp_word(buf, len, pos + 1, "ull", 3) == 1) {
             store64(ps + 16, pos + 4);
             var fp_n = _js_cb(h, JS_EV_NULL);
             if (fp_n != 0) { fncall1(fp_n, _js_ctx(h)); }

@@ -18,6 +18,8 @@ output = "bayan"
 # stdlib auto-prepend list — consumers of lib/bayan.cyr must include it.
 # `math` (1.5.14): bayan_f64_parse delegates to its f64_parse_n, so a
 # consumer's hand-written include list needs lib/math.cyr before bayan.
+# `slice` (1.11.1): json's parsers read the document through bounds-checked
+# slices (cyrius 6.7.18 D1), so lib/slice.cyr comes before bayan too.
 # `unicode` (1.9.0): markdown's emphasis rules need the general category of
 # the characters around a delimiter (unicode_category) and its link labels
 # match under full case folding (unicode_fold), so lib/unicode/categories.cyr
@@ -27,7 +29,7 @@ output = "bayan"
 [deps]
 stdlib = [
     "string", "fmt", "alloc", "io", "vec", "str", "syscalls",
-    "assert", "bench", "result", "fnptr", "tagged", "atomic", "math",
+    "assert", "bench", "result", "fnptr", "tagged", "atomic", "math", "slice",
     "unicode/_decode", "unicode/categories", "unicode/_categories_data",
     "unicode/casefold", "unicode/_casefold_data",
 ]

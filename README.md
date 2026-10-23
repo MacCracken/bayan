@@ -91,6 +91,12 @@ bundle and the json / yaml sublibs; the others do not), and must have it
 vendored — the `.deps` sidecars of those three name `math`, so `cyrius deps`
 does that.
 
+⚠ **From 1.11.1 bayan needs stdlib `slice` too.** json's parsers read the
+document through bounds-checked slices, so the same hand-written list must
+include **`lib/slice.cyr`** before `lib/bayan.cyr` (the full bundle and the
+json / yaml / toml-tree sublibs, which carry json); their `.deps` sidecars and
+`# Requires` blocks name it.
+
 ### PDF compression is opt-in
 
 `bayan_pdf_*` does **not** depend on `lib/sankoch.cyr`. bayan folds into
