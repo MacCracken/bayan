@@ -5983,6 +5983,35 @@ tf_refuse_16 = 0;
 assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: RunLength's refused header holds no buffer");
 assert_eq(_tf_err_is("RunLengthDecode: out of memory wrapping the output"), 1, "pdf filter frees: (RunLength's, by name)");
 assert_eq(str_eq_cstr(_pdfz_rl_a(TFA, 0, tf_rl, 4), "AB"), 1, "pdf filter frees: (RunLength decodes)");
+# The predictors, over rows of two 8-bit samples: a PNG row is its filter type then "AB" (type 0
+# is None, 5 is not a type); TIFF Predictor 2's row is "AB" alone. /Predictor 1 is a borrowed
+# view with no buffer of its own, so only its header can be refused.
+var tf_png = alloc(8);
+store8(tf_png, 0);
+store8(tf_png + 1, 65);
+store8(tf_png + 2, 66);
+tf_mark = tf_n;
+tf_refuse_16 = 1;
+assert_eq(_pdfz_unpredict_a(TFA, 0, tf_png, 3, 12, 1, 8, 2), 0, "pdf filter frees: PNG with its header refused answers 0");
+tf_refuse_16 = 0;
+assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: PNG's refused header holds no buffer");
+assert_eq(_tf_err_is("PNG predictor: out of memory wrapping the output"), 1, "pdf filter frees: (PNG's, by name)");
+assert_eq(str_eq_cstr(_pdfz_unpredict_a(TFA, 0, tf_png, 3, 12, 1, 8, 2), "AB"), 1, "pdf filter frees: (PNG decodes)");
+store8(tf_png, 5);
+tf_mark = tf_n;
+assert_eq(_pdfz_unpredict_a(TFA, 0, tf_png, 3, 12, 1, 8, 2), 0, "pdf filter frees: PNG refuses filter type 5");
+assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: PNG's refused row holds no buffer");
+assert_eq(_tf_err_is("PNG predictor: row filter type is not one of 0 to 4"), 1, "pdf filter frees: (PNG's row, by name)");
+tf_mark = tf_n;
+tf_refuse_16 = 1;
+assert_eq(_pdfz_unpredict_a(TFA, 0, tf_png + 1, 2, 2, 1, 8, 2), 0, "pdf filter frees: TIFF 2 with its header refused answers 0");
+tf_refuse_16 = 0;
+assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: TIFF 2's refused header holds no buffer");
+assert_eq(_tf_err_is("TIFF Predictor 2: out of memory wrapping the output"), 1, "pdf filter frees: (TIFF 2's, by name)");
+tf_refuse_16 = 1;
+assert_eq(_pdfz_unpredict_a(TFA, 0, tf_png + 1, 2, 1, 1, 8, 2), 0, "pdf filter frees: /Predictor 1 with its header refused answers 0");
+tf_refuse_16 = 0;
+assert_eq(_tf_err_is("predictor: out of memory wrapping the output"), 1, "pdf filter frees: (/Predictor 1's, by name)");
 assert_lt(tf_n, 4096, "pdf filter frees: (TFA listed every block it handed out)");
 
 var r = assert_summary();

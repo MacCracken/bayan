@@ -2783,8 +2783,11 @@ fn _pdfz_unpredict_a(a, doc, data, len, parms_pred, parms_colors, parms_bpc, par
         # A borrowed view, deliberately: /Predictor 1 is the identity and
         # copying a multi-megabyte content stream to say so is pure waste. The
         # view's lifetime is the source buffer's, which is already the rule for
-        # every Str this reader hands back.
-        return str_new_a(a, data, n);
+        # every Str this reader hands back. A refused header is named, as
+        # every refusal here is. CHANGELOG [1.11.1]
+        var view = str_new_a(a, data, n);
+        if (view == 0) { _pdfz_err(doc, "predictor: out of memory wrapping the output", 0 - 1); }
+        return view;
     }
 
     # Validate BEFORE any multiply. colors * bpc is at most 32 * 16 == 512, and
@@ -2858,7 +2861,7 @@ fn _pdfz_unpredict_a(a, doc, data, len, parms_pred, parms_colors, parms_bpc, par
             r = r + 1;
         }
         store8(tout + n, 0);
-        return str_new_a(a, tout, n);
+        return _pdfz_out_a(a, doc, tout, n, "TIFF Predictor 2: out of memory wrapping the output");
     }
 
     if (parms_pred < 10) {
@@ -2893,14 +2896,13 @@ fn _pdfz_unpredict_a(a, doc, data, len, parms_pred, parms_colors, parms_bpc, par
         var drow = out + row * rowlen;
         memcpy(drow, srow + 1, rowlen);
         if (_pdfz_png_row(prev, drow, rowlen, bpp, load8(srow)) != 0) {
-            _pdfz_err(doc, "PNG predictor: row filter type is not one of 0 to 4", row * stride);
-            return 0;
+            return _pdfz_fail_a(a, doc, out, "PNG predictor: row filter type is not one of 0 to 4", row * stride);
         }
         prev = drow;
         row = row + 1;
     }
     store8(out + nrows * rowlen, 0);
-    return str_new_a(a, out, nrows * rowlen);
+    return _pdfz_out_a(a, doc, out, nrows * rowlen, "PNG predictor: out of memory wrapping the output");
 }
 
 # === _pdfl_ — the PDF lexer ==================================================
