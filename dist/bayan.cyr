@@ -13,6 +13,7 @@ include "lib/io.cyr"
 include "lib/result.cyr"
 include "lib/atomic.cyr"
 include "lib/math.cyr"
+include "lib/hashseed.cyr"
 include "lib/slice.cyr"
 include "lib/fmt.cyr"
 include "lib/fnptr.cyr"
@@ -4815,7 +4816,8 @@ fn bayan_f64_from_json(s): i64 { return bayan_f64_parse(s, 2147483647); }
 # Usage: include "lib/bayan.cyr" (full bundle) or "lib/bayan-json.cyr" (sublib).
 #        `lib/json.cyr` was the pre-carve stdlib module and no longer ships —
 #        this content moved into bayan at 1.0.0 / cyrius 6.1.25.
-# Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, io.cyr, slice.cyr (1.11.1)
+# Requires: string.cyr, alloc.cyr, str.cyr, vec.cyr, fmt.cyr, io.cyr, slice.cyr (1.11.1),
+#           hashseed.cyr (1.11.1: the duplicate-key set's per-process hash seed)
 # Internally includes: fnptr.cyr (for streaming-parser fncallN dispatch)
 #
 # THE PARSERS READ THROUGH SLICES (1.11.1; cyrius 6.7.18 D1, the user's
@@ -4953,17 +4955,21 @@ fn _jk_init(ks, a): i64 {
     return 0;
 }
 
-# FNV-1a over the key bytes, then a multiply and a shift so the low bits, which
-# pick the slot, depend on every byte.
+# FNV-1a over the key bytes from a basis seeded per process, then hashseed's
+# finalizer, so every bit of the slot depends on the whole key AND the seed. The
+# keys are a peer's: with published constants alone (1.11.1 as first written) a
+# peer precomputed, offline and once, keys sharing a slot, and each insert walked
+# every key before it (10,000 of them, 147 KB: 309 ms a parse, quadratic from
+# there, against 6 ms) — the hash flooding lib/hashseed.cyr closed for the
+# stdlib's maps. Seeding the basis alone would not do: its header says why.
 fn _jk_hash(p, n): i64 {
-    var h = 0xCBF29CE484222325;
+    var h = 0xCBF29CE484222325 ^ _hm_seed_get();
     var i = 0;
     while (i < n) {
         h = (h ^ load8(p + i)) * 0x100000001B3;
         i = i + 1;
     }
-    h = h * 0x9E3779B97F4A7C15;
-    return h ^ (h >> 29);
+    return _hm_mix(h);
 }
 
 # Put {h, p, n} into the table `slots` of mask + 1 slots, which has room.

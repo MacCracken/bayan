@@ -9,6 +9,7 @@ io
 result
 atomic
 math
+hashseed
 slice
 fmt
 fnptr

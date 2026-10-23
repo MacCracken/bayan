@@ -3,6 +3,7 @@
 atomic
 math
 alloc
+hashseed
 string
 slice
 vec

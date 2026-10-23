@@ -30,6 +30,8 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
 >   hand-written include list adds `lib/slice.cyr` before bayan (the full bundle and the json,
 >   yaml and toml-tree sublibs; their `.deps` and `# Requires` name it). A read past the input
 >   is "slice bounds violation" and exit 134. JSON parsing costs about 1.5x what it did.
+> - **bayan needs stdlib `hashseed`** for the same four (`.deps` and `# Requires` name it):
+>   json's duplicate-key set hashes a peer's keys with the stdlib's per-process seed.
 > - **PDF:** a stream that failed to decode stays failed in its document, so install the inflate
 >   hook before asking for a stream's bytes; every inflate attempt counts against the 512 MiB
 >   per-document budget, not only a success; and the page content handed out (and so scanned by
@@ -69,7 +71,11 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   most readers, so a validating bayan component and a last-wins reader disagreed about
   `{"role":"user","role":"admin"}`. A per-object key set (`_jk_*`: 32 keys in place, no
   allocation; past that a hash table) refuses one in O(1). `bayan_json_parse`'s header now says
-  its lookups compare raw keys and must not decide an allowlist.
+  its lookups compare raw keys and must not decide an allowlist. The table's hash takes the
+  stdlib's per-process seed and finalizer (`lib/hashseed.cyr`): unseeded, keys precomputed once
+  from its published constants to share a slot made every JSON parser, and yaml's mappings,
+  quadratic again (10,000 keys, 147 KB: 309 ms against 6 ms). Row: `tests/bayan.tcyr` "the key
+  set's hash is seeded per process".
 - **The base64 decoders accepted invalid and non-canonical input** (Finding 18): `QQ==QUFB`
   gave `41 00 00 41 41 41`, `====` one `00`, `QR==` what `QQ==` gives, base64url's `QUFBQ`
   `41 41 41`. One core now decodes both alphabets, refusing each by name, without the per-call
@@ -97,7 +103,7 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   corpus; its generator now writes distinct keys.
 - `tests/parse_scaling.cyr` (new, a CI step on x86_64 and aarch64): yaml mapping keys, the json
   tree, flat and stream parsers' object keys and flat toml dotted keys must cost linearly.
-- `tests/bayan.tcyr` +88 (1,987 → 2,075), `tests/pdf_flate.tcyr` +24 (19 → 43). The rows that
+- `tests/bayan.tcyr` +91 (1,987 → 2,078), `tests/pdf_flate.tcyr` +24 (19 → 43). The rows that
   leaned on an accepted duplicate key now build their repeats by hand.
 
 Public API: 1 function added (`bayan_base64_last_error`), none removed or deprecated.
