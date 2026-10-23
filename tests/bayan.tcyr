@@ -772,7 +772,10 @@ var tf_doc = bayan_toml_parse(tf_src);
 store64(tf_d, tf_oa);
 store64(tf_d + 16, tf_of);
 assert_eq(tf_foreign, 0, "toml dot index: no free of a block the allocator never handed out");
-assert_gt(tf_freed, 0, "toml dot index: the root's index is freed when [h] moves the scope");
+# Two indexes were built (20 tables under the root, 12 under [h]; neither reaches half of the
+# first table's 64 slots, so neither is rebuilt): the root's is freed when [h] moves the scope,
+# and [h]'s when the parse returns. That one used to outlive the parse.
+assert_eq(tf_freed, 2, "toml dot index: every index built is freed, the last when the parse returns");
 assert_eq(vec_len(tf_doc), 1 + 20 + 1 + 12, "toml dot index: and the parse under a freeing allocator is whole");
 assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(tf_doc, 33)), "h.e11"), 1,
   "toml dot index: (its last table named as the walk would)");

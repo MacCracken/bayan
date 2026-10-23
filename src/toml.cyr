@@ -1337,6 +1337,9 @@ fn bayan_toml_parse(src): i64 {
             }
         }
     }
+    # The index is the parse's scratch: the last header's goes back too, not
+    # only those a later header dropped. CHANGELOG [1.11.1]
+    _toml_dot_reset_a(a, &ix);
     return sections;
 }
 
