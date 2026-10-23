@@ -1,12 +1,14 @@
-# tests/parse_scaling.cyr — the json and yaml parsers' cost must grow with their input, not with its
-# square (1.11.1).
+# tests/parse_scaling.cyr — the json, yaml and flat toml parsers' cost must grow with their input,
+# not with its square (1.11.1).
 #
 # Each of these parsers has to refuse a duplicate key on every key it reads. Done by walking the
 # object's keys, that is O(n) a key and O(n^2) a document: yaml's mapping parser did exactly that
 # until 1.11.1, and 40,000 keys (480 KB) took 14.4 s. json's three parsers refuse duplicates from
 # 1.11.1 through a key set (src/json.cyr, "Duplicate object keys") that answers in O(1), and so
-# does yaml now. A wrong answer cannot show that the set is gone or broken, only the cost can, so
-# it is checked here by tests/toml_scaling.cyr's method.
+# does yaml now. The flat toml parser found a dotted key's table by walking every table opened
+# since the header (20,000 dotted keys, 300 KB, took 4.0 s) and indexes them by name from 1.11.1.
+# A wrong answer cannot show that a set or an index is gone or broken, only the cost can, so it is
+# checked here by tests/toml_scaling.cyr's method.
 #
 # Each row times one family at two sizes, eight times apart, in the same process: the FASTEST of
 # several runs at each, since load can slow a run down but never speed one up. The row's figure is
@@ -34,6 +36,7 @@ include "lib/chrono.cyr"
 include "src/dtoa.cyr"
 include "src/json.cyr"
 include "src/yaml.cyr"
+include "src/toml.cyr"
 
 var LIMIT10 = 30;       # the limit, x10: 3.0
 var ROUNDS = 3;
@@ -62,6 +65,8 @@ fn build(f, k): i64 {
     var i = 0;
     if (f == 0) {                       # yaml: one mapping of k keys
         while (i < k) { n = put(n, "k"); n = put_int(n, 1000000 + i); n = put(n, ": 1\n"); i = i + 1; }
+    } elif (f == 4) {                   # flat toml: k dotted keys, each its own table
+        while (i < k) { n = put(n, "k"); n = put_int(n, 1000000 + i); n = put(n, ".x = 1\n"); i = i + 1; }
     } else {                            # json: one object of k keys
         n = put(n, "{");
         while (i < k) {
@@ -81,6 +86,7 @@ fn parse(f, n): i64 {
     if (f == 0) { return bayan_yaml_parse_buf(g_buf, n) != 0; }
     if (f == 1) { return bayan_json_v_parse_buf(g_buf, n) != 0; }
     if (f == 2) { return bayan_json_parse(str_new(g_buf, n)) != 0; }
+    if (f == 4) { return bayan_toml_parse(str_new(g_buf, n)) != 0; }
     return bayan_json_stream_parse(g_buf, n, g_h) == 0;
 }
 
@@ -107,7 +113,7 @@ fn best(f, n): i64 {
 # One measurement of family f: 1 when over the limit.
 fn attempt(f, label: cstring, k1, k2): i64 {
     var fb = f;
-    if (fb > 1) { fb = 1; }
+    if (fb == 2 || fb == 3) { fb = 1; }
     var n1 = build(fb, k1);
     var t1 = best(f, n1);
     var n2 = build(fb, k2);
@@ -146,6 +152,7 @@ fn main(): i64 {
     slow = slow + row(1, "json tree: keys in one object     ", 4000, 32000);
     slow = slow + row(2, "json flat: keys in one object     ", 4000, 32000);
     slow = slow + row(3, "json stream: keys in one object   ", 4000, 32000);
+    slow = slow + row(4, "flat toml: dotted keys            ", 2000, 16000);
     return slow;
 }
 

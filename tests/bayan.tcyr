@@ -664,6 +664,38 @@ assert_eq(str_eq_cstr(bayan_toml_get_by_cstr(bayan_toml_section_pairs(vec_get(ba
 var dk3 = bayan_toml_parse(str_from("a.\"b c\".d = 9\n"));
 assert_eq(vec_len(bayan_toml_get_sections_by_cstr(dk3, "a.b c")), 1, "toml: a quoted dotted segment is unquoted in the table name");
 
+test_group("toml: dotted keys past the walk find their tables through the index (1.11.1)");
+# Past _TOML_DOT_WALK (8) tables under one header, a dotted key's table is found by name in an
+# index, not by a walk (tests/parse_scaling.cyr has the cost). The answers are the walk's: a
+# second key on a dotted table joins it, a header drops the index, and a dotted key under a
+# second [[t]] makes a new table, never the first [[t]]'s.
+var td_sb = str_builder_new();
+var td_i = 0;
+while (td_i < 20) {
+    str_builder_add_cstr(td_sb, "d");
+    str_builder_add_int(td_sb, td_i);
+    str_builder_add_cstr(td_sb, ".x = 1\n");
+    td_i = td_i + 1;
+}
+str_builder_add_cstr(td_sb, "d3.y = 2\nd17.y = 3\n[[t]]\n");
+td_i = 0;
+while (td_i < 12) {
+    str_builder_add_cstr(td_sb, "e");
+    str_builder_add_int(td_sb, td_i);
+    str_builder_add_cstr(td_sb, ".x = 1\n");
+    td_i = td_i + 1;
+}
+str_builder_add_cstr(td_sb, "[[t]]\ne0.x = 5\ne11.x = 6\ne11.y = 7\n");
+var td = bayan_toml_parse(str_builder_build(td_sb));
+assert_eq(vec_len(td), 1 + 20 + 1 + 12 + 1 + 2, "toml dot index: one section per table, no repeats");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 4))), 2, "toml dot index: d3.y joins d3 (found in the index)");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 18))), 2, "toml dot index: d17.y joins d17");
+assert_eq(str_eq_cstr(bayan_toml_section_name(vec_get(td, 35)), "t.e0"), 1,
+  "toml dot index: under the second [[t]], e0 is a new table");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 35))), 1, "toml dot index: (its own pair only)");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 36))), 2, "toml dot index: and e11 holds x and y");
+assert_eq(vec_len(bayan_toml_section_pairs(vec_get(td, 33))), 1, "toml dot index: the first [[t]]'s e11 kept one pair");
+
 test_group("toml: inline tables (1.5.4)");
 # `k = { a = 1 }` was captured verbatim with no accessor and was not listed
 # as a subset limit anywhere a caller reads — so a consumer needing one had

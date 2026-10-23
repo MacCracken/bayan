@@ -349,8 +349,9 @@ jobs:
 
       # And for the duplicate-key checks (1.11.1): yaml's mapping parser walked every key before
       # each new one (O(n^2): 40,000 keys took 14.4 s), and json's three parsers refuse
-      # duplicates from 1.11.1 through a key set that must stay O(1) a key.
-      - name: yaml and json cost grows linearly in an object's keys
+      # duplicates from 1.11.1 through a key set that must stay O(1) a key. The flat toml
+      # parser's dotted keys walked every table since the header (20,000 took 4.0 s).
+      - name: yaml, json and flat toml cost grows linearly in a table's keys
         run: |
           set -euo pipefail
           ./scripts/no-warnings.sh cyrius build tests/parse_scaling.cyr build/parse-scaling
@@ -450,8 +451,8 @@ jobs:
           ./scripts/no-warnings.sh cyrius build --aarch64 tests/toml_scaling.cyr build/toml-scaling-a64
           qemu-aarch64 build/toml-scaling-a64
 
-      # The aarch64 half of the x86 job's yaml and json cost check (1.11.1).
-      - name: yaml and json cost grows linearly in an object's keys
+      # The aarch64 half of the x86 job's yaml, json and flat toml cost check (1.11.1).
+      - name: yaml, json and flat toml cost grows linearly in a table's keys
         run: |
           set -euo pipefail
           ./scripts/no-warnings.sh cyrius build --aarch64 tests/parse_scaling.cyr build/parse-scaling-a64

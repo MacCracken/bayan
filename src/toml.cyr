@@ -1085,6 +1085,102 @@ fn _toml_section_find(sections, from, name): i64 {
     return 0;
 }
 
+# --- The dotted-key table index (1.11.1) ------------------------------------
+#
+# A dotted key finds its table among the sections opened since the current
+# header: _toml_section_find, a str_eq walk of all of them, once per dotted key.
+# A header with n distinct dotted prefixes under it cost O(n^2): 20,000 keys (300
+# KB) took 4.0 s where the tree parser takes 0.03 s. The walk stays for the first
+# _TOML_DOT_WALK tables of a header (every document bayan had seen, allocating
+# nothing new); past that the tables since the header are indexed by name in an
+# open-addressing table, dropped when the next header moves the scope.
+#   ix: +0 slots (0 while walking; then cap slots of {hash, section})  +8 cap  +16 n
+const _TOML_DOT_WALK = 8;
+
+fn _toml_name_hash(name: Str): i64 {
+    var p = str_data(name);
+    var n = str_len(name);
+    var h = 0xCBF29CE484222325;
+    var i = 0;
+    while (i < n) {
+        h = (h ^ load8(p + i)) * 0x100000001B3;
+        i = i + 1;
+    }
+    h = h * 0x9E3779B97F4A7C15;
+    return h ^ (h >> 29);
+}
+
+fn _toml_dot_put(slots, mask, h, sec): i64 {
+    var i = h & mask;
+    while (load64(slots + i * 16 + 8) != 0) { i = (i + 1) & mask; }
+    store64(slots + i * 16, h);
+    store64(slots + i * 16 + 8, sec);
+    return 0;
+}
+
+# Index the sections[from..) by name into a fresh table of `cap` slots, replacing
+# ix's. 0, or -1 when the allocation is refused.
+fn _toml_dot_build_a(a, ix, sections, from, cap): i64 {
+    var t = alloc_via(a, cap * 16);
+    if (t == 0) { return 0 - 1; }
+    memset(t, 0, cap * 16);
+    var i = from;
+    var sn = vec_len(sections);
+    while (i < sn) {
+        var sec = vec_get(sections, i);
+        _toml_dot_put(t, cap - 1, _toml_name_hash(bayan_toml_section_name(sec)), sec);
+        i = i + 1;
+    }
+    if (load64(ix) != 0) { free_via(a, load64(ix)); }
+    store64(ix, t);
+    store64(ix + 8, cap);
+    store64(ix + 16, sn - from);
+    return 0;
+}
+
+# Forget the index: the next header has moved the scope.
+fn _toml_dot_reset_a(a, ix): i64 {
+    if (load64(ix) != 0) { free_via(a, load64(ix)); }
+    store64(ix, 0);
+    store64(ix + 8, 0);
+    store64(ix + 16, 0);
+    return 0;
+}
+
+# The section named `name` among sections[from..), or 0 if absent; -1 when the
+# index's allocation is refused.
+fn _toml_dot_find_a(a, ix, sections, from, name): i64 {
+    if (load64(ix) == 0) {
+        if (vec_len(sections) - from <= _TOML_DOT_WALK) { return _toml_section_find(sections, from, name); }
+        if (_toml_dot_build_a(a, ix, sections, from, _TOML_DOT_WALK * 8) < 0) { return 0 - 1; }
+    }
+    var slots = load64(ix);
+    var mask = load64(ix + 8) - 1;
+    var h = _toml_name_hash(name);
+    var i = h & mask;
+    while (load64(slots + i * 16 + 8) != 0) {
+        var sec = load64(slots + i * 16 + 8);
+        if (load64(slots + i * 16) == h) {
+            if (str_eq(bayan_toml_section_name(sec), name) == 1) { return sec; }
+        }
+        i = (i + 1) & mask;
+    }
+    return 0;
+}
+
+# Add the section just pushed at the end of sections[from..) to the index, if
+# there is one, doubling it at half full. 0, or -1 when refused.
+fn _toml_dot_add_a(a, ix, sections, from): i64 {
+    if (load64(ix) == 0) { return 0; }
+    var cap = load64(ix + 8);
+    var n = load64(ix + 16);
+    if ((n + 1) * 2 > cap) { return _toml_dot_build_a(a, ix, sections, from, cap * 2); }
+    var sec = vec_get(sections, vec_len(sections) - 1);
+    _toml_dot_put(load64(ix), cap - 1, _toml_name_hash(bayan_toml_section_name(sec)), sec);
+    store64(ix + 16, n + 1);
+    return 0;
+}
+
 # Parse a TOML file into a vec of sections.
 # Each section has a name and a pairs vec; the ROOT table is always
 # sections[0], named "".
@@ -1126,8 +1222,11 @@ fn bayan_toml_parse(src): i64 {
 
     var cur = _toml_section_push_a(a, sections, str_from_a(a, ""));
     if (cur == 0) { return 0; }
-    # Dotted sub-tables of the current header live at index >= scope.
+    # Dotted sub-tables of the current header live at index >= scope, indexed
+    # by name in `ix` once there are more than _TOML_DOT_WALK of them.
     var scope = 1;
+    var ix: i64[3];
+    _toml_dot_reset_a(a, &ix);
 
     while (pos < slen) {
         var c = load8(data + pos);
@@ -1152,6 +1251,7 @@ fn bayan_toml_parse(src): i64 {
             cur = _toml_section_push_a(a, sections, _toml_join_parts_a(a, aparts, 0, vec_len(aparts)));
             if (cur == 0) { return 0; }
             scope = vec_len(sections);
+            _toml_dot_reset_a(a, &ix);
             # Skip to end of line (past `]]` and any trailing comment).
             while (pos < slen && load8(data + pos) != 10) { pos = pos + 1; }
         }
@@ -1169,6 +1269,7 @@ fn bayan_toml_parse(src): i64 {
             cur = _toml_section_push_a(a, sections, _toml_join_parts_a(a, hparts, 0, vec_len(hparts)));
             if (cur == 0) { return 0; }
             scope = vec_len(sections);
+            _toml_dot_reset_a(a, &ix);
             while (pos < slen && load8(data + pos) != 10) { pos = pos + 1; }
         }
 
@@ -1216,10 +1317,12 @@ fn bayan_toml_parse(src): i64 {
                             full = str_builder_build_a(a, jb);
                             if (full == 0) { return 0; }
                         }
-                        target = _toml_section_find(sections, scope, full);
+                        target = _toml_dot_find_a(a, &ix, sections, scope, full);
+                        if (target < 0) { return 0; }
                         if (target == 0) {
                             target = _toml_section_push_a(a, sections, full);
                             if (target == 0) { return 0; }
+                            if (_toml_dot_add_a(a, &ix, sections, scope) < 0) { return 0; }
                         }
                     }
                     var pr = bayan_toml_pair_new_kind_a(a, vec_get(kparts, nparts - 1), value, vkind);
