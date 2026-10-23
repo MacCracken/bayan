@@ -706,16 +706,16 @@ test_group("toml: the dotted-key index frees only what it built (1.11.1)");
 # for a freeing pair: every block handed out is listed, a free of a listed block scribbles it
 # (as reuse would) and counts it, and a free of anything else counts as foreign. _tf_dirty
 # first leaves a pattern where the parse's frame will be, as any earlier call can.
-var tf_ptr: i64[4096];
-var tf_size: i64[4096];
+var tf_ptr = alloc(4096 * 8);
+var tf_size = alloc(4096 * 8);
 var tf_n = 0;
 var tf_freed = 0;
 var tf_foreign = 0;
 fn _tf_alloc(state, size): i64 {
     var p = alloc(size);
     if (p != 0 && tf_n < 4096) {
-        store64(&tf_ptr + tf_n * 8, p);
-        store64(&tf_size + tf_n * 8, size);
+        store64(tf_ptr + tf_n * 8, p);
+        store64(tf_size + tf_n * 8, size);
         tf_n = tf_n + 1;
     }
     return p;
@@ -723,9 +723,9 @@ fn _tf_alloc(state, size): i64 {
 fn _tf_free(state, ptr): i64 {
     var i = 0;
     while (i < tf_n) {
-        if (load64(&tf_ptr + i * 8) == ptr) {
-            memset(ptr, 219, load64(&tf_size + i * 8));
-            store64(&tf_ptr + i * 8, 0);
+        if (load64(tf_ptr + i * 8) == ptr) {
+            memset(ptr, 219, load64(tf_size + i * 8));
+            store64(tf_ptr + i * 8, 0);
             tf_freed = tf_freed + 1;
             return 0;
         }
