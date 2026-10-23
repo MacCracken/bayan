@@ -5,11 +5,11 @@ alloc
 vec
 string
 str
+hashseed
 io
 result
 atomic
 math
-hashseed
 slice
 fmt
 fnptr

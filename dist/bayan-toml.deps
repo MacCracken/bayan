@@ -3,6 +3,7 @@
 alloc
 str
 vec
+hashseed
 string
 io
 result

@@ -15,7 +15,8 @@ that parsed now refuses, by name (the user's decisions at the audit): a duplicat
 parser (`bayan_json_parse` returns 0), a malformed or out-of-range number in the streaming parser and
 a leading zero in both, non-canonical base64 (new `bayan_base64_last_error()`). json's parsers read
 through bounds-checked slices (cyrius 6.7.18 D1), so ⚠ bayan needs stdlib `slice`, and its
-duplicate-key set hashes with the per-process seed, so ⚠ stdlib `hashseed` too. New harness
+duplicate-key set and both toml key indexes hash with the per-process seed, so ⚠ stdlib `hashseed`
+too (the flat toml sublib included). New harness
 `tests/json_parsers.fcyr`. Floor 6.7.9.
 
 Before it, **1.11.0** — a minor, the roadmap's 1.11.0 slot whole; pin unchanged at **6.7.16**.
@@ -446,7 +447,7 @@ this is mutation-verified.
 
 ## Tests
 
-- `tests/bayan.tcyr` — **2,126 asserts and 99 `#assert`s, green** @1.11.1 on x86_64 (1,987 @1.11.0, 1,889 @1.10.0, 1,781 @1.9.0, 1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
+- `tests/bayan.tcyr` — **2,134 asserts and 99 `#assert`s, green** @1.11.1 on x86_64 (1,987 @1.11.0, 1,889 @1.10.0, 1,781 @1.9.0, 1,656 @1.8.0, 1,611 @1.7.1, 1,601 @1.7.0, 1,553 @1.6.1 and 1.6.2, 1,514 @1.6.0, 1,489 @1.5.14, 1,476 @1.5.13, 1,460 @1.5.12, 1,472 @1.5.11 — 12 deprecated-lookup
   rows moved to `tests/deprecated_lookup.cyr` at 1.5.12 — 1,437 @1.5.10, 1,281 @1.5.9, 1,271 @1.5.8, 962 before the 1.5.8 alias rows). base64, u128, alias parity, the
   json value/streaming parsers and their depth caps, toml, yaml, the 1.3.0
   Str-entry dispatch regression, the 1.4.0 `_a` block, the 1.5.0 pdf block, the

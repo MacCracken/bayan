@@ -30,8 +30,9 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
 >   hand-written include list adds `lib/slice.cyr` before bayan (the full bundle and the json,
 >   yaml and toml-tree sublibs; their `.deps` and `# Requires` name it). A read past the input
 >   is "slice bounds violation" and exit 134. JSON parsing costs about 1.5x what it did.
-> - **bayan needs stdlib `hashseed`** for the same four (`.deps` and `# Requires` name it):
->   json's duplicate-key set hashes a peer's keys with the stdlib's per-process seed.
+> - **bayan needs stdlib `hashseed`** for the same four and the flat toml sublib (`.deps` and
+>   `# Requires` name it): json's duplicate-key set and both toml parsers' key indexes hash a
+>   peer's keys with the stdlib's per-process seed.
 > - **PDF:** a stream that failed to decode stays failed in its document, so install the inflate
 >   hook before asking for a stream's bytes; every inflate attempt counts against the 512 MiB
 >   per-document budget, not only a success; and the page content handed out (and so scanned by
@@ -108,6 +109,16 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   empty Flate output is a one-byte buffer of its own rather than a static `""` no allocator could
   free. Rows: `tests/bayan.tcyr` "a filter chain gives back each stage's output once the next has
   read it" and `tests/pdf_flate.tcyr` "an empty Flate stage is its own buffer".
+- **Both TOML parsers' key indexes hashed a peer's keys with published constants**, the unseeded
+  FNV-1a json's key set had: the flat parser's dotted-key table index (above) and the tree's one
+  key index (1.11.0), keyed by parent cell and key. Keys precomputed once to share a slot made
+  each dotted key's lookup, or each tree key's insert and duplicate check, walk every key before
+  it: 8,000 dotted keys (129 KB) took 140 ms in the flat parser against 6 ms, 8,000 keys of one
+  table (113 KB) 370 ms in the tree against 5.5 ms, quadratic from there. Not knowing the
+  parent's address did not protect the tree: it went in before a multiply, so a slot read only
+  the low bits of (FNV state ^ parent). Both hashes take the stdlib's per-process seed and
+  finalizer, as json's key set does. Rows: `tests/bayan.tcyr` "the dotted-key index's hash is
+  seeded per process" and (toml tree) "the key index's hash is seeded per process".
 
 ### Hardening
 
@@ -129,7 +140,7 @@ parser work. Pin unchanged at **6.7.16**; the floor stays 6.7.9.
   corpus; its generator now writes distinct keys.
 - `tests/parse_scaling.cyr` (new, a CI step on x86_64 and aarch64): yaml mapping keys, the json
   tree, flat and stream parsers' object keys and flat toml dotted keys must cost linearly.
-- `tests/bayan.tcyr` +139 (1,987 → 2,126), `tests/pdf_flate.tcyr` +42 (19 → 61). The rows that
+- `tests/bayan.tcyr` +147 (1,987 → 2,134), `tests/pdf_flate.tcyr` +42 (19 → 61). The rows that
   leaned on an accepted duplicate key now build their repeats by hand.
 
 Public API: 1 function added (`bayan_base64_last_error`), none removed or deprecated.
