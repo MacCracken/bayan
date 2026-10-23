@@ -2007,6 +2007,23 @@ fn _pdfz_err(doc, msg: cstring, pos): i64 {
     return 0;
 }
 
+# A decoder's refusal once its output buffer exists: `buf` goes back through
+# free_via, then the failure is recorded as _pdfz_err does. Always returns 0.
+# A refusal used to return with the buffer still held. CHANGELOG [1.11.1]
+fn _pdfz_fail_a(a, doc, buf, msg: cstring, pos): i64 {
+    free_via(a, buf);
+    return _pdfz_err(doc, msg, pos);
+}
+
+# A decoder's output `buf[0..n)` as a Str. A refused header gives `buf` back and
+# is recorded as `msg`; it used to keep the buffer and record nothing, so the
+# stream read "" with no error. CHANGELOG [1.11.1]
+fn _pdfz_out_a(a, doc, buf, n, msg: cstring): Str {
+    var s = str_new_a(a, buf, n);
+    if (s == 0) { _pdfz_fail_a(a, doc, buf, msg, 0 - 1); }
+    return s;
+}
+
 # --- the decompression budget ----------------------------------------------
 #
 # _PDF_MAX_INFLATE caps ONE stream; a zip bomb spreads itself over a thousand
@@ -2407,10 +2424,7 @@ fn _pdfz_ahx_a(a, doc, src, len): Str {
             hi = hi;                # whitespace is ignored, even mid-pair
         } else {
             var v = _pdfe_hexval(c);
-            if (v < 0) {
-                _pdfz_err(doc, "ASCIIHexDecode: byte is not a hex digit", i - 1);
-                return 0;
-            }
+            if (v < 0) { return _pdfz_fail_a(a, doc, out, "ASCIIHexDecode: byte is not a hex digit", i - 1); }
             if (hi < 0) {
                 hi = v;
             } else {
@@ -2426,7 +2440,7 @@ fn _pdfz_ahx_a(a, doc, src, len): Str {
         nout = nout + 1;
     }
     store8(out + nout, 0);
-    return str_new_a(a, out, nout);
+    return _pdfz_out_a(a, doc, out, nout, "ASCIIHexDecode: out of memory wrapping the output");
 }
 
 # --- ASCII85Decode ----------------------------------------------------------

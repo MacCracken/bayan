@@ -711,7 +711,12 @@ var tf_size = alloc(4096 * 8);
 var tf_n = 0;
 var tf_freed = 0;
 var tf_foreign = 0;
+var tf_refuse_16 = 0;           # 1: refuse the next 16-byte request (a Str header), once
 fn _tf_alloc(state, size): i64 {
+    if (tf_refuse_16 == 1 && size == 16) {
+        tf_refuse_16 = 0;
+        return 0;
+    }
     var p = alloc(size);
     if (p != 0 && tf_n < 4096) {
         store64(tf_ptr + tf_n * 8, p);
@@ -5901,5 +5906,41 @@ assert_eq(bayan_toml_count_by_cstr(fl_tr, 0), 0, "flat: toml count, null key -> 
 assert_eq(vec_len(bayan_toml_get_sections_by_str(0, str_from("item"))), 0, "flat: toml get_sections, null sections -> an empty vec");
 assert_eq(bayan_toml_get_array_by_str(fl_tr, 0), 0, "flat: toml get_array, null key -> 0");
 assert_eq(bayan_toml_get_inline_by_cstr(0, "tbl"), 0, "flat: toml get_inline, null pairs -> 0");
+
+test_group("pdf: a filter decoder's output buffer goes back on every refusal (1.11.1)");
+# The decoders bayan_pdf_stream_data_a runs allocate their output, then decode into it, and a
+# malformed byte or a refused Str header returned 0 with that buffer still held (the refused
+# header recorded no reason either). The default bump allocator frees nothing; TFA frees, through
+# the toml row's _tf_alloc / _tf_free, so a refusal must leave none of its blocks live.
+# tf_refuse_16 refuses the next 16-byte request: the header that follows the output buffer.
+var TFA = allocator_new(&_tf_alloc, &_bump_realloc, &_tf_free, &_bump_reset, 0);
+# Blocks TFA listed since `from` that are still live.
+fn _tf_live(from): i64 {
+    var k = 0;
+    var i = from;
+    while (i < tf_n) {
+        if (load64(tf_ptr + i * 8) != 0) { k = k + 1; }
+        i = i + 1;
+    }
+    return k;
+}
+# The last standalone decode's refusal is `msg`.
+fn _tf_err_is(msg): i64 {
+    if (bayan_pdf_last_error() == 0) { return 0; }
+    return str_eq_cstr(str_from(bayan_pdf_last_error()), msg);
+}
+var tf_mark = tf_n;
+assert_eq(str_len(_pdfz_ahx_a(TFA, 0, "4142>", 5)), 2, "pdf filter frees: AHx decodes");
+assert_eq(_tf_live(tf_mark), 2, "pdf filter frees: and its output holds a buffer and a header");
+tf_mark = tf_n;
+assert_eq(_pdfz_ahx_a(TFA, 0, "41G2>", 5), 0, "pdf filter frees: AHx refuses a byte that is not hex");
+assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: AHx's refused byte holds no buffer");
+tf_mark = tf_n;
+tf_refuse_16 = 1;
+assert_eq(_pdfz_ahx_a(TFA, 0, "4142>", 5), 0, "pdf filter frees: AHx with its header refused answers 0");
+assert_eq(_tf_live(tf_mark), 0, "pdf filter frees: AHx's refused header holds no buffer");
+assert_eq(_tf_err_is("ASCIIHexDecode: out of memory wrapping the output"), 1, "pdf filter frees: (AHx's, by name)");
+tf_refuse_16 = 0;
+assert_lt(tf_n, 4096, "pdf filter frees: (TFA listed every block it handed out)");
 
 var r = assert_summary();
