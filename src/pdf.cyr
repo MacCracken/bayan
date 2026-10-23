@@ -153,6 +153,7 @@ var _PDF_MAX_OBJS         = 2097152;     # 1 << 21 objects in one document
 var _PDF_MAX_INFLATE      = 67108864;    # 64 MiB, any single stream
 var _PDF_MAX_INFTOT       = 536870912;   # 512 MiB per document (bomb guard)
 var _PDF_MAX_WALK         = 1048576;     # page-tree node visits per document
+var _PDF_MAX_CONTENT      = 536870912;   # 512 MiB of page content per document (1.11.1)
 
 # === Flate hooks =============================================================
 #
@@ -4276,7 +4277,13 @@ enum PdfError {
 #                  numbers may be resolved. Growth is geometric, so capacity
 #                  runs ahead of size; conflating them would let a resolve
 #                  reach past the declared /Size.
-var _PDF_DOC_SIZE = 200;
+#   +200 contbud   remaining page-content bytes (1.11.1): every decoded content
+#                  stream bayan_pdf_page_content_a hands out — and so every byte
+#                  text extraction scans — is charged here. A decode is memoised,
+#                  so one 15 MB stream named by 128 page references cost one
+#                  inflate and 128 scans (11.6 s from a 15.8 KB file); the walk
+#                  allows 1M references, and only this bound holds by the bytes.
+var _PDF_DOC_SIZE = 208;
 
 # PdfPage (64) — one page, SHARED. The reader fills `dict`; the writer fills
 # `dict` + `content`. That sharing is what makes bayan_pdf_page_count /
@@ -4422,6 +4429,7 @@ fn _pdfe_doc_new_a(a, mode): i64 {
     _pdf_doc_gen = _pdf_doc_gen + 1;
     store64(d + 168, _pdf_doc_gen);
     store64(d + 192, _PDF_MAX_WALK);      # page-tree total-work budget
+    store64(d + 200, _PDF_MAX_CONTENT);   # page-content bytes handed out
     var objs = vec_new_a(a);
     if (objs == 0) { return 0; }
     # Object number 0 is permanently the free-list head and can never name an
@@ -6427,13 +6435,22 @@ fn bayan_pdf_stream_is_image(doc, st): bool {
 # page whose first stream ends `BT /F1 12 T` and whose second begins `f` is
 # malformed, while `...12 Tf` + `72 700 Td` concatenated without a separator
 # would silently read as the single token `Tf72`.
+#
+# Every byte handed out is charged to the document's page-content budget
+# (_PDF_MAX_CONTENT, PdfDoc +200; 1.11.1): once it is spent, a page answers ""
+# with "page content bytes exceed the per-document limit" recorded. A shared
+# stream decodes once, but each page naming it was scanned in full again.
 fn bayan_pdf_page_content_a(a, doc, pg): Str {
     if (_pdfe_magic(doc, 0 - 1) == 0) { return _pdfo_empty_bytes(); }
     if (pg == 0) { return _pdfo_empty_bytes(); }
     var d = load64(pg + 16);
     var c = _pdfp_resolve_d(doc, bayan_pdf_obj_dict_get(d, "Contents"), 0);
     if (c == 0) { return _pdfo_empty_bytes(); }
-    if (_pdfo_tag(c) == PTAG_STREAM) { return bayan_pdf_stream_data_a(a, doc, c); }
+    if (_pdfo_tag(c) == PTAG_STREAM) {
+        var one = bayan_pdf_stream_data_a(a, doc, c);
+        if (_pdfc_charge(doc, str_len(one)) == 0) { return _pdfo_empty_bytes(); }
+        return one;
+    }
     if (_pdfo_tag(c) != PTAG_ARR) {
         _pdfe_doc_err(doc, "page /Contents is neither a stream nor an array", 0 - 1);
         return _pdfo_empty_bytes();
@@ -6446,12 +6463,15 @@ fn bayan_pdf_page_content_a(a, doc, pg): Str {
     while (i < n) {
         var s = _pdfp_resolve_d(doc, vec_get(v, i), 0);
         if (_pdfo_tag(s) == PTAG_STREAM) {
+            var b = bayan_pdf_stream_data_a(a, doc, s);
+            # Charged BEFORE it is copied: an array naming one stream a million
+            # times is refused at the budget, not after building the whole join.
+            if (_pdfc_charge(doc, str_len(b) + 1) == 0) { return _pdfo_empty_bytes(); }
             if (i > 0) {
                 # A cstring literal is safe here precisely because it holds no
                 # NUL; the payload below never goes through add_cstr (G10).
                 str_builder_add_cstr_a(a, sb, "\n");
             }
-            var b = bayan_pdf_stream_data_a(a, doc, s);
             # str_builder_add_a takes a Str and is binary-safe end to end. A
             # decoded content stream contains NULs with near-certainty, so
             # str_builder_add_cstr here would truncate the page at the first
@@ -6463,6 +6483,19 @@ fn bayan_pdf_page_content_a(a, doc, pg): Str {
         i = i + 1;
     }
     return str_builder_build_a(a, sb);
+}
+
+# Charge `n` page-content bytes to `doc` (PdfDoc +200). 1 if allowed; 0 once
+# the budget is spent, with the refusal recorded.
+fn _pdfc_charge(doc, n): i64 {
+    var left = load64(doc + 200);
+    if (n > left) {
+        store64(doc + 200, 0);
+        _pdfe_doc_err(doc, "page content bytes exceed the per-document limit", 0 - 1);
+        return 0;
+    }
+    store64(doc + 200, left - n);
+    return 1;
 }
 
 # Page content on the default allocator.

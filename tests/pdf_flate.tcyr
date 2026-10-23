@@ -123,7 +123,10 @@ fn fb_pad10(sb, n): i64 {
 # A PDF of `npages` pages, each naming a 4-byte /FlateDecode stream. Objects 3,
 # 4, 5, ...: odd ones are streams, even ones pages. Mode 0: pages 4, 6, ... all
 # name stream 3. Mode 1: ONE page object (4) that /Kids repeats `npages` times.
-# Mode 2: page 4 + 2i names its own stream, 5 + 2i.
+# Mode 2: page 4 + 2i names its own stream, 5 + 2i. Mode 3: ONE page whose
+# /Contents array names stream 3 `npages` times. With fb_body set, each stream
+# is that text, unfiltered, instead.
+var fb_body = 0;
 fn fb_pdf(npages, mode): Str {
     var sb = str_builder_new();
     var offs = vec_new();
@@ -132,8 +135,10 @@ fn fb_pdf(npages, mode): Str {
     str_builder_add_cstr(sb, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
     vec_push(offs, load64(sb + 8));
     str_builder_add_cstr(sb, "2 0 obj\n<< /Type /Pages /Kids [");
+    var nkids = npages;
+    if (mode == 3) { nkids = 1; }
     var i = 0;
-    while (i < npages) {
+    while (i < nkids) {
         var kid = 4 + 2 * i;
         if (mode == 1) { kid = 4; }
         str_builder_add_int(sb, kid);
@@ -141,21 +146,34 @@ fn fb_pdf(npages, mode): Str {
         i = i + 1;
     }
     str_builder_add_cstr(sb, "] /Count ");
-    str_builder_add_int(sb, npages);
+    str_builder_add_int(sb, nkids);
     str_builder_add_cstr(sb, " >>\nendobj\n");
     var last = 2 + 2 * npages;
-    if (mode == 1) { last = 4; }
+    if (mode == 1 || mode == 3) { last = 4; }
     if (mode == 2) { last = last + 1; }
     var k = 3;
     while (k <= last) {
         vec_push(offs, load64(sb + 8));
         str_builder_add_int(sb, k);
-        if ((k & 1) == 1) {
+        if ((k & 1) == 1 && fb_body != 0) {
+            str_builder_add_cstr(sb, " 0 obj\n<< /Length ");
+            str_builder_add_int(sb, strlen(fb_body));
+            str_builder_add_cstr(sb, " >>\nstream\n");
+            str_builder_add_cstr(sb, fb_body);
+            str_builder_add_cstr(sb, "\nendstream\nendobj\n");
+        } elif ((k & 1) == 1) {
             str_builder_add_cstr(sb, " 0 obj\n<< /Length 4 /Filter /FlateDecode >>\nstream\nxxxx\nendstream\nendobj\n");
         } else {
             str_builder_add_cstr(sb, " 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ");
-            if (mode == 2) { str_builder_add_int(sb, k + 1); } else { str_builder_add_int(sb, 3); }
-            str_builder_add_cstr(sb, " 0 R >>\nendobj\n");
+            if (mode == 3) {
+                str_builder_add_cstr(sb, "[");
+                var j = 0;
+                while (j < npages) { str_builder_add_cstr(sb, "3 0 R "); j = j + 1; }
+                str_builder_add_cstr(sb, "] >>\nendobj\n");
+            } else {
+                if (mode == 2) { str_builder_add_int(sb, k + 1); } else { str_builder_add_int(sb, 3); }
+                str_builder_add_cstr(sb, " 0 R >>\nendobj\n");
+            }
         }
         k = k + 1;
     }
@@ -243,5 +261,60 @@ assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fb_none)),
     "decoded stream bytes exceed the per-document limit"), 1, "flate budget: by name");
 _PDF_MAX_INFTOT = fb_saved;
 bayan_pdf_set_inflate(&zlib_decompress);
+
+test_group("pdf: page content is charged to a per-document budget (1.11.1)");
+# The audit's second file: /Kids repeats one page 128 times, its /Contents a
+# 15 MB stream that decodes once and is cached, and each reference scanned all
+# of it again: 11.6 s of CPU from 15.8 KB, linear in references up to the
+# walk's 1M. Every content byte handed out is now charged to _PDF_MAX_CONTENT
+# (512 MiB). Here the budget is 10 pages' worth, and the page is 64 references.
+fb_body = "BT /F1 12 Tf 72 700 Td (budget) Tj ET";
+var fc_saved = _PDF_MAX_CONTENT;
+_PDF_MAX_CONTENT = strlen(fb_body) * 10;
+var fc_doc = bayan_pdf_parse(fb_pdf(64, 1));
+assert_eq(bayan_pdf_page_count(fc_doc), 64, "content budget: 64 references to one page walk");
+var fc_text = 0;
+var fc_i = 0;
+while (fc_i < 64) {
+    var fc_t = bayan_pdf_page_extract_text(fc_doc, bayan_pdf_page(fc_doc, fc_i));
+    if (str_contains_cstr(fc_t, "budget") == 1) { fc_text = fc_text + 1; }
+    fc_i = fc_i + 1;
+}
+assert_eq(fc_text, 10, "content budget: ten pages' worth is scanned, then every page is refused");
+# bayan_pdf_page_content is what is charged, and the refusal is named (the
+# extraction above recorded a font warning first).
+var fc_doc2 = bayan_pdf_parse(fb_pdf(64, 0));
+var fc_read = 0;
+fc_i = 0;
+while (fc_i < 64) {
+    var fc_c = bayan_pdf_page_content(fc_doc2, bayan_pdf_page(fc_doc2, fc_i));
+    if (str_len(fc_c) == strlen(fb_body)) { fc_read = fc_read + 1; }
+    fc_i = fc_i + 1;
+}
+assert_eq(fc_read, 10, "content budget: 64 pages naming one stream read ten pages' worth");
+assert_eq(str_eq_cstr(str_from(bayan_pdf_doc_error(fc_doc2)),
+    "page content bytes exceed the per-document limit"), 1, "content budget: refused by name");
+assert_eq(bayan_pdf_doc_error_count(fc_doc2), 54, "content budget: once per refused page");
+# One page whose /Contents array names the stream 64 times: the join is charged
+# stream by stream, BEFORE each copy, so it is refused at the budget rather than
+# built first.
+var fc_doc3 = bayan_pdf_parse(fb_pdf(64, 3));
+var fc_pg3 = bayan_pdf_page(fc_doc3, 0);
+bayan_pdf_dict_lookup(fc_doc3, bayan_pdf_page_dict(fc_pg3), "Contents");
+var fc_before = alloc_used();
+assert_eq(str_len(bayan_pdf_page_content(fc_doc3, fc_pg3)), 0,
+  "content budget: a /Contents array past the budget is refused");
+var fc_cut = alloc_used() - fc_before;
+_PDF_MAX_CONTENT = strlen(fb_body) * 100;
+var fc_doc4 = bayan_pdf_parse(fb_pdf(64, 3));
+var fc_pg4 = bayan_pdf_page(fc_doc4, 0);
+bayan_pdf_dict_lookup(fc_doc4, bayan_pdf_page_dict(fc_pg4), "Contents");
+fc_before = alloc_used();
+assert_eq(str_len(bayan_pdf_page_content(fc_doc4, fc_pg4)), strlen(fb_body) * 64 + 63,
+  "content budget: within it, the array joins whole");
+var fc_whole = alloc_used() - fc_before;
+assert_lt(fc_cut * 4, fc_whole, "content budget: the refused join stopped before it was built");
+_PDF_MAX_CONTENT = fc_saved;
+fb_body = 0;
 
 var r = assert_summary();
